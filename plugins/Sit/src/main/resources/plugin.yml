@@ -1,0 +1,6 @@
+name: Sit
+description: Right-click stairs or slabs with empty hand to sit down
+main: com.betaserver.sit.SitPlugin
+version: ${project.version}
+authors:
+  - BetaServer
