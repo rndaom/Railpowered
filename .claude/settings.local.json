@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:piston-meta.mojang.com)",
+      "Bash(curl -s https://piston-meta.mojang.com/mc/game/version_manifest_v2.json)",
+      "WebSearch",
+      "WebFetch(domain:mcversions.net)",
+      "WebFetch(domain:minecraft.wiki)",
+      "Bash(python3 -m py_compile manager.py)",
+      "Bash(pip show:*)",
+      "Bash(pip3 show:*)",
+      "Bash(mypy /f/Projects/BetaServer/manager.py)",
+      "Bash(pip install:*)",
+      "Bash(git -C /f/Projects/BetaServer status)",
+      "Bash(gh auth:*)",
+      "Bash(railway version:*)",
+      "Bash(npm --version)",
+      "Bash(npm install:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh api:*)",
+      "Bash(git config:*)"
+    ]
+  }
+}
