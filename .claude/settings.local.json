@@ -34,7 +34,8 @@
       "Read(//f/Projects/BetaServer/$APPDATA/**)",
       "Read(//f/Projects/BetaServer/$HOME/**)",
       "Bash(python3:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "WebFetch(domain:docs.railway.com)"
     ]
   }
 }
