@@ -35,7 +35,27 @@
       "Read(//f/Projects/BetaServer/$HOME/**)",
       "Bash(python3:*)",
       "Bash(git push:*)",
-      "WebFetch(domain:docs.railway.com)"
+      "WebFetch(domain:docs.railway.com)",
+      "Bash(python3 -c \":*)",
+      "Read(//F:/Projects/**)",
+      "WebFetch(domain:wiki.retromc.org)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(npm list:*)",
+      "Bash(npx @railway/cli status)",
+      "Bash(npx @railway/cli whoami)",
+      "Bash(npx:*)",
+      "Bash(docker build:*)",
+      "Bash(mvn --version)",
+      "Bash(java -version)",
+      "Bash(curl:*)",
+      "Bash(python -m json.tool)",
+      "WebFetch(domain:wiki.vg)",
+      "Bash(python -c \":*)",
+      "WebFetch(domain:c4k3.github.io)",
+      "WebFetch(domain:minecraft.fandom.com)",
+      "WebFetch(domain:pixelbrush.dev)",
+      "WebFetch(domain:meeples10.github.io)"
     ]
   }
 }
