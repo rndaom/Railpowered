@@ -247,11 +247,12 @@ public class MapArtPlugin extends JavaPlugin {
                 colors[y * w + x] = best;
 
                 // Error = original color minus the palette color we chose
-                // Scale down to 60% to prevent noise with only 52 colors
+                // Scale down to prevent noise with only 52 colors.
+                // Low strength avoids the red/green stipple from saturated palette colors.
                 int idx = best & 0xFF;
-                float er = (cr - PALETTE[idx][0]) * 0.6f;
-                float eg = (cg - PALETTE[idx][1]) * 0.6f;
-                float eb = (cb - PALETTE[idx][2]) * 0.6f;
+                float er = (cr - PALETTE[idx][0]) * 0.25f;
+                float eg = (cg - PALETTE[idx][1]) * 0.25f;
+                float eb = (cb - PALETTE[idx][2]) * 0.25f;
 
                 // Floyd-Steinberg: distribute error to 4 neighbors
                 //   [*] 7/16
