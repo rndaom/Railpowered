@@ -2,38 +2,37 @@ package com.betaserver.betafix;
 
 import org.bukkit.plugin.java.JavaPlugin;
 
+import java.util.logging.Logger;
+
 /**
  * BetaFix - Fixes Beta 1.7.3 gameplay inconsistencies.
- *
- * Fixes applied:
- * - Axe efficiency on 13 wooden block types (NMS patch)
- * - Wooden stairs drop stair blocks instead of planks
- * - Flint and steel durability not wasted on invalid surfaces
  */
 public class BetaFixPlugin extends JavaPlugin {
 
+    private static final Logger log = Logger.getLogger("Minecraft.BetaFix");
+
     @Override
     public void onEnable() {
-        getLogger().info("Loading BetaFix...");
+        log.info("[BetaFix] Loading...");
 
         // Fix 1: Tool efficiency on wooden blocks (NMS reflection)
-        ToolEfficiencyFix toolFix = new ToolEfficiencyFix(getLogger());
+        ToolEfficiencyFix toolFix = new ToolEfficiencyFix(log);
         if (toolFix.apply()) {
-            getLogger().info("Axe efficiency fix applied (13 wooden block types)");
+            log.info("[BetaFix] Axe efficiency fix applied (13 wooden block types)");
         } else {
-            getLogger().warning("Axe efficiency fix failed");
+            log.warning("[BetaFix] Axe efficiency fix failed");
         }
 
         // Fix 2 & 3: Block drops and flint & steel durability
-        BlockDropFix dropFix = new BlockDropFix(getLogger());
+        BlockDropFix dropFix = new BlockDropFix(log);
         getServer().getPluginManager().registerEvents(dropFix, this);
-        getLogger().info("Stair drop fix + flint & steel fix enabled");
+        log.info("[BetaFix] Stair drop fix + flint & steel fix enabled");
 
-        getLogger().info("BetaFix enabled!");
+        log.info("[BetaFix] Enabled!");
     }
 
     @Override
     public void onDisable() {
-        getLogger().info("BetaFix disabled");
+        log.info("[BetaFix] Disabled");
     }
 }

@@ -13,9 +13,9 @@ RUN curl -fSL -o poseidon.jar \
 COPY plugins/BetaFix/src src/
 
 # Compile against Poseidon JAR
-RUN mkdir -p classes
-RUN find src/main/java -name "*.java" > sources.txt && cat sources.txt
-RUN javac -cp poseidon.jar -d classes @sources.txt 2>&1 || (echo "JAVAC FAILED" && cat sources.txt && exit 1)
+RUN mkdir -p classes && \
+    find src/main/java -name "*.java" > sources.txt && \
+    javac -cp poseidon.jar -d classes @sources.txt
 
 # Create plugin.yml with version baked in
 RUN cp src/main/resources/plugin.yml classes/plugin.yml && \

@@ -5,8 +5,8 @@ import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.BlockFace;
 import org.bukkit.entity.Player;
+import org.bukkit.event.Event;
 import org.bukkit.event.EventHandler;
-import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.block.BlockBreakEvent;
@@ -34,18 +34,12 @@ public class BlockDropFix implements Listener {
     /**
      * Fix: Wooden stairs should drop the stair block, not planks.
      */
-    @EventHandler(priority = EventPriority.HIGHEST)
+    @EventHandler
     public void onBlockBreak(BlockBreakEvent event) {
         if (event.isCancelled()) return;
 
         Block block = event.getBlock();
         if (block.getTypeId() != WOOD_STAIRS_ID) return;
-
-        Player player = event.getPlayer();
-        if (player.isOp() && player.getGameMode() != null
-            && player.getGameMode().getValue() == 1) {
-            return; // creative mode, no drops
-        }
 
         Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
         block.setTypeId(0);
@@ -58,7 +52,7 @@ public class BlockDropFix implements Listener {
      * Fix: Flint and steel should not lose durability when right-clicking
      * a surface where fire cannot be placed.
      */
-    @EventHandler(priority = EventPriority.HIGH)
+    @EventHandler
     public void onPlayerInteract(PlayerInteractEvent event) {
         if (event.getAction() != Action.RIGHT_CLICK_BLOCK) return;
 
