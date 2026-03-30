@@ -3,6 +3,10 @@ world/
 server.log
 *.log
 
+# Python
+__pycache__/
+*.pyc
+
 # Java
 *.class
 
