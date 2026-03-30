@@ -1,0 +1,6 @@
+name: GreenText
+description: 4chan-style greentext in chat - lines starting with > appear green
+main: com.betaserver.greentext.GreenTextPlugin
+version: ${project.version}
+authors:
+  - BetaServer
