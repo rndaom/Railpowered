@@ -12,6 +12,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerToggleSneakEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
@@ -111,6 +112,13 @@ public class SitPlugin extends JavaPlugin implements Listener {
 
         sit(player, block);
         event.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onPlayerSneak(PlayerToggleSneakEvent event) {
+        if (event.isSneaking() && sittingPlayers.containsKey(event.getPlayer().getName())) {
+            unsit(event.getPlayer());
+        }
     }
 
     @EventHandler
