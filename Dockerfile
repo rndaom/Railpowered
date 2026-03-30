@@ -1,9 +1,11 @@
-# Stage 1: Build BetaFix plugin (javac + jar, no Maven overhead)
-FROM openjdk:8-jdk-slim AS plugin-builder
+# Stage 1: Build BetaFix plugin
+FROM eclipse-temurin:8-jdk AS plugin-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 # Download Poseidon JAR as compile dependency
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
 RUN curl -fSL -o poseidon.jar \
     https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
 
