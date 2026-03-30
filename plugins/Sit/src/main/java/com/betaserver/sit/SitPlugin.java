@@ -119,10 +119,12 @@ public class SitPlugin extends JavaPlugin implements Listener {
     }
 
     private void sit(Player player, Block block) {
-        // Position the seat: center of block, slightly above the surface
-        // Slabs are 0.5 tall, stairs have a 0.5 step — both sit at ~0.4
+        // Arrow mount offset is ~0.375, player height is 1.8.
+        // Total from arrow Y to player head: ~2.175 blocks.
+        // With ceiling at block.Y + 2, arrow must be at Y - 0.2 or lower.
+        // Using Y - 0.5 keeps player well below ceiling and hides arrow inside the block.
         Location sitLoc = new Location(block.getWorld(),
-            block.getX() + 0.5, block.getY() + 0.4, block.getZ() + 0.5);
+            block.getX() + 0.5, block.getY() - 0.5, block.getZ() + 0.5);
 
         Arrow seat = block.getWorld().spawn(sitLoc, Arrow.class);
         seat.setVelocity(new Vector(0, 0, 0));
