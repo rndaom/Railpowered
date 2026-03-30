@@ -247,10 +247,11 @@ public class MapArtPlugin extends JavaPlugin {
                 colors[y * w + x] = best;
 
                 // Error = original color minus the palette color we chose
+                // Scale down to 60% to prevent noise with only 52 colors
                 int idx = best & 0xFF;
-                float er = cr - PALETTE[idx][0];
-                float eg = cg - PALETTE[idx][1];
-                float eb = cb - PALETTE[idx][2];
+                float er = (cr - PALETTE[idx][0]) * 0.6f;
+                float eg = (cg - PALETTE[idx][1]) * 0.6f;
+                float eb = (cb - PALETTE[idx][2]) * 0.6f;
 
                 // Floyd-Steinberg: distribute error to 4 neighbors
                 //   [*] 7/16
@@ -287,7 +288,6 @@ public class MapArtPlugin extends JavaPlugin {
 
     /**
      * Find the nearest map palette color for an RGB value.
-     * Uses perceptually-weighted distance (green-sensitive, like human vision).
      */
     private byte nearestColor(int r, int g, int b) {
         int bestId = 4;
@@ -296,8 +296,7 @@ public class MapArtPlugin extends JavaPlugin {
             int dr = r - PALETTE[id][0];
             int dg = g - PALETTE[id][1];
             int db = b - PALETTE[id][2];
-            // Weight: green x4, red x2, blue x3 (matches human eye sensitivity)
-            int dist = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
+            int dist = dr * dr + dg * dg + db * db;
             if (dist < bestDist) {
                 bestDist = dist;
                 bestId = id;
