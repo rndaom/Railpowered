@@ -175,6 +175,8 @@ public class MapArtPlugin extends JavaPlugin {
 
         BufferedImage resized = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB);
         Graphics2D g = resized.createGraphics();
+        g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION,
+                           java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
         g.drawImage(original, 0, 0, 128, 128, null);
         g.dispose();
         return resized;
@@ -206,40 +208,96 @@ public class MapArtPlugin extends JavaPlugin {
     }
 
     /**
-     * Convert a 128x128 image to map color bytes using nearest-color matching.
+     * Convert a 128x128 image to map color bytes using Floyd-Steinberg dithering.
+     * Spreads quantization error to neighboring pixels so the eye perceives
+     * more colors than the 52-color palette actually contains.
      */
     private byte[] imageToMapColors(BufferedImage image) {
-        byte[] colors = new byte[128 * 128];
-        for (int y = 0; y < 128; y++) {
-            for (int x = 0; x < 128; x++) {
+        int w = 128, h = 128;
+
+        // Floating-point RGB arrays for error diffusion
+        float[][] rf = new float[h][w];
+        float[][] gf = new float[h][w];
+        float[][] bf = new float[h][w];
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
                 int rgb = image.getRGB(x, y);
                 int a = (rgb >> 24) & 0xFF;
                 if (a < 128) {
-                    colors[y * 128 + x] = 0; // transparent
+                    // Treat transparent as white
+                    rf[y][x] = 255; gf[y][x] = 255; bf[y][x] = 255;
                 } else {
-                    int r = (rgb >> 16) & 0xFF;
-                    int g = (rgb >> 8) & 0xFF;
-                    int b = rgb & 0xFF;
-                    colors[y * 128 + x] = nearestColor(r, g, b);
+                    rf[y][x] = (rgb >> 16) & 0xFF;
+                    gf[y][x] = (rgb >> 8) & 0xFF;
+                    bf[y][x] = rgb & 0xFF;
                 }
             }
         }
+
+        byte[] colors = new byte[w * h];
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                int cr = clamp(Math.round(rf[y][x]));
+                int cg = clamp(Math.round(gf[y][x]));
+                int cb = clamp(Math.round(bf[y][x]));
+
+                byte best = nearestColor(cr, cg, cb);
+                colors[y * w + x] = best;
+
+                // Error = original color minus the palette color we chose
+                int idx = best & 0xFF;
+                float er = cr - PALETTE[idx][0];
+                float eg = cg - PALETTE[idx][1];
+                float eb = cb - PALETTE[idx][2];
+
+                // Floyd-Steinberg: distribute error to 4 neighbors
+                //   [*] 7/16
+                // 3/16 5/16 1/16
+                if (x + 1 < w) {
+                    rf[y][x + 1] += er * 7f / 16f;
+                    gf[y][x + 1] += eg * 7f / 16f;
+                    bf[y][x + 1] += eb * 7f / 16f;
+                }
+                if (y + 1 < h) {
+                    if (x > 0) {
+                        rf[y + 1][x - 1] += er * 3f / 16f;
+                        gf[y + 1][x - 1] += eg * 3f / 16f;
+                        bf[y + 1][x - 1] += eb * 3f / 16f;
+                    }
+                    rf[y + 1][x] += er * 5f / 16f;
+                    gf[y + 1][x] += eg * 5f / 16f;
+                    bf[y + 1][x] += eb * 5f / 16f;
+                    if (x + 1 < w) {
+                        rf[y + 1][x + 1] += er * 1f / 16f;
+                        gf[y + 1][x + 1] += eg * 1f / 16f;
+                        bf[y + 1][x + 1] += eb * 1f / 16f;
+                    }
+                }
+            }
+        }
+
         return colors;
+    }
+
+    private static int clamp(int v) {
+        return v < 0 ? 0 : (v > 255 ? 255 : v);
     }
 
     /**
      * Find the nearest map palette color for an RGB value.
-     * Uses simple Euclidean distance in RGB space.
+     * Uses perceptually-weighted distance (green-sensitive, like human vision).
      */
     private byte nearestColor(int r, int g, int b) {
-        int bestId = 4; // default to first real color
+        int bestId = 4;
         int bestDist = Integer.MAX_VALUE;
-        // Color IDs 4-55 are the usable colors (base 1-13, shade 0-3)
         for (int id = 4; id < 56; id++) {
             int dr = r - PALETTE[id][0];
             int dg = g - PALETTE[id][1];
             int db = b - PALETTE[id][2];
-            int dist = dr * dr + dg * dg + db * db;
+            // Weight: green x4, red x2, blue x3 (matches human eye sensitivity)
+            int dist = 2 * dr * dr + 4 * dg * dg + 3 * db * db;
             if (dist < bestDist) {
                 bestDist = dist;
                 bestId = id;
