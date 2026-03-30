@@ -21,7 +21,20 @@
       "Bash(git commit:*)",
       "Bash(gh api:*)",
       "Bash(git config:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(gh repo:*)",
+      "Bash(railway whoami:*)",
+      "Bash(railway:*)",
+      "Bash(xxd)",
+      "Bash(railway.exe volume:*)",
+      "Bash(printf '%s' '/server/data')",
+      "Bash(MSYS_NO_PATHCONV=1 railway volume add --mount-path \"/server/data\" --json 2>&1)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\(''''token'''',''''NOT FOUND''''\\)[:10] + ''''...''''\\)\")",
+      "Read(//f/Projects/BetaServer/$HOME/.railway/**)",
+      "Read(//f/Projects/BetaServer/$APPDATA/**)",
+      "Read(//f/Projects/BetaServer/$HOME/**)",
+      "Bash(python3:*)",
+      "Bash(git push:*)"
     ]
   }
 }

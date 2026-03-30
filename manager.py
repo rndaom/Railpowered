@@ -556,6 +556,7 @@ def main():
         sleep_proxy.start()
 
     # Admin web panel (keep this URL to yourself)
+    HTTPServer.allow_reuse_address = True
     http = HTTPServer(("0.0.0.0", WEB_PORT), PanelHandler)
     state.add_log(f"Admin panel on port {WEB_PORT}")
 
