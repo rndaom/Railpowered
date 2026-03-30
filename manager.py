@@ -30,8 +30,8 @@ MC_DIR = "/server/data"
 MC_JAR = "server.jar"
 MC_PORT = 25565
 WEB_PORT = int(os.environ.get("PORT", 8080))
-MAX_MEMORY = os.environ.get("MC_MAX_MEMORY", "512M")
-MIN_MEMORY = os.environ.get("MC_MIN_MEMORY", "256M")
+MAX_MEMORY = os.environ.get("MC_MAX_MEMORY", "1G")
+MIN_MEMORY = os.environ.get("MC_MIN_MEMORY", "512M")
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "600"))  # 10 min default
 AUTO_START = os.environ.get("AUTO_START", "false").lower() == "true"
 TEMPLATE_DIR = "/server/templates"
@@ -256,6 +256,11 @@ def start_server():
                 "java",
                 f"-Xmx{MAX_MEMORY}",
                 f"-Xms{MIN_MEMORY}",
+                "-XX:+UseG1GC",
+                "-XX:+ParallelRefProcEnabled",
+                "-XX:MaxGCPauseMillis=50",
+                "-XX:+UnlockExperimentalVMOptions",
+                "-XX:+AggressiveOpts",
                 "-jar",
                 MC_JAR,
                 "nogui",
