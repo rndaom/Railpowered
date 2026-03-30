@@ -32,6 +32,11 @@ public class BetaFixPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(dropFix, this);
         log.info("[BetaFix] Stair drop fix + flint & steel fix enabled");
 
+        // Fix 4: Event-based mining speed for axe + wooden blocks
+        MiningSpeedFix miningFix = new MiningSpeedFix(this, log);
+        getServer().getPluginManager().registerEvents(miningFix, this);
+        log.info("[BetaFix] Axe mining speed fix enabled (9 wooden block types)");
+
         log.info("[BetaFix] Enabled!");
     }
 
