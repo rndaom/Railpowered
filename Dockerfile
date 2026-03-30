@@ -1,10 +1,26 @@
-# Stage 1: Build BetaFix plugin
-FROM maven:3.8-openjdk-8 AS plugin-builder
+# Stage 1: Build BetaFix plugin (javac + jar, no Maven overhead)
+FROM openjdk:8-jdk-slim AS plugin-builder
 WORKDIR /build
-COPY plugins/BetaFix/pom.xml .
-RUN mvn dependency:resolve
+
+# Download Poseidon JAR as compile dependency
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN curl -fSL -o poseidon.jar \
+    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
+
+# Copy plugin source
 COPY plugins/BetaFix/src src/
-RUN mvn package -q
+
+# Compile against Poseidon JAR
+RUN mkdir -p classes && \
+    find src/main/java -name "*.java" > sources.txt && \
+    javac -cp poseidon.jar -d classes @sources.txt
+
+# Create plugin.yml with version baked in
+RUN cp src/main/resources/plugin.yml classes/plugin.yml && \
+    sed -i 's/${project.version}/1.0.0/' classes/plugin.yml
+
+# Package into JAR
+RUN cd classes && jar cf /build/BetaFix.jar .
 
 # Stage 2: Runtime
 FROM eclipse-temurin:8-jre
@@ -21,7 +37,7 @@ RUN curl -fSL -o server.jar \
 
 # Copy compiled plugin from build stage
 RUN mkdir -p /server/plugins
-COPY --from=plugin-builder /build/target/BetaFix-*.jar /server/plugins/BetaFix.jar
+COPY --from=plugin-builder /build/BetaFix.jar /server/plugins/BetaFix.jar
 
 # Copy application files
 COPY manager.py .
