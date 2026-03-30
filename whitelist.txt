@@ -1,0 +1,5 @@
+# Add whitelisted usernames here, one per line
+# Only needed if white-list=true in server.properties
+# Example:
+# YourUsername
+# FriendName

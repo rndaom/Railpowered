@@ -1,0 +1,537 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Beta 1.7.3 Server</title>
+  <style>
+    /* --- Reset & Base --- */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #1a1a2e;
+      --surface:   #16213e;
+      --card:      #0f3460;
+      --accent:    #e94560;
+      --green:     #4ecca3;
+      --yellow:    #f0c040;
+      --text:      #eaeaea;
+      --muted:     #8892a4;
+      --radius:    8px;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+
+    /* --- Layout --- */
+    .container { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+
+    header {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    header h1 {
+      font-size: 2rem;
+      letter-spacing: 1px;
+    }
+    header h1 span { color: var(--green); }
+    header p { color: var(--muted); margin-top: 4px; }
+
+    /* --- Status Card --- */
+    .status-card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 24px;
+      margin-bottom: 20px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
+    }
+
+    .status-indicator {
+      width: 18px; height: 18px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 10px;
+      animation: pulse 2s infinite;
+    }
+    .status-indicator.online  { background: var(--green); box-shadow: 0 0 12px var(--green); }
+    .status-indicator.offline { background: var(--accent); box-shadow: none; animation: none; }
+    .status-indicator.loading { background: var(--yellow); box-shadow: 0 0 12px var(--yellow); }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: .5; }
+    }
+
+    .status-left { flex: 1; min-width: 200px; }
+    .status-left h2 { font-size: 1.3rem; display: flex; align-items: center; }
+    .status-meta { color: var(--muted); font-size: 0.9rem; margin-top: 6px; }
+
+    .status-right { display: flex; gap: 10px; }
+
+    /* --- Buttons --- */
+    button {
+      border: none;
+      border-radius: var(--radius);
+      padding: 10px 24px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform .1s, opacity .2s;
+    }
+    button:active { transform: scale(.96); }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+
+    .btn-start { background: var(--green); color: #111; }
+    .btn-stop  { background: var(--accent); color: #fff; }
+
+    /* --- Cards --- */
+    .card {
+      background: var(--surface);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card h3 {
+      font-size: 1.05rem;
+      margin-bottom: 12px;
+      color: var(--green);
+    }
+
+    /* --- Players --- */
+    .player-list {
+      display: flex; flex-wrap: wrap; gap: 8px;
+    }
+    .player-tag {
+      background: var(--card);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-size: 0.9rem;
+    }
+    .no-players { color: var(--muted); font-style: italic; }
+
+    /* --- Connection Info --- */
+    .connect-box {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 1.05rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .connect-box .copy-btn {
+      background: var(--green);
+      color: #111;
+      padding: 6px 14px;
+      font-size: 0.8rem;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    /* --- Log Viewer --- */
+    .log-viewer {
+      background: #0a0a18;
+      border-radius: var(--radius);
+      padding: 14px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: 'Consolas', 'Courier New', monospace;
+      font-size: 0.8rem;
+      line-height: 1.6;
+      color: #aab;
+    }
+    .log-viewer::-webkit-scrollbar { width: 6px; }
+    .log-viewer::-webkit-scrollbar-thumb { background: #334; border-radius: 3px; }
+
+    /* --- Idle Bar --- */
+    .idle-bar-container {
+      margin-top: 10px;
+    }
+    .idle-bar-label {
+      font-size: 0.85rem;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .idle-bar-track {
+      height: 6px;
+      background: var(--card);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .idle-bar-fill {
+      height: 100%;
+      background: var(--yellow);
+      border-radius: 3px;
+      transition: width 1s linear;
+    }
+
+    /* --- Setup Guide --- */
+    .guide-section { margin-top: 8px; }
+    .guide-section summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--green);
+      padding: 6px 0;
+    }
+    .guide-section ol, .guide-section ul {
+      padding-left: 20px;
+      margin-top: 8px;
+    }
+    .guide-section li { margin-bottom: 6px; }
+    .guide-section code {
+      background: var(--card);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-size: 0.9em;
+    }
+    .guide-section a {
+      color: var(--green);
+    }
+
+    /* --- Tabs --- */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 0;
+    }
+    .tab {
+      background: var(--card);
+      padding: 8px 20px;
+      border-radius: var(--radius) var(--radius) 0 0;
+      cursor: pointer;
+      font-size: 0.9rem;
+      color: var(--muted);
+      border: none;
+    }
+    .tab.active {
+      background: var(--surface);
+      color: var(--text);
+    }
+    .tab-content {
+      display: none;
+    }
+    .tab-content.active {
+      display: block;
+    }
+    .tabbed-card {
+      border-radius: 0 var(--radius) var(--radius) var(--radius);
+    }
+
+    /* --- Responsive --- */
+    @media (max-width: 600px) {
+      header h1 { font-size: 1.4rem; }
+      .status-card { flex-direction: column; align-items: stretch; }
+      .status-right { justify-content: center; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Header -->
+    <header>
+      <h1>Minecraft <span>Beta 1.7.3</span></h1>
+      <p>Admin Control Panel</p>
+    </header>
+
+    <!-- Status Card -->
+    <div class="status-card">
+      <div class="status-left">
+        <h2>
+          <span id="statusDot" class="status-indicator offline"></span>
+          <span id="statusText">Offline</span>
+        </h2>
+        <div id="statusMeta" class="status-meta"></div>
+        <div id="idleBar" class="idle-bar-container" style="display:none;">
+          <div class="idle-bar-label">
+            Auto-shutdown in <span id="idleCountdown">--</span>
+          </div>
+          <div class="idle-bar-track">
+            <div id="idleBarFill" class="idle-bar-fill" style="width:0%"></div>
+          </div>
+        </div>
+      </div>
+      <div class="status-right">
+        <button id="btnStart" class="btn-start" onclick="doStart()">Start Server</button>
+        <button id="btnStop" class="btn-stop" onclick="doStop()" disabled>Stop Server</button>
+      </div>
+    </div>
+
+    <!-- Players -->
+    <div class="card">
+      <h3>Players Online (<span id="playerCount">0</span>)</h3>
+      <div id="playerList" class="player-list">
+        <span class="no-players">No players online</span>
+      </div>
+    </div>
+
+    <!-- Connection Info -->
+    <div class="card">
+      <h3>Connection Info</h3>
+      <p style="color:var(--muted); margin-bottom:12px; font-size:0.9rem;">
+        Use this address in the Beta 1.7.3 multiplayer menu:
+      </p>
+      <div class="connect-box">
+        <span id="serverAddr">Loading...</span>
+        <button class="copy-btn" onclick="copyAddress()">Copy</button>
+      </div>
+      <p style="color:var(--muted); margin-top:10px; font-size:0.85rem;">
+        Players can connect anytime &mdash; the sleep proxy auto-starts the server
+        and tells them to reconnect in ~30 seconds.
+      </p>
+    </div>
+
+    <!-- Tabbed: Logs / Setup Guide -->
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('logs', this)">Server Logs</button>
+      <button class="tab" onclick="switchTab('guide', this)">Setup Guide</button>
+    </div>
+
+    <div id="tab-logs" class="card tabbed-card tab-content active">
+      <div id="logViewer" class="log-viewer">Waiting for logs...</div>
+    </div>
+
+    <div id="tab-guide" class="card tabbed-card tab-content">
+      <details class="guide-section" open>
+        <summary>1. Install BetaCraft Launcher (recommended)</summary>
+        <p>BetaCraft is the best way to play Beta 1.7.3 with <strong>working skins</strong>, sounds, and textures.</p>
+        <ol>
+          <li>Download BetaCraft from <a href="https://betacraft.uk" target="_blank">betacraft.uk</a></li>
+          <li>Install and open the launcher</li>
+          <li>Select version <strong>b1.7.3</strong> from the version list</li>
+          <li>Enter your username and click Play</li>
+        </ol>
+      </details>
+
+      <details class="guide-section">
+        <summary>2. Alternative: Official Minecraft Launcher</summary>
+        <ol>
+          <li>Open the Minecraft Launcher</li>
+          <li>Go to <strong>Installations</strong> &rarr; <strong>New Installation</strong></li>
+          <li>Select version <code>old_beta b1.7.3</code></li>
+          <li>Create and play the installation</li>
+        </ol>
+        <p style="margin-top:8px; color:var(--muted); font-size:0.9rem;">
+          Note: The official launcher may not display skins correctly for Beta versions.
+          BetaCraft patches the old skin URLs to work with modern Mojang servers.
+        </p>
+      </details>
+
+      <details class="guide-section">
+        <summary>3. Connecting to the Server</summary>
+        <ol>
+          <li>Launch Beta 1.7.3 using BetaCraft or the official launcher</li>
+          <li>Click <strong>Multiplayer</strong> on the main menu</li>
+          <li>Enter the server address shown above and click <strong>Connect</strong></li>
+          <li>If the server is sleeping you'll see <em>"Server is waking up! Reconnect in ~30 seconds."</em> &mdash; just wait and reconnect</li>
+        </ol>
+      </details>
+
+      <details class="guide-section">
+        <summary>4. About Skins, Sounds & Textures</summary>
+        <ul>
+          <li><strong>Skins:</strong> BetaCraft automatically fixes skins by redirecting the old skin URLs to Mojang's current API. Your Mojang/Microsoft account skin will display correctly.</li>
+          <li><strong>Sounds:</strong> Beta 1.7.3 sounds are bundled with the game client. BetaCraft ensures all sound resources are downloaded properly.</li>
+          <li><strong>Textures:</strong> The classic Beta textures are built into the client. No resource packs needed &mdash; you get the authentic experience.</li>
+        </ul>
+      </details>
+
+      <details class="guide-section">
+        <summary>5. Server Rules</summary>
+        <ul>
+          <li>Be respectful to other players</li>
+          <li>No griefing or stealing</li>
+          <li>The server auto-shuts down after 10 minutes with no players to save hosting costs</li>
+          <li>Just connect to the server address and it will wake up automatically</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+
+  <script>
+    // -----------------------------------------------------------------------
+    // State
+    // -----------------------------------------------------------------------
+    let autoRefresh = null;
+    let logRefresh = null;
+
+    // Determine server address from the current hostname
+    // Railway TCP proxy will be on a different port — set this via the
+    // MC_PUBLIC_ADDRESS env var or we fall back to hostname guidance.
+    const SERVER_ADDR_OVERRIDE = ""; // set at deploy time if known
+
+    // -----------------------------------------------------------------------
+    // API helpers
+    // -----------------------------------------------------------------------
+    async function api(method, path, body) {
+      const opts = { method };
+      if (body) {
+        opts.headers = { "Content-Type": "application/json" };
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      return res.json();
+    }
+
+    async function doStart() {
+      document.getElementById("btnStart").disabled = true;
+      await api("POST", "/api/start");
+      setTimeout(refreshStatus, 500);
+    }
+
+    async function doStop() {
+      document.getElementById("btnStop").disabled = true;
+      await api("POST", "/api/stop");
+      setTimeout(refreshStatus, 500);
+    }
+
+    // -----------------------------------------------------------------------
+    // Status updates
+    // -----------------------------------------------------------------------
+    async function refreshStatus() {
+      try {
+        const s = await api("GET", "/api/status");
+        const dot  = document.getElementById("statusDot");
+        const text = document.getElementById("statusText");
+        const meta = document.getElementById("statusMeta");
+        const idle = document.getElementById("idleBar");
+        const btnStart = document.getElementById("btnStart");
+        const btnStop  = document.getElementById("btnStop");
+
+        // Status indicator
+        if (s.starting) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Starting...";
+          meta.textContent = "The server is booting up. This may take a moment.";
+          btnStart.disabled = true;
+          btnStop.disabled  = true;
+        } else if (s.stopping) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Stopping...";
+          meta.textContent = "The server is shutting down.";
+          btnStart.disabled = true;
+          btnStop.disabled  = true;
+        } else if (s.running) {
+          dot.className = "status-indicator online";
+          text.textContent = "Online";
+          const uptimeStr = s.uptime ? formatDuration(s.uptime) : "";
+          meta.textContent = `${s.player_count} player${s.player_count !== 1 ? "s" : ""} online` +
+                             (uptimeStr ? ` · Uptime: ${uptimeStr}` : "");
+          btnStart.disabled = true;
+          btnStop.disabled  = false;
+        } else {
+          dot.className = "status-indicator offline";
+          text.textContent = "Offline";
+          meta.textContent = s.proxy_active
+            ? "Sleep proxy active \u2014 server will auto-start when a player connects."
+            : "Server is offline.";
+          btnStart.disabled = false;
+          btnStop.disabled  = true;
+        }
+
+        // Idle countdown bar
+        if (s.running && s.player_count === 0 && s.idle_seconds > 0) {
+          idle.style.display = "block";
+          const remaining = Math.max(0, s.idle_timeout - s.idle_seconds);
+          document.getElementById("idleCountdown").textContent = formatDuration(remaining);
+          const pct = Math.min(100, (s.idle_seconds / s.idle_timeout) * 100);
+          document.getElementById("idleBarFill").style.width = pct + "%";
+        } else {
+          idle.style.display = "none";
+        }
+
+        // Players
+        const pc = document.getElementById("playerCount");
+        const pl = document.getElementById("playerList");
+        pc.textContent = s.player_count;
+        if (s.players && s.players.length > 0) {
+          pl.innerHTML = s.players.map(p =>
+            `<span class="player-tag">${escHtml(p)}</span>`
+          ).join("");
+        } else {
+          pl.innerHTML = `<span class="no-players">No players online</span>`;
+        }
+      } catch (e) {
+        // Panel unreachable
+      }
+    }
+
+    async function refreshLogs() {
+      try {
+        const data = await api("GET", "/api/logs");
+        const viewer = document.getElementById("logViewer");
+        if (data.logs && data.logs.length > 0) {
+          viewer.textContent = data.logs.join("\n");
+          // Auto-scroll to bottom
+          viewer.scrollTop = viewer.scrollHeight;
+        }
+      } catch (e) {}
+    }
+
+    // -----------------------------------------------------------------------
+    // Connection address
+    // -----------------------------------------------------------------------
+    function updateAddress() {
+      const el = document.getElementById("serverAddr");
+      if (SERVER_ADDR_OVERRIDE) {
+        el.textContent = SERVER_ADDR_OVERRIDE;
+      } else {
+        // Provide guidance — the actual TCP address depends on Railway config
+        el.textContent = location.hostname + " (see Setup Guide for port)";
+      }
+    }
+
+    function copyAddress() {
+      const addr = document.getElementById("serverAddr").textContent;
+      navigator.clipboard.writeText(addr).then(() => {
+        const btn = document.querySelector(".copy-btn");
+        btn.textContent = "Copied!";
+        setTimeout(() => btn.textContent = "Copy", 1500);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Utilities
+    // -----------------------------------------------------------------------
+    function formatDuration(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+
+    function escHtml(str) {
+      const d = document.createElement("div");
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    function switchTab(name, btn) {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("tab-" + name).classList.add("active");
+    }
+
+    // -----------------------------------------------------------------------
+    // Init
+    // -----------------------------------------------------------------------
+    updateAddress();
+    refreshStatus();
+    refreshLogs();
+    autoRefresh = setInterval(refreshStatus, 3000);
+    logRefresh  = setInterval(refreshLogs, 5000);
+  </script>
+</body>
+</html>

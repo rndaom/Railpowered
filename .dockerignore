@@ -1,0 +1,8 @@
+.git
+.gitignore
+.env
+README.md
+world/
+*.log
+.idea/
+.vscode/
