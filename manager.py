@@ -10,17 +10,17 @@ Beta 1.7.3 Minecraft Server Manager
 
 from __future__ import annotations
 
-import os
-import sys
-import time
 import json
+import os
+import re
 import signal
 import socket
 import struct
 import subprocess
+import sys
 import threading
-import re
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ class ServerState:
         with self.lock:
             self._log_lines.append(entry)
             if len(self._log_lines) > self._max_log_lines:
-                self._log_lines = self._log_lines[-self._max_log_lines:]
+                self._log_lines = self._log_lines[-self._max_log_lines :]
         print(entry, flush=True)
 
     def get_logs(self, count=100):
@@ -482,9 +482,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             self.send_error(500, "Template not found")
 
     def _serve_status(self):
-        uptime = (
-            int(time.time() - state.start_time) if state.start_time else None
-        )
+        uptime = int(time.time() - state.start_time) if state.start_time else None
         idle_secs = 0
         if state.running and state.player_count == 0:
             idle_secs = int(time.time() - state.last_activity)
