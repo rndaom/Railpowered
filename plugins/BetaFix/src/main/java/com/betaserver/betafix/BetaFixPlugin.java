@@ -16,11 +16,15 @@ public class BetaFixPlugin extends JavaPlugin {
         log.info("[BetaFix] Loading...");
 
         // Fix 1: Tool efficiency on wooden blocks (NMS reflection)
-        ToolEfficiencyFix toolFix = new ToolEfficiencyFix(log);
-        if (toolFix.apply()) {
-            log.info("[BetaFix] Axe efficiency fix applied (13 wooden block types)");
-        } else {
-            log.warning("[BetaFix] Axe efficiency fix failed");
+        try {
+            ToolEfficiencyFix toolFix = new ToolEfficiencyFix(log);
+            if (toolFix.apply()) {
+                log.info("[BetaFix] Axe efficiency fix applied");
+            } else {
+                log.warning("[BetaFix] Axe efficiency fix failed — see above for details");
+            }
+        } catch (Throwable t) {
+            log.warning("[BetaFix] Axe efficiency fix crashed: " + t.getClass().getName() + ": " + t.getMessage());
         }
 
         // Fix 2 & 3: Block drops and flint & steel durability

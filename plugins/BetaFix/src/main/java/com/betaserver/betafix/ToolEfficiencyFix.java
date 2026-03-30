@@ -15,20 +15,21 @@ import java.util.logging.Logger;
  * Fixes axe efficiency on wooden blocks that are missing from the effective blocks list.
  * Uses NMS reflection to patch the axe's effective blocks array at startup.
  *
+ * Poseidon already includes WOOD, BOOKSHELF, LOG, CHEST in the axe list.
+ * This fix adds the remaining wooden blocks that are still missing.
+ *
  * Note: Wooden slabs (block ID 44, data 2) share their ID with stone/cobble/sandstone
  * slabs, so they cannot be added to the axe list without affecting all slab types.
- * A proper fix for wooden slabs would require deeper NMS patches.
  */
 public class ToolEfficiencyFix {
 
     private final Logger logger;
 
-    // Block IDs for wooden blocks missing from the axe effective list
+    // Block IDs for wooden blocks missing from the axe effective list.
+    // Poseidon already has: WOOD(5), LOG(17), BOOKSHELF(47), CHEST(54)
     private static final int[] WOODEN_BLOCK_IDS = {
         25,  // Note Block
-        47,  // Bookshelf
         53,  // Wooden Stairs
-        54,  // Chest
         58,  // Crafting Table
         63,  // Sign Post
         64,  // Wooden Door
@@ -50,53 +51,67 @@ public class ToolEfficiencyFix {
      */
     public boolean apply() {
         try {
-            // Find the Block[] field in ItemTool (parent of ItemAxe)
-            Field effectiveBlocksField = findBlockArrayField(ItemTool.class);
-            if (effectiveBlocksField == null) {
-                logger.warning("[BetaFix] Could not find blocksEffectiveAgainst field in ItemTool");
-                return false;
-            }
-
-            effectiveBlocksField.setAccessible(true);
-
-            int axeCount = 0;
-
-            // Iterate through all items to find axes
-            for (int i = 0; i < Item.byId.length; i++) {
-                Item item = Item.byId[i];
-                if (item instanceof ItemAxe) {
-                    Block[] currentBlocks = (Block[]) effectiveBlocksField.get(item);
-                    Block[] newBlocks = expandEffectiveBlocks(currentBlocks);
-                    effectiveBlocksField.set(item, newBlocks);
-                    axeCount++;
-                }
-            }
-
-            if (axeCount > 0) {
-                logger.info("[BetaFix] Axe efficiency fix applied to " + axeCount + " axe type(s) - "
-                    + WOODEN_BLOCK_IDS.length + " wooden blocks now mine faster with axes");
-                return true;
-            } else {
-                logger.warning("[BetaFix] No axe items found in registry");
-                return false;
-            }
-        } catch (Exception e) {
-            logger.warning("[BetaFix] Failed to apply tool efficiency fix: " + e.getMessage());
+            return doApply();
+        } catch (Throwable t) {
+            logger.warning("[BetaFix] Failed to apply tool efficiency fix: " + t.getClass().getName() + ": " + t.getMessage());
+            t.printStackTrace();
             return false;
         }
     }
 
-    private Field findBlockArrayField(Class<?> clazz) {
-        Class<?> current = clazz;
+    private boolean doApply() throws Exception {
+        // Find the Block[] field in ItemTool (parent of ItemAxe)
+        Field effectiveBlocksField = null;
+        Class<?> current = ItemTool.class;
         while (current != null && current != Object.class) {
             for (Field field : current.getDeclaredFields()) {
                 if (field.getType() == Block[].class) {
-                    return field;
+                    effectiveBlocksField = field;
+                    logger.info("[BetaFix] Found Block[] field '" + field.getName()
+                        + "' in " + current.getSimpleName());
+                    break;
                 }
             }
+            if (effectiveBlocksField != null) break;
             current = current.getSuperclass();
         }
-        return null;
+
+        if (effectiveBlocksField == null) {
+            logger.warning("[BetaFix] Could not find Block[] field in ItemTool hierarchy");
+            // Log all fields for debugging
+            for (Field f : ItemTool.class.getDeclaredFields()) {
+                logger.info("[BetaFix]   ItemTool field: " + f.getName() + " type=" + f.getType().getName());
+            }
+            return false;
+        }
+
+        effectiveBlocksField.setAccessible(true);
+
+        int axeCount = 0;
+
+        // Iterate through all items to find axes
+        for (int i = 0; i < Item.byId.length; i++) {
+            Item item = Item.byId[i];
+            if (item instanceof ItemAxe) {
+                Block[] currentBlocks = (Block[]) effectiveBlocksField.get(item);
+                logger.info("[BetaFix] Axe item ID " + i + " has " + currentBlocks.length + " effective blocks");
+
+                Block[] newBlocks = expandEffectiveBlocks(currentBlocks);
+                effectiveBlocksField.set(item, newBlocks);
+
+                logger.info("[BetaFix] Expanded to " + newBlocks.length + " effective blocks");
+                axeCount++;
+            }
+        }
+
+        if (axeCount > 0) {
+            logger.info("[BetaFix] Patched " + axeCount + " axe type(s) with "
+                + WOODEN_BLOCK_IDS.length + " additional wooden blocks");
+            return true;
+        } else {
+            logger.warning("[BetaFix] No axe items found in Item.byId registry");
+            return false;
+        }
     }
 
     private Block[] expandEffectiveBlocks(Block[] original) {
