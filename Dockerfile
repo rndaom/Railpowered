@@ -19,9 +19,7 @@ COPY templates/ templates/
 
 RUN chmod +x start.sh
 
-# Web panel port (Railway sets $PORT)
+# Web panel port — only expose HTTP; the MC port is handled by Railway's TCP proxy
 EXPOSE 8080
-# Minecraft server port
-EXPOSE 25565
 
 CMD ["./start.sh"]
