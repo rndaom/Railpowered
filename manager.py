@@ -248,7 +248,7 @@ def start_server():
 
     state.players.clear()
     state.last_activity = time.time()
-    state.add_log("Starting Minecraft Beta 1.7.3 server...")
+    state.add_log("Starting Minecraft Beta 1.7.3 (Poseidon) server...")
 
     try:
         state.process = subprocess.Popen(

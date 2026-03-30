@@ -1,3 +1,12 @@
+# Stage 1: Build BetaFix plugin
+FROM maven:3.8-openjdk-8 AS plugin-builder
+WORKDIR /build
+COPY plugins/BetaFix/pom.xml .
+RUN mvn dependency:resolve
+COPY plugins/BetaFix/src src/
+RUN mvn package -q
+
+# Stage 2: Runtime
 FROM eclipse-temurin:8-jre
 
 RUN apt-get update && \
@@ -6,8 +15,13 @@ RUN apt-get update && \
 
 WORKDIR /server
 
-# Download Beta 1.7.3 server jar from OmniArchive (official community archive)
-RUN curl -fSL -o server.jar https://vault.omniarchive.uk/archive/java/server-beta/b1.7/b1.7.3.jar
+# Download Project Poseidon (CraftBukkit fork for Beta 1.7.3 with plugin support)
+RUN curl -fSL -o server.jar \
+    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
+
+# Copy compiled plugin from build stage
+RUN mkdir -p /server/plugins
+COPY --from=plugin-builder /build/target/BetaFix-*.jar /server/plugins/BetaFix.jar
 
 # Copy application files
 COPY manager.py .
