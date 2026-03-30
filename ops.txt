@@ -1,4 +1,1 @@
-# Add operator usernames here, one per line
-# Operators can use server commands in-game
-# Example:
-# YourUsername
+rndaom
