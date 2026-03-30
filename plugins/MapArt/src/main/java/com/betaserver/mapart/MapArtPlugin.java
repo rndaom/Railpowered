@@ -135,17 +135,33 @@ public class MapArtPlugin extends JavaPlugin {
     }
 
     private BufferedImage downloadAndResize(String urlStr) throws Exception {
-        URL url = new URL(urlStr);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setInstanceFollowRedirects(true);
-        conn.setConnectTimeout(10000);
-        conn.setReadTimeout(10000);
-        conn.setRequestProperty("User-Agent", "MapArt/1.0");
+        // Follow redirects manually (Java doesn't follow HTTP<->HTTPS redirects)
+        HttpURLConnection conn = null;
+        for (int i = 0; i < 5; i++) {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setInstanceFollowRedirects(false);
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            conn.setRequestProperty("User-Agent",
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+            conn.setRequestProperty("Accept", "image/*");
 
-        int status = conn.getResponseCode();
-        if (status != 200) {
-            throw new IOException("HTTP " + status);
+            int status = conn.getResponseCode();
+            if (status == 301 || status == 302 || status == 303
+                    || status == 307 || status == 308) {
+                String loc = conn.getHeaderField("Location");
+                conn.disconnect();
+                if (loc == null) throw new IOException("Redirect with no location");
+                urlStr = loc;
+                continue;
+            }
+            if (status != 200) {
+                throw new IOException("HTTP " + status);
+            }
+            break;
         }
+
         if (conn.getContentLength() > 5 * 1024 * 1024) {
             throw new IOException("Image too large (max 5MB)");
         }
@@ -154,7 +170,7 @@ public class MapArtPlugin extends JavaPlugin {
         BufferedImage original = ImageIO.read(in);
         in.close();
         if (original == null) {
-            throw new IOException("Could not decode image");
+            throw new IOException("Could not decode image (server may have returned HTML)");
         }
 
         BufferedImage resized = new BufferedImage(128, 128, BufferedImage.TYPE_INT_ARGB);
