@@ -25,7 +25,6 @@ public class BlockDropFix implements Listener {
 
     private final Logger logger;
 
-    // Wooden stairs block ID
     private static final int WOOD_STAIRS_ID = 53;
 
     public BlockDropFix(Logger logger) {
@@ -34,7 +33,6 @@ public class BlockDropFix implements Listener {
 
     /**
      * Fix: Wooden stairs should drop the stair block, not planks.
-     * Stone stairs already drop correctly — this makes wooden stairs consistent.
      */
     @EventHandler(priority = EventPriority.HIGHEST)
     public void onBlockBreak(BlockBreakEvent event) {
@@ -43,17 +41,16 @@ public class BlockDropFix implements Listener {
         Block block = event.getBlock();
         if (block.getTypeId() != WOOD_STAIRS_ID) return;
 
-        // Don't drop if player is in creative mode
         Player player = event.getPlayer();
-        if (player.getGameMode() == org.bukkit.GameMode.CREATIVE) return;
+        if (player.isOp() && player.getGameMode() != null
+            && player.getGameMode().getValue() == 1) {
+            return; // creative mode, no drops
+        }
 
-        // Cancel default drops by setting the block to air manually,
-        // then drop the correct item
         Location dropLoc = block.getLocation().add(0.5, 0.5, 0.5);
-        block.setTypeId(0); // set to air
+        block.setTypeId(0);
         event.setCancelled(true);
 
-        // Drop 1 wooden stair block
         block.getWorld().dropItemNaturally(dropLoc, new ItemStack(WOOD_STAIRS_ID, 1));
     }
 
@@ -72,11 +69,9 @@ public class BlockDropFix implements Listener {
         Block clicked = event.getClickedBlock();
         if (clicked == null) return;
 
-        // Check if fire can be placed on the clicked face
         BlockFace face = event.getBlockFace();
         Block target = clicked.getRelative(face);
 
-        // Fire can only exist in air blocks
         if (target.getType() != Material.AIR) {
             event.setCancelled(true);
         }
