@@ -1,4 +1,4 @@
-# Stage 1: Build BetaFix plugin
+# Stage 1: Build plugins
 FROM eclipse-temurin:8-jdk AS plugin-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
@@ -9,20 +9,23 @@ WORKDIR /build
 RUN curl -fSL -o poseidon.jar \
     https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
 
-# Copy plugin source
-COPY plugins/BetaFix/src src/
+# Copy all plugin sources (10 plugins, v8)
+COPY plugins/ plugins/
 
-# Compile against Poseidon JAR
-RUN mkdir -p classes && \
-    find src/main/java -name "*.java" > sources.txt && \
-    javac -cp poseidon.jar -d classes @sources.txt
-
-# Create plugin.yml with version baked in
-RUN cp src/main/resources/plugin.yml classes/plugin.yml && \
-    sed -i 's/${project.version}/1.0.0/' classes/plugin.yml
-
-# Package into JAR
-RUN cd classes && jar cf /build/BetaFix.jar .
+# Build every plugin under plugins/
+RUN mkdir -p /build/jars && \
+    for plugin_dir in plugins/*/; do \
+        [ -d "$plugin_dir/src" ] || continue; \
+        name=$(basename "$plugin_dir"); \
+        echo "=== Building $name ==="; \
+        mkdir -p "classes/$name"; \
+        find "$plugin_dir/src/main/java" -name "*.java" > "/tmp/$name-sources.txt"; \
+        javac -cp poseidon.jar -d "classes/$name" @"/tmp/$name-sources.txt"; \
+        cp "$plugin_dir/src/main/resources/plugin.yml" "classes/$name/plugin.yml"; \
+        sed -i 's/${project.version}/1.0.0/' "classes/$name/plugin.yml"; \
+        (cd "classes/$name" && jar cf "/build/jars/$name.jar" .); \
+        echo "=== $name built ==="; \
+    done
 
 # Stage 2: Runtime
 FROM eclipse-temurin:8-jre
@@ -37,9 +40,9 @@ WORKDIR /server
 RUN curl -fSL -o server.jar \
     https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
 
-# Copy compiled plugin from build stage
+# Copy compiled plugins from build stage
 RUN mkdir -p /server/plugins
-COPY --from=plugin-builder /build/BetaFix.jar /server/plugins/BetaFix.jar
+COPY --from=plugin-builder /build/jars/ /server/plugins/
 
 # Copy application files
 COPY manager.py .

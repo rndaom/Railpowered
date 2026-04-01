@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WebMap — Beta 1.7.3</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', system-ui, sans-serif; }
+
+    #loading {
+      position: fixed; inset: 0; z-index: 100;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #1a1a2e; color: #eee; gap: 16px;
+    }
+    #loading.hidden { display: none; }
+    #loading h2 { color: #4ecca3; font-size: 1.6rem; }
+    #loading p { color: #8892a4; font-size: 0.95rem; }
+    .spinner {
+      width: 40px; height: 40px; border: 4px solid #333;
+      border-top-color: #4ecca3; border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .overlay {
+      position: absolute; color: #eee;
+      background: rgba(26, 26, 46, 0.82);
+      border-radius: 8px; padding: 10px 14px;
+      font-size: 13px; pointer-events: none;
+      backdrop-filter: blur(4px);
+    }
+
+    #info { top: 10px; left: 10px; }
+    #info h3 { color: #4ecca3; font-size: 15px; margin-bottom: 4px; }
+    #info .stat { color: #8892a4; line-height: 1.6; }
+
+    #players-panel { top: 10px; right: 10px; min-width: 130px; }
+    #players-panel h3 { color: #4ecca3; font-size: 14px; margin-bottom: 6px; }
+    .player-entry { padding: 2px 0; display: flex; align-items: center; gap: 6px; font-size: 13px; }
+    .player-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ecca3; flex-shrink: 0; }
+    .no-players { color: #8892a4; font-style: italic; }
+
+    #coords {
+      bottom: 10px; left: 10px;
+      font-family: 'Consolas', 'Courier New', monospace; font-size: 12px;
+    }
+
+    #controls-help {
+      position: absolute; bottom: 10px; right: 10px;
+      color: #555; font-size: 11px; pointer-events: none;
+    }
+
+    #back-link {
+      position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      color: #4ecca3; text-decoration: none; font-size: 13px;
+      pointer-events: auto; z-index: 10;
+      background: rgba(26, 26, 46, 0.82); padding: 6px 14px;
+      border-radius: 6px; backdrop-filter: blur(4px);
+    }
+    #back-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <h2>WebMap</h2>
+  <p id="loading-text">Loading map data...</p>
+</div>
+
+<div id="info" class="overlay">
+  <h3>WebMap</h3>
+  <div class="stat" id="chunk-count">Chunks: 0</div>
+</div>
+
+<div id="players-panel" class="overlay">
+  <h3>Players</h3>
+  <div id="player-list"><span class="no-players">None online</span></div>
+</div>
+
+<div id="coords" class="overlay">Looking at: 0, 64, 0</div>
+
+<div id="controls-help">Left-drag: rotate &middot; Right-drag: pan &middot; Scroll: zoom</div>
+
+<a id="back-link" href="/">&larr; Admin Panel</a>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// -----------------------------------------------------------------------
+// Block color palette (Beta 1.7.3 block IDs)
+// -----------------------------------------------------------------------
+const COLOR_HEX = {
+  1:  0x7D7D7D, // Stone
+  2:  0x56A132, // Grass
+  3:  0x8B6544, // Dirt
+  4:  0x6B6B6B, // Cobblestone
+  5:  0xA08050, // Wooden Planks
+  7:  0x333333, // Bedrock
+  8:  0x2856A8, // Water (flowing)
+  9:  0x2856A8, // Water (still)
+  10: 0xE65C00, // Lava (flowing)
+  11: 0xE65C00, // Lava (still)
+  12: 0xDBD3A0, // Sand
+  13: 0x857F7D, // Gravel
+  14: 0x8F8953, // Gold Ore
+  15: 0x87796C, // Iron Ore
+  16: 0x585858, // Coal Ore
+  17: 0x664C26, // Log
+  18: 0x2D6311, // Leaves
+  19: 0xC4C424, // Sponge
+  20: 0xBDDCE5, // Glass
+  21: 0x647196, // Lapis Ore
+  22: 0x2B4DA6, // Lapis Block
+  23: 0x6B6B6B, // Dispenser
+  24: 0xD1C494, // Sandstone
+  25: 0x664C26, // Note Block
+  26: 0x8B2020, // Bed
+  29: 0x8B8B50, // Sticky Piston
+  33: 0x8B8B6B, // Piston
+  35: 0xE8E8E8, // Wool (white)
+  41: 0xF0D830, // Gold Block
+  42: 0xC8C8C8, // Iron Block
+  43: 0x999999, // Double Stone Slab
+  44: 0x999999, // Stone Slab
+  45: 0x964B3B, // Bricks
+  46: 0xC04040, // TNT
+  47: 0x8A6538, // Bookshelf
+  48: 0x5A6655, // Mossy Cobblestone
+  49: 0x1B0F26, // Obsidian
+  52: 0x3D4852, // Monster Spawner
+  53: 0xA08050, // Oak Stairs
+  54: 0x8A6538, // Chest
+  56: 0x649BA8, // Diamond Ore
+  57: 0x6BD1BF, // Diamond Block
+  58: 0x8A6538, // Crafting Table
+  60: 0x734D30, // Farmland
+  61: 0x6B6B6B, // Furnace
+  62: 0x6B6B6B, // Burning Furnace
+  64: 0x8A6538, // Wooden Door
+  67: 0x6B6B6B, // Cobblestone Stairs
+  71: 0xC8C8C8, // Iron Door
+  73: 0x7F5050, // Redstone Ore
+  74: 0x8B5050, // Glowing Redstone Ore
+  78: 0xECF0F4, // Snow Layer
+  79: 0x8DB3D9, // Ice
+  80: 0xECF0F4, // Snow Block
+  81: 0x267A2E, // Cactus
+  82: 0x9EA3AD, // Clay
+  84: 0x664C26, // Jukebox
+  85: 0xA08050, // Fence
+  86: 0xC07E16, // Pumpkin
+  87: 0x733838, // Netherrack
+  88: 0x5A4033, // Soul Sand
+  89: 0xB39950, // Glowstone
+  91: 0xC08D26, // Jack o'Lantern
+  92: 0xE8E0D0, // Cake
+  96: 0x8A6538, // Trapdoor
+};
+
+const BLOCK_COLORS = {};
+for (const [id, hex] of Object.entries(COLOR_HEX)) {
+  BLOCK_COLORS[parseInt(id)] = [
+    ((hex >> 16) & 255) / 255,
+    ((hex >> 8) & 255) / 255,
+    (hex & 255) / 255
+  ];
+}
+const DEFAULT_COLOR = [0.55, 0.55, 0.55];
+
+function getColor(blockId) {
+  return BLOCK_COLORS[blockId] || DEFAULT_COLOR;
+}
+
+function isVegetation(blockId) {
+  return blockId === 17 || blockId === 18;
+}
+
+// -----------------------------------------------------------------------
+// State
+// -----------------------------------------------------------------------
+let chunks = {};
+let chunkMeshes = {};
+let playerMarkers = {};
+let spawnPoint = { x: 0, y: 64, z: 0 };
+let initialLoad = true;
+const CHUNK_RENDER_RADIUS = 24 * 16;
+const CHUNK_RENDER_RADIUS_SQ = CHUNK_RENDER_RADIUS * CHUNK_RENDER_RADIUS;
+
+// -----------------------------------------------------------------------
+// Three.js scene
+// -----------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x87CEEB);
+scene.fog = new THREE.Fog(0x87CEEB, 500, 2000);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 1, 5000);
+const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
+renderer.sortObjects = false;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.1;
+controls.maxDistance = 2000;
+controls.minDistance = 10;
+controls.maxPolarAngle = Math.PI * 0.48;
+
+// Lighting
+scene.add(new THREE.AmbientLight(0x808090));
+const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+sun.position.set(200, 400, 150);
+scene.add(sun);
+
+const mapMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.FrontSide });
+
+// -----------------------------------------------------------------------
+// Data loading — binary format
+// -----------------------------------------------------------------------
+const MAGIC = 0x574D4150;
+
+
+function readChunkRecord(view, buffer, offset, version) {
+  const cx = view.getInt32(offset); offset += 4;
+  const cz = view.getInt32(offset); offset += 4;
+  const h = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+  const b = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+  const base = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+
+  let mh = new Uint8Array(256);
+  let mb = new Uint8Array(256);
+  let mbase = new Uint8Array(256);
+  let gh = new Uint8Array(256);
+  let gb = new Uint8Array(256);
+  let gbase = new Uint8Array(256);
+
+  if (version >= 6) {
+    mh = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+    mb = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+    mbase = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+    gh = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+    gb = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+    gbase = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+  } else if (version >= 4) {
+    mh = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+    mb = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+    mbase = new Uint8Array(buffer.slice(offset, offset + 256)); offset += 256;
+  }
+
+  return [{ h, b, base, mh, mb, mbase, gh, gb, gbase, cx, cz }, offset];
+}
+
+async function loadMapData() {
+  const loadingText = document.getElementById('loading-text');
+
+  try {
+    const resp = await fetch('/map/data/mapdata.bin', { cache: 'no-store' });
+    if (!resp.ok) {
+      loadingText.textContent = 'Waiting for map data — server needs to generate it...';
+      setTimeout(loadMapData, 5000);
+      return;
+    }
+
+    const buffer = await resp.arrayBuffer();
+    if (buffer.byteLength < 24) {
+      loadingText.textContent = 'Map data too small — retrying...';
+      setTimeout(loadMapData, 5000);
+      return;
+    }
+
+    const view = new DataView(buffer);
+    let offset = 0;
+
+    const magic = view.getInt32(offset); offset += 4;
+    if (magic !== MAGIC) {
+      loadingText.textContent = 'Invalid map data format.';
+      return;
+    }
+
+    const dataVersion = view.getInt32(offset); offset += 4;
+    spawnPoint.x = view.getInt32(offset); offset += 4;
+    spawnPoint.y = view.getInt32(offset); offset += 4;
+    spawnPoint.z = view.getInt32(offset); offset += 4;
+    const chunkCount = view.getInt32(offset); offset += 4;
+
+    if (chunkCount === 0) {
+      loadingText.textContent = 'Map is empty — waiting for chunks to load...';
+      setTimeout(loadMapData, 5000);
+      return;
+    }
+
+    loadingText.textContent = `Building terrain (${chunkCount} chunks)...`;
+
+    // Small delay so the loading text renders
+    await new Promise(r => setTimeout(r, 50));
+
+    const newChunks = {};
+    for (let i = 0; i < chunkCount; i++) {
+      const [chunk, nextOffset] = readChunkRecord(view, buffer, offset, dataVersion);
+      offset = nextOffset;
+      newChunks[chunk.cx + ',' + chunk.cz] = chunk;
+    }
+
+    chunks = newChunks;
+    buildTerrain();
+
+    document.getElementById('loading').classList.add('hidden');
+    document.getElementById('chunk-count').textContent = 'Chunks: ' + chunkCount;
+
+  } catch (e) {
+    loadingText.textContent = 'Error loading map: ' + e.message;
+    setTimeout(loadMapData, 5000);
+  }
+}
+
+// -----------------------------------------------------------------------
+// Terrain mesh building
+// -----------------------------------------------------------------------
+function buildTerrain() {
+  // Dispose old meshes
+  for (const key in chunkMeshes) {
+    disposeChunkMesh(key);
+  }
+  chunkMeshes = {};
+
+  for (const [key, chunk] of Object.entries(chunks)) {
+    const mesh = buildChunkMesh(chunk);
+    if (mesh) {
+      scene.add(mesh);
+      chunkMeshes[key] = mesh;
+    }
+  }
+
+  updateChunkVisibility();
+
+  // Position camera on first load
+  if (initialLoad) {
+    initialLoad = false;
+    camera.position.set(spawnPoint.x + 120, 180, spawnPoint.z + 120);
+    controls.target.set(spawnPoint.x, spawnPoint.y, spawnPoint.z);
+    controls.update();
+  }
+}
+
+function buildChunkMesh(chunk) {
+  const pos = [];
+  const col = [];
+  const cx = chunk.cx, cz = chunk.cz;
+
+  for (let x = 0; x < 16; x++) {
+    for (let z = 0; z < 16; z++) {
+      const idx = x * 16 + z;
+      const wx = cx * 16 + x;
+      const wz = cz * 16 + z;
+      const segments = getColumnSegments(chunk, idx);
+      if (segments.length === 0) continue;
+
+      for (let s = 0; s < segments.length; s++) {
+        const seg = segments[s];
+        const c = getColor(seg.blockId);
+        const sideColor = seg.blockId === 2 ? getColor(3) : c;
+        // Use the true stored segment base so cave mouths and undersides stay closed.
+        const visibleBase = seg.base;
+        const eastNeighbor = getChunkAtLocal(x + 1, z, chunk);
+        const westNeighbor = getChunkAtLocal(x - 1, z, chunk);
+        const southNeighbor = getChunkAtLocal(x, z + 1, chunk);
+        const northNeighbor = getChunkAtLocal(x, z - 1, chunk);
+
+        pushQuad(pos, col,
+          wx, seg.top, wz,     wx, seg.top, wz + 1,
+          wx + 1, seg.top, wz + 1, wx + 1, seg.top, wz,
+          c);
+
+        if (visibleBase < seg.top) {
+          pushQuad(pos, col,
+            wx, visibleBase, wz + 1, wx, visibleBase, wz,
+            wx + 1, visibleBase, wz, wx + 1, visibleBase, wz + 1,
+            c);
+        }
+
+        const neighborSets = [
+          getColumnSegments(eastNeighbor.chunk, eastNeighbor.idx),
+          getColumnSegments(westNeighbor.chunk, westNeighbor.idx),
+          getColumnSegments(southNeighbor.chunk, southNeighbor.idx),
+          getColumnSegments(northNeighbor.chunk, northNeighbor.idx)
+        ];
+
+        for (let d = 0; d < 4; d++) {
+          const covered = neighborSets[d].map(n => [n.base, n.top]);
+          const visible = subtractCoveredRanges(visibleBase, seg.top, covered);
+          for (const [y0, y1] of visible) {
+            if (y0 >= y1) continue;
+            pushSegmentSide(pos, col, d, wx, wz, y0, y1, sideColor);
+          }
+        }
+      }
+    }
+  }
+
+  if (pos.length === 0) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geometry.computeVertexNormals();
+
+  return new THREE.Mesh(geometry, mapMaterial);
+}
+
+function updateChunkVisibility() {
+  const tx = controls.target.x;
+  const tz = controls.target.z;
+
+  for (const [key, mesh] of Object.entries(chunkMeshes)) {
+    const chunk = chunks[key];
+    if (!chunk) {
+      mesh.visible = false;
+      continue;
+    }
+    const centerX = chunk.cx * 16 + 8;
+    const centerZ = chunk.cz * 16 + 8;
+    const dx = centerX - tx;
+    const dz = centerZ - tz;
+    mesh.visible = (dx * dx + dz * dz) <= CHUNK_RENDER_RADIUS_SQ;
+  }
+}
+
+function getChunkAtLocal(lx, lz, chunk) {
+  let src = chunk;
+  if (lx < 0 || lx >= 16 || lz < 0 || lz >= 16) {
+    let ncx = chunk.cx, ncz = chunk.cz;
+    if (lx < 0) { ncx--; lx += 16; }
+    else if (lx >= 16) { ncx++; lx -= 16; }
+    if (lz < 0) { ncz--; lz += 16; }
+    else if (lz >= 16) { ncz++; lz -= 16; }
+    src = chunks[ncx + ',' + ncz] || null;
+  }
+  return { chunk: src, idx: lx * 16 + lz };
+}
+
+function getColumnSegments(chunk, idx) {
+  if (!chunk || idx < 0 || idx >= 256) return [];
+  const segments = [];
+  if (chunk.b[idx] > 0) segments.push({ top: chunk.h[idx] + 1, base: chunk.base[idx], blockId: chunk.b[idx] });
+  if (chunk.mb[idx] > 0) segments.push({ top: chunk.mh[idx] + 1, base: chunk.mbase[idx], blockId: chunk.mb[idx] });
+  if (chunk.gb[idx] > 0) segments.push({ top: chunk.gh[idx] + 1, base: chunk.gbase[idx], blockId: chunk.gb[idx] });
+  return segments;
+}
+
+function subtractCoveredRanges(base, top, covered) {
+  if (covered.length === 0) return [[base, top]];
+  const ranges = covered
+    .map(([s, e]) => [Math.max(base, s), Math.min(top, e)])
+    .filter(([s, e]) => s < e)
+    .sort((a, b) => a[0] - b[0]);
+
+  const visible = [];
+  let cursor = base;
+  for (const [start, end] of ranges) {
+    if (start > cursor) visible.push([cursor, start]);
+    if (end > cursor) cursor = end;
+    if (cursor >= top) break;
+  }
+  if (cursor < top) visible.push([cursor, top]);
+  return visible;
+}
+
+function pushSegmentSide(pos, col, dir, wx, wz, y0, y1, color) {
+  if (dir === 0) pushQuad(pos, col,
+    wx + 1, y0, wz, wx + 1, y1, wz, wx + 1, y1, wz + 1, wx + 1, y0, wz + 1, color);
+  else if (dir === 1) pushQuad(pos, col,
+    wx, y0, wz + 1, wx, y1, wz + 1, wx, y1, wz, wx, y0, wz, color);
+  else if (dir === 2) pushQuad(pos, col,
+    wx + 1, y0, wz + 1, wx + 1, y1, wz + 1, wx, y1, wz + 1, wx, y0, wz + 1, color);
+  else pushQuad(pos, col,
+    wx, y0, wz, wx, y1, wz, wx + 1, y1, wz, wx + 1, y0, wz, color);
+}
+
+function disposeChunkMesh(key) {
+  const mesh = chunkMeshes[key];
+  if (!mesh) return;
+  scene.remove(mesh);
+  mesh.geometry.dispose();
+  delete chunkMeshes[key];
+}
+
+function chunkArrayEquals(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function chunkEquals(a, b) {
+  return a.cx === b.cx
+    && a.cz === b.cz
+    && chunkArrayEquals(a.h, b.h)
+    && chunkArrayEquals(a.b, b.b)
+    && chunkArrayEquals(a.base, b.base)
+    && chunkArrayEquals(a.mh, b.mh)
+    && chunkArrayEquals(a.mb, b.mb)
+    && chunkArrayEquals(a.mbase, b.mbase)
+    && chunkArrayEquals(a.gh, b.gh)
+    && chunkArrayEquals(a.gb, b.gb)
+    && chunkArrayEquals(a.gbase, b.gbase);
+}
+
+function pushQuad(positions, colors,
+                  x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3, c) {
+  positions.push(x0,y0,z0, x1,y1,z1, x2,y2,z2);
+  positions.push(x0,y0,z0, x2,y2,z2, x3,y3,z3);
+  for (let i = 0; i < 6; i++) colors.push(c[0], c[1], c[2]);
+}
+
+// -----------------------------------------------------------------------
+// Player markers
+// -----------------------------------------------------------------------
+async function loadPlayers() {
+  try {
+    const resp = await fetch('/map/data/players.json', { cache: 'no-store' });
+    if (!resp.ok) return;
+    const players = await resp.json();
+
+    const listDiv = document.getElementById('player-list');
+    if (players.length === 0) {
+      listDiv.innerHTML = '<span class="no-players">None online</span>';
+    } else {
+      listDiv.innerHTML = players.map(p =>
+        '<div class="player-entry"><span class="player-dot"></span>' +
+        escHtml(p.name) + '</div>'
+      ).join('');
+    }
+
+    // Remove departed players
+    for (const name in playerMarkers) {
+      if (!players.some(p => p.name === name)) {
+        const marker = playerMarkers[name];
+        scene.remove(marker);
+        marker.traverse(child => {
+          if (child.geometry) child.geometry.dispose();
+          if (child.material) {
+            if (child.material.map) child.material.map.dispose();
+            child.material.dispose();
+          }
+        });
+        delete playerMarkers[name];
+      }
+    }
+
+    // Add / update
+    for (const p of players) {
+      if (!playerMarkers[p.name]) {
+        playerMarkers[p.name] = createPlayerMarker(p.name);
+        scene.add(playerMarkers[p.name]);
+      }
+      playerMarkers[p.name].position.set(p.x, p.y, p.z);
+    }
+  } catch (e) { /* ignore */ }
+}
+
+function createPlayerMarker(name) {
+  const group = new THREE.Group();
+
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(0.6, 1.8, 0.6),
+    new THREE.MeshLambertMaterial({ color: 0x3498db })
+  );
+  body.position.y = 0.9;
+  group.add(body);
+
+  const head = new THREE.Mesh(
+    new THREE.BoxGeometry(0.5, 0.5, 0.5),
+    new THREE.MeshLambertMaterial({ color: 0xE8B97E })
+  );
+  head.position.y = 2.1;
+  group.add(head);
+
+  // Name label sprite
+  const canvas = document.createElement('canvas');
+  canvas.width = 256; canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.font = 'bold 28px Arial';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 4;
+  ctx.strokeText(name, 128, 32);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(name, 128, 32);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  const label = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
+  );
+  label.scale.set(6, 1.5, 1);
+  label.position.y = 3.5;
+  group.add(label);
+
+  return group;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// -----------------------------------------------------------------------
+// Periodic data refresh
+// -----------------------------------------------------------------------
+async function refreshMapData() {
+  try {
+    const resp = await fetch('/map/data/mapdata.bin', { cache: 'no-store' });
+    if (!resp.ok) return;
+
+    const buffer = await resp.arrayBuffer();
+    if (buffer.byteLength < 24) return;
+
+    const view = new DataView(buffer);
+    if (view.getInt32(0) !== MAGIC) return;
+
+    let offset = 4; // skip magic
+    const rVersion = view.getInt32(offset); offset += 4;
+    offset += 12;   // skip spawn
+    const chunkCount = view.getInt32(offset); offset += 4;
+
+    const newChunks = {};
+    for (let i = 0; i < chunkCount; i++) {
+      const [chunk, nextOffset] = readChunkRecord(view, buffer, offset, rVersion);
+      offset = nextOffset;
+      newChunks[chunk.cx + ',' + chunk.cz] = chunk;
+    }
+
+    const newKeys = Object.keys(newChunks);
+    const oldKeys = Object.keys(chunks);
+
+    for (const key of oldKeys) {
+      if (!newChunks[key]) {
+        disposeChunkMesh(key);
+        delete chunks[key];
+      }
+    }
+
+    for (const key of newKeys) {
+      if (!chunks[key] || !chunkEquals(chunks[key], newChunks[key])) {
+        disposeChunkMesh(key);
+        chunks[key] = newChunks[key];
+        const mesh = buildChunkMesh(newChunks[key]);
+        if (mesh) {
+          scene.add(mesh);
+          chunkMeshes[key] = mesh;
+        }
+      }
+    }
+
+    document.getElementById('chunk-count').textContent = 'Chunks: ' + newKeys.length;
+  } catch (e) { /* ignore */ }
+}
+
+// -----------------------------------------------------------------------
+// Animation loop
+// -----------------------------------------------------------------------
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  updateChunkVisibility();
+
+  const t = controls.target;
+  document.getElementById('coords').textContent =
+    'Looking at: ' + Math.round(t.x) + ', ' + Math.round(t.y) + ', ' + Math.round(t.z);
+
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+// -----------------------------------------------------------------------
+// Init
+// -----------------------------------------------------------------------
+animate();
+loadMapData();
+setInterval(loadPlayers, 3000);
+setInterval(refreshMapData, 30000);
+</script>
+</body>
+</html>

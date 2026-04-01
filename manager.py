@@ -10,18 +10,21 @@ Beta 1.7.3 Minecraft Server Manager
 
 from __future__ import annotations
 
-import os
-import sys
-import time
+import base64
+import hashlib
 import json
+import os
+import re
 import signal
 import socket
 import struct
 import subprocess
+import sys
 import threading
-import re
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable
+from urllib.parse import parse_qs
 
 # ---------------------------------------------------------------------------
 # Configuration (override via environment variables)
@@ -35,6 +38,49 @@ MIN_MEMORY = os.environ.get("MC_MIN_MEMORY", "512M")
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "600"))  # 10 min default
 AUTO_START = os.environ.get("AUTO_START", "false").lower() == "true"
 TEMPLATE_DIR = "/server/templates"
+WEBMAP_DIR = os.path.join(MC_DIR, "webmap")
+ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
+_ADMIN_KEY_FROM_ENV = bool(ADMIN_KEY)
+if not ADMIN_KEY:
+    ADMIN_KEY = base64.urlsafe_b64encode(os.urandom(18)).decode()
+ADMIN_TOKEN = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()[:32]
+
+LOGIN_HTML = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Admin Login</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#eee;
+         display:flex;align-items:center;justify-content:center;min-height:100vh}
+    .card{background:#16213e;border-radius:8px;padding:32px;width:340px}
+    h2{color:#4ecca3;margin-bottom:16px;text-align:center}
+    input{width:100%;padding:10px;border-radius:6px;border:1px solid #333;
+          background:#0f3460;color:#eee;font-size:1rem;margin-bottom:14px}
+    input:focus{outline:none;border-color:#4ecca3}
+    button{width:100%;padding:10px;border-radius:6px;border:none;
+           background:#4ecca3;color:#111;font-weight:600;font-size:1rem;cursor:pointer}
+    button:hover{opacity:.9}
+    .error{color:#e94560;font-size:.9rem;margin-bottom:12px;text-align:center}
+    .links{text-align:center;margin-top:16px}
+    .links a{color:#4ecca3;font-size:.9rem}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Admin Login</h2>
+    {error}
+    <form method="POST" action="/api/login">
+      <input type="password" name="key" placeholder="Admin key" autofocus>
+      <button type="submit">Login</button>
+    </form>
+    <div class="links"><a href="/map">View Live Map &rarr;</a></div>
+  </div>
+</body>
+</html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +135,7 @@ class ServerState:
         with self.lock:
             self._log_lines.append(entry)
             if len(self._log_lines) > self._max_log_lines:
-                self._log_lines = self._log_lines[-self._max_log_lines:]
+                self._log_lines = self._log_lines[-self._max_log_lines :]
         print(entry, flush=True)
 
     def get_logs(self, count=100):
@@ -437,18 +483,47 @@ class PanelHandler(BaseHTTPRequestHandler):
         pass
 
     def do_GET(self):
-        if self.path in ("/", ""):
-            self._serve_panel()
-        elif self.path == "/api/status":
-            self._serve_status()
-        elif self.path == "/api/logs":
-            self._serve_logs()
-        elif self.path == "/health":
+        # --- Public routes ---
+        if self.path == "/health":
             self._send_json({"status": "ok"})
+        elif self.path == "/map":
+            self._serve_template("map.html")
+        elif self.path.startswith("/map/data/"):
+            self._serve_webmap_file(self.path[len("/map/data/"):])
+        elif self.path == "/api/logout":
+            self.send_response(302)
+            self.send_header("Set-Cookie", "admin_session=; Path=/; Max-Age=0")
+            self.send_header("Location", "/")
+            self.end_headers()
+        # --- Admin panel (login wall) ---
+        elif self.path in ("/", ""):
+            if self._is_admin():
+                self._serve_panel()
+            else:
+                self._send_login()
+        # --- Admin API (401 if not authed) ---
+        elif self.path.startswith("/api/"):
+            if not self._is_admin():
+                self._send_json({"error": "unauthorized"}, 401)
+                return
+            if self.path == "/api/status":
+                self._serve_status()
+            elif self.path == "/api/logs":
+                self._serve_logs()
+            else:
+                self.send_error(404)
         else:
             self.send_error(404)
 
     def do_POST(self):
+        # Login is always accessible
+        if self.path == "/api/login":
+            self._do_login()
+            return
+        # All other POST routes require auth
+        if not self._is_admin():
+            self._send_json({"error": "unauthorized"}, 401)
+            return
         if self.path == "/api/start":
             if sleep_proxy.active:
                 sleep_proxy.stop()
@@ -471,20 +546,73 @@ class PanelHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    # -- auth --
+
+    def _is_admin(self):
+        cookie = self.headers.get("Cookie", "")
+        for part in cookie.split(";"):
+            part = part.strip()
+            if part.startswith("admin_session="):
+                return part[len("admin_session="):] == ADMIN_TOKEN
+        return False
+
+    def _send_login(self, error=""):
+        replacement = f'<p class="error">{error}</p>' if error else ""
+        self._send_html(LOGIN_HTML.replace("{error}", replacement))
+
+    def _do_login(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode() if length else ""
+        params = parse_qs(body)
+        key = params.get("key", [""])[0]
+        if key == ADMIN_KEY:
+            self.send_response(302)
+            self.send_header(
+                "Set-Cookie",
+                f"admin_session={ADMIN_TOKEN}; Path=/; HttpOnly; SameSite=Strict; Max-Age=604800",
+            )
+            self.send_header("Location", "/")
+            self.end_headers()
+        else:
+            self._send_login("Incorrect admin key.")
+
     # -- helpers --
 
     def _serve_panel(self):
+        self._serve_template("index.html")
+
+    def _serve_template(self, name):
         try:
-            with open(os.path.join(TEMPLATE_DIR, "index.html")) as f:
+            with open(os.path.join(TEMPLATE_DIR, name)) as f:
                 html = f.read()
             self._send_html(html)
         except FileNotFoundError:
-            self.send_error(500, "Template not found")
+            self.send_error(404, "Template not found")
+
+    def _serve_webmap_file(self, filename):
+        # Prevent path traversal
+        if "/" in filename or "\\" in filename or ".." in filename:
+            self.send_error(403)
+            return
+        filepath = os.path.join(WEBMAP_DIR, filename)
+        if not os.path.isfile(filepath):
+            self.send_error(404)
+            return
+        content_type = "application/json" if filename.endswith(".json") else "application/octet-stream"
+        try:
+            with open(filepath, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception:
+            self.send_error(500)
 
     def _serve_status(self):
-        uptime = (
-            int(time.time() - state.start_time) if state.start_time else None
-        )
+        uptime = int(time.time() - state.start_time) if state.start_time else None
         idle_secs = 0
         if state.running and state.player_count == 0:
             idle_secs = int(time.time() - state.last_activity)
@@ -506,9 +634,9 @@ class PanelHandler(BaseHTTPRequestHandler):
     def _serve_logs(self):
         self._send_json({"logs": state.get_logs(100)})
 
-    def _send_json(self, data):
+    def _send_json(self, data, status=200):
         body = json.dumps(data).encode()
-        self.send_response(200)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -563,6 +691,11 @@ def main():
     # Admin web panel (keep this URL to yourself)
     HTTPServer.allow_reuse_address = True
     http = HTTPServer(("0.0.0.0", WEB_PORT), PanelHandler)
+    if _ADMIN_KEY_FROM_ENV:
+        state.add_log("Admin panel protected (using ADMIN_KEY env var)")
+    else:
+        state.add_log(f"Admin panel key (auto-generated): {ADMIN_KEY}")
+        state.add_log("Tip: Set ADMIN_KEY env var in Railway for a persistent key")
     state.add_log(f"Admin panel on port {WEB_PORT}")
 
     try:
