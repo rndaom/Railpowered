@@ -9,7 +9,7 @@ WORKDIR /build
 RUN curl -fSL -o poseidon.jar \
     https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
 
-# Copy all plugin sources
+# Copy all plugin sources (10 plugins, v8)
 COPY plugins/ plugins/
 
 # Build every plugin under plugins/

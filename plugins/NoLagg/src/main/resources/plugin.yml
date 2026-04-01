@@ -1,0 +1,10 @@
+name: NoLagg
+description: Server performance manager - item stacking, spawn limits, TNT buffer, TPS monitor, watchdog
+main: com.betaserver.nolagg.NoLaggPlugin
+version: ${project.version}
+authors:
+  - BetaServer
+commands:
+  lag:
+    description: Server performance commands
+    usage: /lag [clear|clearall|tnt|mem|stats|gc]
