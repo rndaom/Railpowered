@@ -1,0 +1,6 @@
+name: OneSleep
+description: Only one player needs to sleep to skip the night
+main: com.betaserver.onesleep.OneSleepPlugin
+version: ${project.version}
+authors:
+  - BetaServer

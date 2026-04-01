@@ -1,0 +1,10 @@
+name: AFK
+description: Kicks players idle for 10 minutes with no input
+main: com.betaserver.afk.AFKPlugin
+version: ${project.version}
+authors:
+  - BetaServer
+commands:
+  bypassafk:
+    description: Toggle AFK kick bypass (ops only)
+    usage: /bypassafk

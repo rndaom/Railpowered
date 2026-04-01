@@ -1,6 +1,0 @@
-name: BetaFix
-description: Fixes Beta 1.7.3 gameplay inconsistencies
-main: com.betaserver.betafix.BetaFixPlugin
-version: ${project.version}
-authors:
-  - BetaServer

@@ -1,0 +1,10 @@
+name: MapArt
+description: Custom map art from image URLs
+main: com.betaserver.mapart.MapArtPlugin
+version: ${project.version}
+authors:
+  - BetaServer
+commands:
+  mapart:
+    description: Paint a map with an image from a URL
+    usage: /mapart <image-url>
