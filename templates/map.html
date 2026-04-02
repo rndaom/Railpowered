@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>WebMap — Beta 1.7.3</title>
+  <title>WebMap - Beta 1.7.3</title>
   <style>
     *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
     body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', system-ui, sans-serif; }
@@ -72,6 +72,8 @@
 <div id="info" class="overlay">
   <h3>WebMap</h3>
   <div class="stat" id="chunk-count">Chunks: 0</div>
+  <div class="stat" id="time-status">Time: --:--</div>
+  <div class="stat" id="update-status">Live updates: waiting</div>
 </div>
 
 <div id="players-panel" class="overlay">
@@ -97,81 +99,82 @@
 <script type="module">
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 // -----------------------------------------------------------------------
 // Block color palette (Beta 1.7.3 block IDs)
 // -----------------------------------------------------------------------
 const COLOR_HEX = {
-  1:  0x7D7D7D, // Stone
-  2:  0x56A132, // Grass
-  3:  0x8B6544, // Dirt
-  4:  0x6B6B6B, // Cobblestone
-  5:  0xA08050, // Wooden Planks
-  7:  0x333333, // Bedrock
-  8:  0x2856A8, // Water (flowing)
-  9:  0x2856A8, // Water (still)
-  10: 0xE65C00, // Lava (flowing)
-  11: 0xE65C00, // Lava (still)
-  12: 0xDBD3A0, // Sand
-  13: 0x857F7D, // Gravel
-  14: 0x8F8953, // Gold Ore
-  15: 0x87796C, // Iron Ore
-  16: 0x585858, // Coal Ore
-  17: 0x664C26, // Log
-  18: 0x2D6311, // Leaves
-  19: 0xC4C424, // Sponge
-  20: 0xBDDCE5, // Glass
-  21: 0x647196, // Lapis Ore
-  22: 0x2B4DA6, // Lapis Block
-  23: 0x6B6B6B, // Dispenser
-  24: 0xD1C494, // Sandstone
-  25: 0x664C26, // Note Block
-  26: 0x8B2020, // Bed
-  29: 0x8B8B50, // Sticky Piston
-  33: 0x8B8B6B, // Piston
-  35: 0xE8E8E8, // Wool (white)
-  41: 0xF0D830, // Gold Block
-  42: 0xC8C8C8, // Iron Block
-  43: 0x999999, // Double Stone Slab
-  44: 0x999999, // Stone Slab
-  45: 0x964B3B, // Bricks
-  46: 0xC04040, // TNT
-  47: 0x8A6538, // Bookshelf
-  48: 0x5A6655, // Mossy Cobblestone
-  49: 0x1B0F26, // Obsidian
-  52: 0x3D4852, // Monster Spawner
-  53: 0xA08050, // Oak Stairs
-  54: 0x8A6538, // Chest
-  56: 0x649BA8, // Diamond Ore
-  57: 0x6BD1BF, // Diamond Block
-  58: 0x8A6538, // Crafting Table
-  60: 0x734D30, // Farmland
-  61: 0x6B6B6B, // Furnace
-  62: 0x6B6B6B, // Burning Furnace
-  64: 0x8A6538, // Wooden Door
-  67: 0x6B6B6B, // Cobblestone Stairs
-  71: 0xC8C8C8, // Iron Door
-  73: 0x7F5050, // Redstone Ore
-  74: 0x8B5050, // Glowing Redstone Ore
-  78: 0xECF0F4, // Snow Layer
-  79: 0x8DB3D9, // Ice
-  80: 0xECF0F4, // Snow Block
-  81: 0x267A2E, // Cactus
-  82: 0x9EA3AD, // Clay
-  84: 0x664C26, // Jukebox
-  85: 0xA08050, // Fence
-  86: 0xC07E16, // Pumpkin
-  87: 0x733838, // Netherrack
-  88: 0x5A4033, // Soul Sand
-  89: 0xB39950, // Glowstone
-  91: 0xC08D26, // Jack o'Lantern
-  92: 0xE8E0D0, // Cake
-  96: 0x8A6538, // Trapdoor
+  1:  0x7D7D7D,
+  2:  0x56A132,
+  3:  0x8B6544,
+  4:  0x6B6B6B,
+  5:  0xA08050,
+  7:  0x333333,
+  8:  0x2856A8,
+  9:  0x2856A8,
+  10: 0xE65C00,
+  11: 0xE65C00,
+  12: 0xDBD3A0,
+  13: 0x857F7D,
+  14: 0x8F8953,
+  15: 0x87796C,
+  16: 0x585858,
+  17: 0x664C26,
+  18: 0x2D6311,
+  19: 0xC4C424,
+  20: 0xBDDCE5,
+  21: 0x647196,
+  22: 0x2B4DA6,
+  23: 0x6B6B6B,
+  24: 0xD1C494,
+  25: 0x664C26,
+  26: 0x8B2020,
+  29: 0x8B8B50,
+  33: 0x8B8B6B,
+  35: 0xE8E8E8,
+  41: 0xF0D830,
+  42: 0xC8C8C8,
+  43: 0x999999,
+  44: 0x999999,
+  45: 0x964B3B,
+  46: 0xC04040,
+  47: 0x8A6538,
+  48: 0x5A6655,
+  49: 0x1B0F26,
+  52: 0x3D4852,
+  53: 0xA08050,
+  54: 0x8A6538,
+  56: 0x649BA8,
+  57: 0x6BD1BF,
+  58: 0x8A6538,
+  60: 0x734D30,
+  61: 0x6B6B6B,
+  62: 0x6B6B6B,
+  64: 0x8A6538,
+  67: 0x6B6B6B,
+  71: 0xC8C8C8,
+  73: 0x7F5050,
+  74: 0x8B5050,
+  78: 0xECF0F4,
+  79: 0x8DB3D9,
+  80: 0xECF0F4,
+  81: 0x267A2E,
+  82: 0x9EA3AD,
+  84: 0x664C26,
+  85: 0xA08050,
+  86: 0xC07E16,
+  87: 0x733838,
+  88: 0x5A4033,
+  89: 0xB39950,
+  91: 0xC08D26,
+  92: 0xE8E0D0,
+  96: 0x8A6538
 };
 
 const BLOCK_COLORS = {};
 for (const [id, hex] of Object.entries(COLOR_HEX)) {
-  BLOCK_COLORS[parseInt(id)] = [
+  BLOCK_COLORS[parseInt(id, 10)] = [
     ((hex >> 16) & 255) / 255,
     ((hex >> 8) & 255) / 255,
     (hex & 255) / 255
@@ -183,33 +186,57 @@ function getColor(blockId) {
   return BLOCK_COLORS[blockId] || DEFAULT_COLOR;
 }
 
-function isVegetation(blockId) {
-  return blockId === 17 || blockId === 18;
-}
+// -----------------------------------------------------------------------
+// Cached DOM
+// -----------------------------------------------------------------------
+const loadingEl = document.getElementById('loading');
+const loadingTextEl = document.getElementById('loading-text');
+const chunkCountEl = document.getElementById('chunk-count');
+const timeStatusEl = document.getElementById('time-status');
+const updateStatusEl = document.getElementById('update-status');
+const playerListEl = document.getElementById('player-list');
+const coordsEl = document.getElementById('coords');
 
 // -----------------------------------------------------------------------
 // State
 // -----------------------------------------------------------------------
 let chunks = {};
-let chunkMeshes = {};
+let regionMeshes = {};
 let playerMarkers = {};
 let spawnPoint = { x: 0, y: 64, z: 0 };
 let initialLoad = true;
+let lastChunkUpdateRevision = -1;
+let worldState = { time: 6000, storm: false, receivedAtMs: performance.now(), loaded: false };
 const CHUNK_RENDER_RADIUS = 24 * 16;
 const CHUNK_RENDER_RADIUS_SQ = CHUNK_RENDER_RADIUS * CHUNK_RENDER_RADIUS;
+const REGION_SIZE_CHUNKS = 4;
+const REGION_SIZE_BLOCKS = REGION_SIZE_CHUNKS * 16;
+const regionBuildQueue = [];
+const queuedRegionKeys = new Set();
+const chunkUpdateEffects = [];
+const skinTextureCache = new Map();
+let initialBuildPending = false;
+let queuedRegionTotal = 0;
+let builtRegionCount = 0;
+let lastVisibleTargetChunkX = Number.NaN;
+let lastVisibleTargetChunkZ = Number.NaN;
+let lastCoordsUpdate = 0;
+let lastCoordsText = '';
+let lastFrameTime = performance.now();
+let playerPollInFlight = false;
+let worldPollInFlight = false;
+let chunkUpdatePollInFlight = false;
 
 // -----------------------------------------------------------------------
 // Three.js scene
 // -----------------------------------------------------------------------
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87CEEB);
-scene.fog = new THREE.Fog(0x87CEEB, 500, 2000);
-
 const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 1, 5000);
 const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
 renderer.setSize(innerWidth, innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
 renderer.sortObjects = false;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 document.body.appendChild(renderer.domElement);
 
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -217,21 +244,199 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.1;
 controls.maxDistance = 2000;
 controls.minDistance = 10;
-controls.maxPolarAngle = Math.PI * 0.48;
+controls.maxPolarAngle = Math.PI * 0.49;
 
-// Lighting
-scene.add(new THREE.AmbientLight(0x808090));
-const sun = new THREE.DirectionalLight(0xffffff, 0.6);
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.7);
+scene.add(ambientLight);
+const skyFillLight = new THREE.HemisphereLight(0x9fd3ff, 0x2d2418, 0.65);
+scene.add(skyFillLight);
+const sun = new THREE.DirectionalLight(0xfff0d7, 1.0);
 sun.position.set(200, 400, 150);
 scene.add(sun);
+const moon = new THREE.DirectionalLight(0x8fb4ff, 0.12);
+moon.position.set(-220, -260, -180);
+scene.add(moon);
+
+const skyGroup = new THREE.Group();
+scene.add(skyGroup);
 
 const mapMaterial = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.FrontSide });
+const nightSky = new THREE.Color(0x07111d);
+const dawnSky = new THREE.Color(0x5d7db7);
+const daySky = new THREE.Color(0x87ceeb);
+const nightFog = new THREE.Color(0x0a1522);
+const dayFog = new THREE.Color(0xaed4f0);
+scene.background = daySky.clone();
+scene.fog = new THREE.Fog(dayFog.clone(), 500, 2000);
+
+const UPDATE_MAGIC = 0x574D5550;
+
+function createPixelTexture(draw, width = 16, height = 16) {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  draw(ctx, width, height);
+  return configureSkinTexture(new THREE.CanvasTexture(canvas));
+}
+
+function createSunTexture() {
+  return createPixelTexture((ctx) => {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(2, 2, 12, 12);
+  });
+}
+
+function createMoonTexture() {
+  return createPixelTexture((ctx) => {
+    ctx.clearRect(0, 0, 16, 16);
+    ctx.fillStyle = '#72788d';
+    ctx.fillRect(0, 0, 16, 16);
+    ctx.fillStyle = '#c8d1eb';
+    ctx.fillRect(5, 0, 6, 16);
+    ctx.fillRect(11, 0, 2, 16);
+    ctx.fillStyle = '#a6afc9';
+    ctx.fillRect(2, 0, 3, 16);
+    ctx.fillRect(13, 0, 2, 16);
+    ctx.fillStyle = '#7f869d';
+    ctx.fillRect(0, 0, 2, 16);
+    ctx.fillRect(15, 0, 1, 16);
+    ctx.fillStyle = '#8d94aa';
+    ctx.fillRect(6, 2, 2, 2);
+    ctx.fillRect(9, 5, 2, 2);
+    ctx.fillRect(7, 10, 3, 3);
+  });
+}
+
+function createCelestialPlane(texture, size) {
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(size, size),
+    new THREE.MeshBasicMaterial({
+      map: texture,
+      color: 0xffffff,
+      transparent: true,
+      alphaTest: 0.1,
+      depthTest: true,
+      depthWrite: false,
+      fog: false,
+      toneMapped: false
+    })
+  );
+  return mesh;
+}
+
+function createStarField() {
+  const count = 160;
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const radius = 1450 + Math.random() * 300;
+    const height = 400 + Math.random() * 650;
+    positions[i * 3 + 0] = Math.cos(angle) * radius;
+    positions[i * 3 + 1] = height;
+    positions[i * 3 + 2] = Math.sin(angle) * radius;
+    const tint = 0.84 + Math.random() * 0.16;
+    colors[i * 3 + 0] = tint;
+    colors[i * 3 + 1] = tint;
+    colors[i * 3 + 2] = tint;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return new THREE.Points(geometry, new THREE.PointsMaterial({
+    size: 4,
+    sizeAttenuation: false,
+    transparent: true,
+    opacity: 0,
+    vertexColors: true,
+    depthWrite: false,
+    depthTest: true
+  }));
+}
+
+const CLOUD_PATTERNS = [
+  ['0011111000','0111111110','1111111111','0111111110','0011111100'],
+  ['000111110000','001111111000','011111111100','001111111000','000111110000'],
+  ['001111111000','011111111110','111111111111','011111111100'],
+  ['0001111000','0011111100','0111111110','0011111100','0001111000'],
+  ['0011110000','0111111100','1111111110','0111111111','0011111100']
+];
+const cloudMaterial = new THREE.MeshBasicMaterial({
+  color: 0xf6fbff,
+  transparent: true,
+  opacity: 0.78,
+  depthTest: true,
+  depthWrite: true,
+  fog: false
+});
+
+function createCloudPatternMesh(pattern) {
+  const group = new THREE.Group();
+  const rows = pattern.length;
+  const geometries = [];
+  for (let z = 0; z < rows; z++) {
+    const cols = pattern[z].length;
+    let runStart = -1;
+    for (let x = 0; x <= cols; x++) {
+      const filled = x < cols && pattern[z].charAt(x) === '1';
+      if (filled && runStart === -1) {
+        runStart = x;
+      } else if (!filled && runStart !== -1) {
+        const runLength = x - runStart;
+        const geometry = new THREE.BoxGeometry(runLength * 8, 2.5, 8);
+        const centerX = runStart + runLength * 0.5;
+        geometry.translate((centerX - cols * 0.5) * 8, 0, (z - rows * 0.5) * 8);
+        geometries.push(geometry);
+        runStart = -1;
+      }
+    }
+  }
+
+  if (geometries.length > 0) {
+    const merged = mergeGeometries(geometries, false);
+    geometries.forEach((geometry) => geometry.dispose());
+    const mesh = new THREE.Mesh(merged, cloudMaterial.clone());
+    mesh.renderOrder = 1;
+    group.add(mesh);
+  }
+
+  return group;
+}
+
+function createCloudLayer() {
+  const layer = new THREE.Group();
+  const placements = [
+    [-340, -260, 0.9, 0], [-220, -120, 0.72, 1], [-80, -320, 0.64, 2],
+    [40, -180, 0.8, 3], [170, -290, 0.58, 4], [320, -110, 0.76, 0],
+    [-300, 60, 0.66, 1], [-140, 180, 0.82, 2], [10, 100, 0.6, 3],
+    [180, 220, 0.7, 4], [340, 80, 0.55, 0], [-30, 300, 0.74, 1]
+  ];
+  for (const [x, z, speed, patternIndex] of placements) {
+    const cloud = createCloudPatternMesh(CLOUD_PATTERNS[patternIndex]);
+    cloud.position.set(x, 148, z);
+    cloud.userData.baseX = x;
+    cloud.userData.baseZ = z;
+    cloud.userData.speed = speed;
+    layer.add(cloud);
+  }
+  return layer;
+}
+
+const cloudLayer = createCloudLayer();
+const sunSprite = createCelestialPlane(createSunTexture(), 130);
+const moonSprite = createCelestialPlane(createMoonTexture(), 110);
+const stars = createStarField();
+scene.add(cloudLayer);
+skyGroup.add(stars);
+skyGroup.add(sunSprite);
+skyGroup.add(moonSprite);
 
 // -----------------------------------------------------------------------
-// Data loading — binary format
+// Data loading - binary format
 // -----------------------------------------------------------------------
 const MAGIC = 0x574D4150;
-
 
 function readChunkRecord(view, buffer, offset, version) {
   const cx = view.getInt32(offset); offset += 4;
@@ -264,19 +469,17 @@ function readChunkRecord(view, buffer, offset, version) {
 }
 
 async function loadMapData() {
-  const loadingText = document.getElementById('loading-text');
-
   try {
     const resp = await fetch('/map/data/mapdata.bin', { cache: 'no-store' });
     if (!resp.ok) {
-      loadingText.textContent = 'Waiting for map data — server needs to generate it...';
+      loadingTextEl.textContent = 'Waiting for map data - server needs to generate it...';
       setTimeout(loadMapData, 5000);
       return;
     }
 
     const buffer = await resp.arrayBuffer();
     if (buffer.byteLength < 24) {
-      loadingText.textContent = 'Map data too small — retrying...';
+      loadingTextEl.textContent = 'Map data too small - retrying...';
       setTimeout(loadMapData, 5000);
       return;
     }
@@ -286,7 +489,7 @@ async function loadMapData() {
 
     const magic = view.getInt32(offset); offset += 4;
     if (magic !== MAGIC) {
-      loadingText.textContent = 'Invalid map data format.';
+      loadingTextEl.textContent = 'Invalid map data format.';
       return;
     }
 
@@ -297,15 +500,13 @@ async function loadMapData() {
     const chunkCount = view.getInt32(offset); offset += 4;
 
     if (chunkCount === 0) {
-      loadingText.textContent = 'Map is empty — waiting for chunks to load...';
+      loadingTextEl.textContent = 'Map is empty - waiting for chunks to load...';
       setTimeout(loadMapData, 5000);
       return;
     }
 
-    loadingText.textContent = `Building terrain (${chunkCount} chunks)...`;
-
-    // Small delay so the loading text renders
-    await new Promise(r => setTimeout(r, 50));
+    loadingTextEl.textContent = `Building terrain (${chunkCount} chunks)...`;
+    await new Promise(resolve => setTimeout(resolve, 50));
 
     const newChunks = {};
     for (let i = 0; i < chunkCount; i++) {
@@ -316,12 +517,10 @@ async function loadMapData() {
 
     chunks = newChunks;
     buildTerrain();
-
-    document.getElementById('loading').classList.add('hidden');
-    document.getElementById('chunk-count').textContent = 'Chunks: ' + chunkCount;
-
+    chunkCountEl.textContent = 'Chunks: ' + chunkCount;
+    updateStatusEl.textContent = 'Live updates: connected';
   } catch (e) {
-    loadingText.textContent = 'Error loading map: ' + e.message;
+    loadingTextEl.textContent = 'Error loading map: ' + e.message;
     setTimeout(loadMapData, 5000);
   }
 }
@@ -329,119 +528,112 @@ async function loadMapData() {
 // -----------------------------------------------------------------------
 // Terrain mesh building
 // -----------------------------------------------------------------------
+function getRegionCoord(chunkCoord) {
+  return Math.floor(chunkCoord / REGION_SIZE_CHUNKS);
+}
+
+function getRegionKey(rx, rz) {
+  return rx + ',' + rz;
+}
+
+function getRegionKeyForChunk(cx, cz) {
+  return getRegionKey(getRegionCoord(cx), getRegionCoord(cz));
+}
+
+function clearRegionBuildQueue() {
+  regionBuildQueue.length = 0;
+  queuedRegionKeys.clear();
+  initialBuildPending = false;
+  queuedRegionTotal = 0;
+  builtRegionCount = 0;
+}
+
+function disposeRegionMesh(key) {
+  const mesh = regionMeshes[key];
+  if (!mesh) return;
+  scene.remove(mesh);
+  mesh.geometry.dispose();
+  delete regionMeshes[key];
+}
+
+function disposeAllRegionMeshes() {
+  for (const key in regionMeshes) {
+    disposeRegionMesh(key);
+  }
+  regionMeshes = {};
+}
+
+function queueRegionBuild(rx, rz) {
+  const key = getRegionKey(rx, rz);
+  if (queuedRegionKeys.has(key)) return;
+  queuedRegionKeys.add(key);
+  regionBuildQueue.push({ key, rx, rz });
+}
+
+function queueAllRegionBuilds(showLoading) {
+  const seen = new Set();
+  const queued = [];
+  const targetChunkX = Math.floor(controls.target.x / 16);
+  const targetChunkZ = Math.floor(controls.target.z / 16);
+
+  for (const chunk of Object.values(chunks)) {
+    const rx = getRegionCoord(chunk.cx);
+    const rz = getRegionCoord(chunk.cz);
+    const key = getRegionKey(rx, rz);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    queued.push({ key, rx, rz });
+  }
+
+  queued.sort((a, b) => {
+    const adx = a.rx * REGION_SIZE_CHUNKS + REGION_SIZE_CHUNKS * 0.5 - targetChunkX;
+    const adz = a.rz * REGION_SIZE_CHUNKS + REGION_SIZE_CHUNKS * 0.5 - targetChunkZ;
+    const bdx = b.rx * REGION_SIZE_CHUNKS + REGION_SIZE_CHUNKS * 0.5 - targetChunkX;
+    const bdz = b.rz * REGION_SIZE_CHUNKS + REGION_SIZE_CHUNKS * 0.5 - targetChunkZ;
+    return (adx * adx + adz * adz) - (bdx * bdx + bdz * bdz);
+  });
+
+  queuedRegionTotal = queued.length;
+  builtRegionCount = 0;
+  initialBuildPending = showLoading && queued.length > 0;
+
+  if (initialBuildPending) {
+    loadingTextEl.textContent = `Building terrain (0/${queuedRegionTotal} regions)...`;
+    loadingEl.classList.remove('hidden');
+  } else if (showLoading) {
+    loadingEl.classList.add('hidden');
+  }
+
+  for (const region of queued) {
+    queueRegionBuild(region.rx, region.rz);
+  }
+}
+
+function markDirtyRegionsForChunk(dirtyRegions, cx, cz) {
+  for (const [dx, dz] of [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    dirtyRegions.add(getRegionKeyForChunk(cx + dx, cz + dz));
+  }
+}
+
 function buildTerrain() {
-  // Dispose old meshes
-  for (const key in chunkMeshes) {
-    disposeChunkMesh(key);
-  }
-  chunkMeshes = {};
-
-  for (const [key, chunk] of Object.entries(chunks)) {
-    const mesh = buildChunkMesh(chunk);
-    if (mesh) {
-      scene.add(mesh);
-      chunkMeshes[key] = mesh;
-    }
-  }
-
-  updateChunkVisibility();
-
-  // Position camera on first load
   if (initialLoad) {
     initialLoad = false;
     camera.position.set(spawnPoint.x + 120, 180, spawnPoint.z + 120);
     controls.target.set(spawnPoint.x, spawnPoint.y, spawnPoint.z);
     controls.update();
   }
-}
 
-function buildChunkMesh(chunk) {
-  const pos = [];
-  const col = [];
-  const cx = chunk.cx, cz = chunk.cz;
-
-  for (let x = 0; x < 16; x++) {
-    for (let z = 0; z < 16; z++) {
-      const idx = x * 16 + z;
-      const wx = cx * 16 + x;
-      const wz = cz * 16 + z;
-      const segments = getColumnSegments(chunk, idx);
-      if (segments.length === 0) continue;
-
-      for (let s = 0; s < segments.length; s++) {
-        const seg = segments[s];
-        const c = getColor(seg.blockId);
-        const sideColor = seg.blockId === 2 ? getColor(3) : c;
-        // Use the true stored segment base so cave mouths and undersides stay closed.
-        const visibleBase = seg.base;
-        const eastNeighbor = getChunkAtLocal(x + 1, z, chunk);
-        const westNeighbor = getChunkAtLocal(x - 1, z, chunk);
-        const southNeighbor = getChunkAtLocal(x, z + 1, chunk);
-        const northNeighbor = getChunkAtLocal(x, z - 1, chunk);
-
-        pushQuad(pos, col,
-          wx, seg.top, wz,     wx, seg.top, wz + 1,
-          wx + 1, seg.top, wz + 1, wx + 1, seg.top, wz,
-          c);
-
-        if (visibleBase < seg.top) {
-          pushQuad(pos, col,
-            wx, visibleBase, wz + 1, wx, visibleBase, wz,
-            wx + 1, visibleBase, wz, wx + 1, visibleBase, wz + 1,
-            c);
-        }
-
-        const neighborSets = [
-          getColumnSegments(eastNeighbor.chunk, eastNeighbor.idx),
-          getColumnSegments(westNeighbor.chunk, westNeighbor.idx),
-          getColumnSegments(southNeighbor.chunk, southNeighbor.idx),
-          getColumnSegments(northNeighbor.chunk, northNeighbor.idx)
-        ];
-
-        for (let d = 0; d < 4; d++) {
-          const covered = neighborSets[d].map(n => [n.base, n.top]);
-          const visible = subtractCoveredRanges(visibleBase, seg.top, covered);
-          for (const [y0, y1] of visible) {
-            if (y0 >= y1) continue;
-            pushSegmentSide(pos, col, d, wx, wz, y0, y1, sideColor);
-          }
-        }
-      }
-    }
-  }
-
-  if (pos.length === 0) return null;
-
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-  geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
-  geometry.computeVertexNormals();
-
-  return new THREE.Mesh(geometry, mapMaterial);
-}
-
-function updateChunkVisibility() {
-  const tx = controls.target.x;
-  const tz = controls.target.z;
-
-  for (const [key, mesh] of Object.entries(chunkMeshes)) {
-    const chunk = chunks[key];
-    if (!chunk) {
-      mesh.visible = false;
-      continue;
-    }
-    const centerX = chunk.cx * 16 + 8;
-    const centerZ = chunk.cz * 16 + 8;
-    const dx = centerX - tx;
-    const dz = centerZ - tz;
-    mesh.visible = (dx * dx + dz * dz) <= CHUNK_RENDER_RADIUS_SQ;
-  }
+  disposeAllRegionMeshes();
+  clearRegionBuildQueue();
+  queueAllRegionBuilds(true);
+  updateRegionVisibility(true);
 }
 
 function getChunkAtLocal(lx, lz, chunk) {
   let src = chunk;
   if (lx < 0 || lx >= 16 || lz < 0 || lz >= 16) {
-    let ncx = chunk.cx, ncz = chunk.cz;
+    let ncx = chunk.cx;
+    let ncz = chunk.cz;
     if (lx < 0) { ncx--; lx += 16; }
     else if (lx >= 16) { ncx++; lx -= 16; }
     if (lz < 0) { ncz--; lz += 16; }
@@ -478,6 +670,13 @@ function subtractCoveredRanges(base, top, covered) {
   return visible;
 }
 
+function pushQuad(positions, colors,
+                  x0, y0, z0, x1, y1, z1, x2, y2, z2, x3, y3, z3, c) {
+  positions.push(x0, y0, z0, x1, y1, z1, x2, y2, z2);
+  positions.push(x0, y0, z0, x2, y2, z2, x3, y3, z3);
+  for (let i = 0; i < 6; i++) colors.push(c[0], c[1], c[2]);
+}
+
 function pushSegmentSide(pos, col, dir, wx, wz, y0, y1, color) {
   if (dir === 0) pushQuad(pos, col,
     wx + 1, y0, wz, wx + 1, y1, wz, wx + 1, y1, wz + 1, wx + 1, y0, wz + 1, color);
@@ -489,12 +688,155 @@ function pushSegmentSide(pos, col, dir, wx, wz, y0, y1, color) {
     wx, y0, wz, wx, y1, wz, wx + 1, y1, wz, wx + 1, y0, wz, color);
 }
 
-function disposeChunkMesh(key) {
-  const mesh = chunkMeshes[key];
+function appendChunkGeometry(pos, col, chunk) {
+  const cx = chunk.cx;
+  const cz = chunk.cz;
+
+  for (let x = 0; x < 16; x++) {
+    for (let z = 0; z < 16; z++) {
+      const idx = x * 16 + z;
+      const wx = cx * 16 + x;
+      const wz = cz * 16 + z;
+      const segments = getColumnSegments(chunk, idx);
+      if (segments.length === 0) continue;
+
+      for (const seg of segments) {
+        const topColor = getColor(seg.blockId);
+        const sideColor = seg.blockId === 2 ? getColor(3) : topColor;
+        const visibleBase = seg.base;
+        const eastNeighbor = getChunkAtLocal(x + 1, z, chunk);
+        const westNeighbor = getChunkAtLocal(x - 1, z, chunk);
+        const southNeighbor = getChunkAtLocal(x, z + 1, chunk);
+        const northNeighbor = getChunkAtLocal(x, z - 1, chunk);
+
+        pushQuad(pos, col,
+          wx, seg.top, wz, wx, seg.top, wz + 1,
+          wx + 1, seg.top, wz + 1, wx + 1, seg.top, wz,
+          topColor);
+
+        if (visibleBase < seg.top) {
+          pushQuad(pos, col,
+            wx, visibleBase, wz + 1, wx, visibleBase, wz,
+            wx + 1, visibleBase, wz, wx + 1, visibleBase, wz + 1,
+            topColor);
+        }
+
+        const neighborSets = [
+          getColumnSegments(eastNeighbor.chunk, eastNeighbor.idx),
+          getColumnSegments(westNeighbor.chunk, westNeighbor.idx),
+          getColumnSegments(southNeighbor.chunk, southNeighbor.idx),
+          getColumnSegments(northNeighbor.chunk, northNeighbor.idx)
+        ];
+
+        for (let d = 0; d < 4; d++) {
+          const covered = neighborSets[d].map(neighbor => [neighbor.base, neighbor.top]);
+          const visible = subtractCoveredRanges(visibleBase, seg.top, covered);
+          for (const [y0, y1] of visible) {
+            if (y0 >= y1) continue;
+            pushSegmentSide(pos, col, d, wx, wz, y0, y1, sideColor);
+          }
+        }
+      }
+    }
+  }
+}
+
+function buildRegionMesh(rx, rz) {
+  const pos = [];
+  const col = [];
+  const startChunkX = rx * REGION_SIZE_CHUNKS;
+  const startChunkZ = rz * REGION_SIZE_CHUNKS;
+
+  for (let x = 0; x < REGION_SIZE_CHUNKS; x++) {
+    for (let z = 0; z < REGION_SIZE_CHUNKS; z++) {
+      const chunk = chunks[(startChunkX + x) + ',' + (startChunkZ + z)];
+      if (chunk) appendChunkGeometry(pos, col, chunk);
+    }
+  }
+
+  if (pos.length === 0) return null;
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geometry.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  const mesh = new THREE.Mesh(geometry, mapMaterial);
+  mesh.matrixAutoUpdate = false;
+  mesh.updateMatrix();
+  mesh.userData = { rx, rz };
+  mesh.visible = isRegionVisible(rx, rz, controls.target.x, controls.target.z);
+  return mesh;
+}
+
+function rebuildRegionMesh(rx, rz) {
+  const key = getRegionKey(rx, rz);
+  disposeRegionMesh(key);
+  const mesh = buildRegionMesh(rx, rz);
   if (!mesh) return;
-  scene.remove(mesh);
-  mesh.geometry.dispose();
-  delete chunkMeshes[key];
+  scene.add(mesh);
+  regionMeshes[key] = mesh;
+}
+
+function regionDistanceSq(rx, rz, tx, tz) {
+  const minX = rx * REGION_SIZE_BLOCKS;
+  const minZ = rz * REGION_SIZE_BLOCKS;
+  const maxX = minX + REGION_SIZE_BLOCKS;
+  const maxZ = minZ + REGION_SIZE_BLOCKS;
+  const dx = tx < minX ? minX - tx : (tx > maxX ? tx - maxX : 0);
+  const dz = tz < minZ ? minZ - tz : (tz > maxZ ? tz - maxZ : 0);
+  return dx * dx + dz * dz;
+}
+
+function isRegionVisible(rx, rz, tx, tz) {
+  return regionDistanceSq(rx, rz, tx, tz) <= CHUNK_RENDER_RADIUS_SQ;
+}
+
+function updateRegionVisibility(force) {
+  const targetChunkX = Math.floor(controls.target.x / 16);
+  const targetChunkZ = Math.floor(controls.target.z / 16);
+  if (!force && targetChunkX === lastVisibleTargetChunkX && targetChunkZ === lastVisibleTargetChunkZ) {
+    return;
+  }
+
+  lastVisibleTargetChunkX = targetChunkX;
+  lastVisibleTargetChunkZ = targetChunkZ;
+
+  const tx = controls.target.x;
+  const tz = controls.target.z;
+  for (const mesh of Object.values(regionMeshes)) {
+    mesh.visible = isRegionVisible(mesh.userData.rx, mesh.userData.rz, tx, tz);
+  }
+}
+
+function processRegionBuildQueue() {
+  if (regionBuildQueue.length === 0) return;
+
+  const budgetMs = initialBuildPending ? 12 : 6;
+  const start = performance.now();
+  let rebuilt = false;
+
+  while (regionBuildQueue.length > 0 && (performance.now() - start) < budgetMs) {
+    const region = regionBuildQueue.shift();
+    queuedRegionKeys.delete(region.key);
+    rebuildRegionMesh(region.rx, region.rz);
+    rebuilt = true;
+
+    if (initialBuildPending) {
+      builtRegionCount++;
+      loadingTextEl.textContent = `Building terrain (${builtRegionCount}/${queuedRegionTotal} regions)...`;
+    }
+  }
+
+  if (rebuilt) {
+    updateRegionVisibility(true);
+  }
+
+  if (initialBuildPending && regionBuildQueue.length === 0) {
+    initialBuildPending = false;
+    loadingEl.classList.add('hidden');
+  }
 }
 
 function chunkArrayEquals(a, b) {
@@ -519,102 +861,333 @@ function chunkEquals(a, b) {
     && chunkArrayEquals(a.gbase, b.gbase);
 }
 
-function pushQuad(positions, colors,
-                  x0,y0,z0, x1,y1,z1, x2,y2,z2, x3,y3,z3, c) {
-  positions.push(x0,y0,z0, x1,y1,z1, x2,y2,z2);
-  positions.push(x0,y0,z0, x2,y2,z2, x3,y3,z3);
-  for (let i = 0; i < 6; i++) colors.push(c[0], c[1], c[2]);
-}
-
 // -----------------------------------------------------------------------
 // Player markers
 // -----------------------------------------------------------------------
+const textureLoader = new THREE.TextureLoader();
+textureLoader.setCrossOrigin('anonymous');
+
+function configureSkinTexture(texture) {
+  texture.magFilter = THREE.NearestFilter;
+  texture.minFilter = THREE.NearestFilter;
+  texture.generateMipmaps = false;
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.needsUpdate = true;
+  return texture;
+}
+
+function createDefaultSkinTexture() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 64;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+
+  ctx.clearRect(0, 0, 64, 64);
+  ctx.fillStyle = '#7d4e36';
+  ctx.fillRect(8, 0, 8, 8);
+  ctx.fillRect(16, 0, 8, 8);
+  ctx.fillRect(0, 8, 8, 8);
+  ctx.fillRect(16, 8, 8, 8);
+  ctx.fillRect(24, 8, 8, 8);
+  ctx.fillRect(8, 8, 8, 8);
+  ctx.fillStyle = '#3f2a1f';
+  ctx.fillRect(8, 0, 8, 3);
+  ctx.fillRect(8, 8, 8, 2);
+  ctx.fillStyle = '#e0b38d';
+  ctx.fillRect(10, 10, 4, 4);
+  ctx.fillRect(20, 16, 8, 4);
+  ctx.fillRect(44, 20, 4, 4);
+  ctx.fillRect(4, 20, 4, 4);
+  ctx.fillStyle = '#4d9acb';
+  ctx.fillRect(20, 20, 8, 8);
+  ctx.fillRect(44, 24, 4, 8);
+  ctx.fillRect(4, 24, 4, 8);
+  ctx.fillStyle = '#24384f';
+  ctx.fillRect(4, 28, 12, 4);
+
+  return configureSkinTexture(new THREE.CanvasTexture(canvas));
+}
+
+const defaultSkinTexture = createDefaultSkinTexture();
+const CLASSIC_SKIN_LAYOUT = {
+  head: { right: [0, 8, 8, 8], left: [16, 8, 8, 8], top: [8, 0, 8, 8], bottom: [16, 0, 8, 8], front: [8, 8, 8, 8], back: [24, 8, 8, 8] },
+  hat: { right: [32, 8, 8, 8], left: [48, 8, 8, 8], top: [40, 0, 8, 8], bottom: [48, 0, 8, 8], front: [40, 8, 8, 8], back: [56, 8, 8, 8] },
+  body: { right: [16, 20, 4, 12], left: [28, 20, 4, 12], top: [20, 16, 8, 4], bottom: [28, 16, 8, 4], front: [20, 20, 8, 12], back: [32, 20, 8, 12] },
+  arm: { right: [40, 20, 4, 12], left: [48, 20, 4, 12], top: [44, 16, 4, 4], bottom: [48, 16, 4, 4], front: [44, 20, 4, 12], back: [52, 20, 4, 12] },
+  leg: { right: [0, 20, 4, 12], left: [8, 20, 4, 12], top: [4, 16, 4, 4], bottom: [8, 16, 4, 4], front: [4, 20, 4, 12], back: [12, 20, 4, 12] }
+};
+
+function getSkinCacheKey(player) {
+  return player.skinUrl || player.uuid || player.name;
+}
+
+function ensureSkinTexture(player) {
+  const key = getSkinCacheKey(player);
+  let entry = skinTextureCache.get(key);
+  if (!entry) {
+    entry = { texture: defaultSkinTexture, loading: false, error: false };
+    skinTextureCache.set(key, entry);
+  }
+
+  if (!player.skinUrl || entry.loading || entry.error || entry.texture !== defaultSkinTexture) {
+    return entry.texture;
+  }
+
+  entry.loading = true;
+  textureLoader.load(player.skinUrl, (texture) => {
+    entry.texture = configureSkinTexture(texture);
+    entry.loading = false;
+  }, undefined, () => {
+    entry.loading = false;
+    entry.error = true;
+  });
+
+  return entry.texture;
+}
+
+function setFaceUVs(geometry, faceIndex, rect, texWidth, texHeight) {
+  const [x, y, w, h] = rect;
+  const u0 = x / texWidth;
+  const u1 = (x + w) / texWidth;
+  const v0 = 1 - (y + h) / texHeight;
+  const v1 = 1 - y / texHeight;
+  const uv = geometry.getAttribute('uv');
+  const base = faceIndex * 4;
+  uv.setXY(base + 0, u0, v1);
+  uv.setXY(base + 1, u1, v1);
+  uv.setXY(base + 2, u0, v0);
+  uv.setXY(base + 3, u1, v0);
+  uv.needsUpdate = true;
+}
+
+function applyBoxLayout(geometry, layout, texWidth, texHeight) {
+  setFaceUVs(geometry, 0, layout.right, texWidth, texHeight);
+  setFaceUVs(geometry, 1, layout.left, texWidth, texHeight);
+  setFaceUVs(geometry, 2, layout.top, texWidth, texHeight);
+  setFaceUVs(geometry, 3, layout.bottom, texWidth, texHeight);
+  setFaceUVs(geometry, 4, layout.front, texWidth, texHeight);
+  setFaceUVs(geometry, 5, layout.back, texWidth, texHeight);
+}
+
+function createSkinMaterial(texture, transparent = false) {
+  return new THREE.MeshLambertMaterial({
+    map: texture,
+    transparent,
+    alphaTest: transparent ? 0.05 : 0,
+    depthWrite: !transparent
+  });
+}
+
+function createSkinnedBox(size, layout, texture, transparent = false) {
+  const geometry = new THREE.BoxGeometry(size.x, size.y, size.z);
+  const texWidth = texture.image?.width || 64;
+  const texHeight = texture.image?.height || 64;
+  applyBoxLayout(geometry, layout, texWidth, texHeight);
+  return new THREE.Mesh(geometry, createSkinMaterial(texture, transparent));
+}
+
+function createPivot(x, y, z) {
+  const pivot = new THREE.Group();
+  pivot.position.set(x, y, z);
+  return pivot;
+}
+
+function createNameLabel(name) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 64;
+  const ctx = canvas.getContext('2d');
+  ctx.font = 'bold 28px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 4;
+  ctx.strokeText(name, 128, 32);
+  ctx.fillStyle = '#fff';
+  ctx.fillText(name, 128, 32);
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const label = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false })
+  );
+  label.scale.set(5.5, 1.35, 1);
+  label.position.y = 2.6;
+  return label;
+}
+
+function disposeObject3D(object) {
+  object.traverse((child) => {
+    if (child.geometry) child.geometry.dispose();
+    if (child.material) {
+      if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
+      else child.material.dispose();
+    }
+  });
+}
+
+function rebuildPlayerAvatar(marker, texture, skinKey) {
+  const avatar = marker.userData.avatar;
+  while (avatar.children.length > 0) {
+    const child = avatar.children.pop();
+    disposeObject3D(child);
+  }
+
+  const torso = createPivot(0, 0.75, 0);
+  avatar.add(torso);
+
+  const body = createSkinnedBox(new THREE.Vector3(0.5, 0.75, 0.25), CLASSIC_SKIN_LAYOUT.body, texture);
+  body.position.y = 0.375;
+  torso.add(body);
+
+  const headPivot = createPivot(0, 0.75, 0);
+  torso.add(headPivot);
+  const head = createSkinnedBox(new THREE.Vector3(0.5, 0.5, 0.5), CLASSIC_SKIN_LAYOUT.head, texture);
+  head.position.y = 0.25;
+  headPivot.add(head);
+
+  const hat = createSkinnedBox(new THREE.Vector3(0.53, 0.53, 0.53), CLASSIC_SKIN_LAYOUT.hat, texture, true);
+  hat.position.y = 0.25;
+  headPivot.add(hat);
+
+  const rightArmPivot = createPivot(-0.375, 0.75, 0);
+  torso.add(rightArmPivot);
+  const rightArm = createSkinnedBox(new THREE.Vector3(0.25, 0.75, 0.25), CLASSIC_SKIN_LAYOUT.arm, texture);
+  rightArm.position.y = -0.375;
+  rightArmPivot.add(rightArm);
+
+  const leftArmPivot = createPivot(0.375, 0.75, 0);
+  torso.add(leftArmPivot);
+  const leftArm = createSkinnedBox(new THREE.Vector3(0.25, 0.75, 0.25), CLASSIC_SKIN_LAYOUT.arm, texture);
+  leftArm.position.y = -0.375;
+  leftArmPivot.add(leftArm);
+
+  const rightLegPivot = createPivot(-0.125, 0.75, 0);
+  avatar.add(rightLegPivot);
+  const rightLeg = createSkinnedBox(new THREE.Vector3(0.25, 0.75, 0.25), CLASSIC_SKIN_LAYOUT.leg, texture);
+  rightLeg.position.y = -0.375;
+  rightLegPivot.add(rightLeg);
+
+  const leftLegPivot = createPivot(0.125, 0.75, 0);
+  avatar.add(leftLegPivot);
+  const leftLeg = createSkinnedBox(new THREE.Vector3(0.25, 0.75, 0.25), CLASSIC_SKIN_LAYOUT.leg, texture);
+  leftLeg.position.y = -0.375;
+  leftLegPivot.add(leftLeg);
+
+  marker.userData.parts = {
+    torso,
+    body,
+    headPivot,
+    head,
+    hat,
+    rightArmPivot,
+    leftArmPivot,
+    rightArm,
+    leftArm,
+    rightLegPivot,
+    leftLegPivot,
+    rightLeg,
+    leftLeg
+  };
+  marker.userData.skinKey = skinKey;
+  marker.userData.skinTexture = texture;
+}
+
 async function loadPlayers() {
+  if (playerPollInFlight) return;
+  playerPollInFlight = true;
   try {
     const resp = await fetch('/map/data/players.json', { cache: 'no-store' });
     if (!resp.ok) return;
     const players = await resp.json();
 
-    const listDiv = document.getElementById('player-list');
     if (players.length === 0) {
-      listDiv.innerHTML = '<span class="no-players">None online</span>';
+      playerListEl.innerHTML = '<span class="no-players">None online</span>';
     } else {
-      listDiv.innerHTML = players.map(p =>
-        '<div class="player-entry"><span class="player-dot"></span>' +
-        escHtml(p.name) + '</div>'
-      ).join('');
+      playerListEl.innerHTML = players.map(player => {
+        const xyz = `${Math.round(player.x)}, ${Math.round(player.y)}, ${Math.round(player.z)}`;
+        return '<div class="player-entry"><span class="player-dot"></span><div><div>' +
+          escHtml(player.name) + '</div><div style="color:#8892a4;font-size:11px;">' + xyz + '</div></div></div>';
+      }).join('');
     }
 
-    // Remove departed players
     for (const name in playerMarkers) {
-      if (!players.some(p => p.name === name)) {
+      if (!players.some(player => player.name === name)) {
         const marker = playerMarkers[name];
         scene.remove(marker);
-        marker.traverse(child => {
-          if (child.geometry) child.geometry.dispose();
-          if (child.material) {
-            if (child.material.map) child.material.map.dispose();
-            child.material.dispose();
-          }
-        });
+        disposeObject3D(marker);
         delete playerMarkers[name];
       }
     }
 
-    // Add / update
-    for (const p of players) {
-      if (!playerMarkers[p.name]) {
-        playerMarkers[p.name] = createPlayerMarker(p.name);
-        scene.add(playerMarkers[p.name]);
+    for (const player of players) {
+      if (!playerMarkers[player.name]) {
+        playerMarkers[player.name] = createPlayerMarker(player);
+        scene.add(playerMarkers[player.name]);
+      } else {
+        syncPlayerMarker(playerMarkers[player.name], player);
       }
-      playerMarkers[p.name].position.set(p.x, p.y, p.z);
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) {
+    // Ignore player refresh failures.
+  } finally {
+    playerPollInFlight = false;
+  }
 }
 
-function createPlayerMarker(name) {
+function createPlayerMarker(player) {
   const group = new THREE.Group();
+  const avatar = new THREE.Group();
+  group.add(avatar);
 
-  const body = new THREE.Mesh(
-    new THREE.BoxGeometry(0.6, 1.8, 0.6),
-    new THREE.MeshLambertMaterial({ color: 0x3498db })
-  );
-  body.position.y = 0.9;
-  group.add(body);
-
-  const head = new THREE.Mesh(
-    new THREE.BoxGeometry(0.5, 0.5, 0.5),
-    new THREE.MeshLambertMaterial({ color: 0xE8B97E })
-  );
-  head.position.y = 2.1;
-  group.add(head);
-
-  // Name label sprite
-  const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-  ctx.font = 'bold 28px Arial';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.strokeStyle = '#000'; ctx.lineWidth = 4;
-  ctx.strokeText(name, 128, 32);
-  ctx.fillStyle = '#fff';
-  ctx.fillText(name, 128, 32);
-
-  const tex = new THREE.CanvasTexture(canvas);
-  const label = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false })
-  );
-  label.scale.set(6, 1.5, 1);
-  label.position.y = 3.5;
+  const label = createNameLabel(player.name);
   group.add(label);
 
+  group.userData.avatar = avatar;
+  group.userData.label = label;
+  group.userData.targetPosition = new THREE.Vector3(player.x, player.y, player.z);
+  group.userData.targetYaw = 0;
+  group.userData.skinKey = null;
+  group.userData.skinTexture = null;
+  group.userData.walkCycle = 0;
+  group.userData.motion = 0;
+  group.userData.lastNetworkStep = 0;
+  group.userData.lastTargetUpdate = performance.now();
+  group.userData.pose = { sneaking: false, sleeping: false, mounted: false, sitting: false, vehicleType: '' };
+
+  group.position.copy(group.userData.targetPosition);
+  syncPlayerMarker(group, player, true);
   return group;
 }
 
-function escHtml(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
+function syncPlayerMarker(marker, player, snapPosition = false) {
+  const previousTarget = marker.userData.targetPosition.clone();
+  const skinKey = getSkinCacheKey(player);
+  const texture = ensureSkinTexture(player);
+  if (marker.userData.skinKey !== skinKey || marker.userData.skinTexture !== texture) {
+    rebuildPlayerAvatar(marker, texture, skinKey);
+  }
+
+  marker.userData.targetPosition.set(player.x, player.y, player.z);
+  marker.userData.lastNetworkStep = previousTarget.distanceTo(marker.userData.targetPosition);
+  marker.userData.lastTargetUpdate = performance.now();
+  marker.userData.targetYaw = THREE.MathUtils.degToRad(-(player.yaw || 0));
+  marker.userData.pose = {
+    sneaking: !!player.sneaking,
+    sleeping: !!player.sleeping,
+    mounted: !!player.mounted,
+    sitting: !!player.sitting,
+    vehicleType: player.vehicleType || ''
+  };
+  if (snapPosition) {
+    marker.position.copy(marker.userData.targetPosition);
+  }
+}
+
+function escHtml(value) {
+  const div = document.createElement('div');
+  div.textContent = value;
+  return div.innerHTML;
 }
 
 // -----------------------------------------------------------------------
@@ -631,55 +1204,321 @@ async function refreshMapData() {
     const view = new DataView(buffer);
     if (view.getInt32(0) !== MAGIC) return;
 
-    let offset = 4; // skip magic
-    const rVersion = view.getInt32(offset); offset += 4;
-    offset += 12;   // skip spawn
+    let offset = 4;
+    const version = view.getInt32(offset); offset += 4;
+    offset += 12;
     const chunkCount = view.getInt32(offset); offset += 4;
 
     const newChunks = {};
     for (let i = 0; i < chunkCount; i++) {
-      const [chunk, nextOffset] = readChunkRecord(view, buffer, offset, rVersion);
+      const [chunk, nextOffset] = readChunkRecord(view, buffer, offset, version);
       offset = nextOffset;
       newChunks[chunk.cx + ',' + chunk.cz] = chunk;
     }
 
     const newKeys = Object.keys(newChunks);
     const oldKeys = Object.keys(chunks);
+    const dirtyRegions = new Set();
 
     for (const key of oldKeys) {
       if (!newChunks[key]) {
-        disposeChunkMesh(key);
+        const oldChunk = chunks[key];
+        markDirtyRegionsForChunk(dirtyRegions, oldChunk.cx, oldChunk.cz);
         delete chunks[key];
       }
     }
 
     for (const key of newKeys) {
       if (!chunks[key] || !chunkEquals(chunks[key], newChunks[key])) {
-        disposeChunkMesh(key);
         chunks[key] = newChunks[key];
-        const mesh = buildChunkMesh(newChunks[key]);
-        if (mesh) {
-          scene.add(mesh);
-          chunkMeshes[key] = mesh;
-        }
+        markDirtyRegionsForChunk(dirtyRegions, newChunks[key].cx, newChunks[key].cz);
       }
     }
 
-    document.getElementById('chunk-count').textContent = 'Chunks: ' + newKeys.length;
-  } catch (e) { /* ignore */ }
+    for (const key of dirtyRegions) {
+      const parts = key.split(',');
+      queueRegionBuild(parseInt(parts[0], 10), parseInt(parts[1], 10));
+    }
+
+    chunkCountEl.textContent = 'Chunks: ' + newKeys.length;
+  } catch (e) {
+    // Ignore map refresh failures.
+  }
+}
+
+async function loadChunkUpdates() {
+  if (chunkUpdatePollInFlight) return;
+  chunkUpdatePollInFlight = true;
+  try {
+    const resp = await fetch('/map/data/chunk-updates.bin', { cache: 'no-store' });
+    if (resp.status === 404 || !resp.ok) return;
+
+    const buffer = await resp.arrayBuffer();
+    if (buffer.byteLength < 16) return;
+
+    const view = new DataView(buffer);
+    let offset = 0;
+    if (view.getInt32(offset) !== UPDATE_MAGIC) return;
+    offset += 4;
+
+    const version = view.getInt32(offset); offset += 4;
+    if (version < 1) return;
+
+    const revision = view.getInt32(offset); offset += 4;
+    const chunkCount = view.getInt32(offset); offset += 4;
+    if (revision === lastChunkUpdateRevision) return;
+
+    const dirtyRegions = new Set();
+    for (let i = 0; i < chunkCount; i++) {
+      const [chunk, nextOffset] = readChunkRecord(view, buffer, offset, 6);
+      offset = nextOffset;
+      const key = chunk.cx + ',' + chunk.cz;
+      if (!chunks[key] || !chunkEquals(chunks[key], chunk)) {
+        chunks[key] = chunk;
+        markDirtyRegionsForChunk(dirtyRegions, chunk.cx, chunk.cz);
+        flashChunkUpdate(chunk.cx, chunk.cz, chunk);
+      }
+    }
+
+    for (const key of dirtyRegions) {
+      const parts = key.split(',');
+      queueRegionBuild(parseInt(parts[0], 10), parseInt(parts[1], 10));
+    }
+
+    lastChunkUpdateRevision = revision;
+    updateStatusEl.textContent = 'Live updates: revision ' + revision;
+  } catch (e) {
+    updateStatusEl.textContent = 'Live updates: reconnecting';
+  } finally {
+    chunkUpdatePollInFlight = false;
+  }
+}
+
+async function loadWorldState() {
+  if (worldPollInFlight) return;
+  worldPollInFlight = true;
+  try {
+    const resp = await fetch('/map/data/world.json', { cache: 'no-store' });
+    if (!resp.ok) return;
+    const data = await resp.json();
+    worldState.time = Number.isFinite(data.time) ? data.time : worldState.time;
+    worldState.storm = !!data.storm;
+    worldState.receivedAtMs = performance.now();
+    worldState.loaded = true;
+  } catch (e) {
+    // Ignore world refresh failures.
+  } finally {
+    worldPollInFlight = false;
+  }
+}
+
+function flashChunkUpdate(cx, cz, chunk) {
+  // Intentionally no-op: the map should update without overlay markers.
+}
+
+function updateChunkEffects(now) {
+  return;
+}
+
+function getInterpolatedWorldTime(now) {
+  if (!worldState.loaded) return 6000;
+  return (worldState.time + Math.max(0, (now - worldState.receivedAtMs) / 1000) * 20) % 24000;
+}
+
+function formatMinecraftTime(worldTime) {
+  const totalHours = ((worldTime / 1000) + 6) % 24;
+  const hours = Math.floor(totalHours);
+  const minutes = Math.floor((totalHours - hours) * 60);
+  return String(hours).padStart(2, '0') + ':' + String(minutes).padStart(2, '0');
+}
+
+function updateSkyObjects(now, worldTime, lightMix) {
+  skyGroup.position.set(camera.position.x, 0, camera.position.z);
+
+  const cloudDrift = now * 0.01;
+  const cloudAnchorX = Math.floor(camera.position.x / 512) * 512;
+  const cloudAnchorZ = Math.floor(camera.position.z / 512) * 512;
+  cloudLayer.position.set(cloudAnchorX, 0, cloudAnchorZ);
+  for (const cloud of cloudLayer.children) {
+    const scroll = cloud.userData.speed || 1;
+    const wrapped = ((((cloud.userData.baseX + cloudDrift * scroll) + 512) % 1024) + 1024) % 1024 - 512;
+    cloud.position.x = wrapped;
+    cloud.position.z = cloud.userData.baseZ;
+  }
+
+  const phase = (worldTime / 24000) * Math.PI * 2;
+  const orbitRadius = 1650;
+  const orbitHeight = 700;
+  const sunX = Math.cos(phase) * orbitRadius;
+  const sunY = 220 + Math.sin(phase) * orbitHeight;
+  const moonX = Math.cos(phase + Math.PI) * orbitRadius;
+  const moonY = 220 + Math.sin(phase + Math.PI) * orbitHeight;
+
+  sunSprite.position.set(sunX, sunY, -420);
+  moonSprite.position.set(moonX, moonY, 420);
+  sunSprite.lookAt(camera.position);
+  moonSprite.lookAt(camera.position);
+  sunSprite.material.opacity = THREE.MathUtils.clamp(0.18 + lightMix * 1.05, 0, 1);
+  moonSprite.material.opacity = THREE.MathUtils.clamp(0.08 + (1 - lightMix) * 0.92, 0, 1);
+
+  const starAlpha = THREE.MathUtils.clamp((1 - lightMix) * 1.25, 0, 1);
+  stars.material.opacity = starAlpha * 0.9;
+  stars.visible = starAlpha > 0.01;
+  stars.rotation.y = now * 0.00002;
+
+  for (const cloud of cloudLayer.children) {
+    for (const voxel of cloud.children) {
+      voxel.material.opacity = (worldState.storm ? 0.84 : 0.78) * (0.74 + lightMix * 0.26);
+    }
+  }
+}
+
+function updateDayNight(now) {
+  const worldTime = getInterpolatedWorldTime(now);
+  const phase = (worldTime / 24000) * Math.PI * 2;
+  const sunHeight = Math.sin(phase);
+  const daylight = THREE.MathUtils.clamp((sunHeight + 0.18) / 1.18, 0, 1);
+  const stormDarken = worldState.storm ? 0.18 : 0;
+  const lightMix = Math.max(0.08, daylight - stormDarken);
+  const dawnBlend = 1 - Math.abs(daylight * 2 - 1);
+
+  const sky = new THREE.Color();
+  sky.lerpColors(nightSky, daySky, lightMix);
+  sky.lerp(dawnSky, dawnBlend * 0.26);
+  if (worldState.storm) sky.multiplyScalar(0.76);
+
+  const fogColor = new THREE.Color();
+  fogColor.lerpColors(nightFog, dayFog, lightMix);
+  if (worldState.storm) fogColor.multiplyScalar(0.72);
+
+  scene.background.copy(sky);
+  scene.fog.color.copy(fogColor);
+  ambientLight.intensity = 0.18 + lightMix * 0.55;
+  skyFillLight.intensity = 0.25 + lightMix * 0.6;
+  sun.intensity = 0.08 + lightMix * 1.05;
+  moon.intensity = 0.03 + (1 - lightMix) * 0.18;
+
+  const sunX = Math.cos(phase) * 380;
+  const sunY = sunHeight * 420;
+  sun.position.set(sunX, sunY, 200);
+  moon.position.set(-sunX, -sunY, -160);
+  updateSkyObjects(now, worldTime, lightMix);
+
+  const phaseLabel = worldTime >= 13000 || worldTime < 1000
+    ? 'Sunrise'
+    : worldTime < 12000
+      ? 'Day'
+      : worldTime < 14000
+        ? 'Sunset'
+        : 'Night';
+  timeStatusEl.textContent = 'Time: ' + formatMinecraftTime(worldTime) +
+    ' | ' + phaseLabel + (worldState.storm ? ' | Storm' : '');
+}
+
+function shortestAngleDelta(from, to) {
+  let delta = to - from;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
+}
+
+function updatePlayersVisuals(deltaSeconds) {
+  for (const marker of Object.values(playerMarkers)) {
+    const beforeX = marker.position.x;
+    const beforeZ = marker.position.z;
+    const distance = marker.position.distanceTo(marker.userData.targetPosition);
+    const chaseFactor = THREE.MathUtils.clamp(0.18 + distance * 0.04, 0.18, 0.6);
+    marker.position.lerp(marker.userData.targetPosition, chaseFactor);
+    const pose = marker.userData.pose || {};
+    marker.userData.avatar.rotation.y += shortestAngleDelta(
+      marker.userData.avatar.rotation.y,
+      marker.userData.targetYaw
+    ) * 0.22;
+    marker.userData.label.quaternion.copy(camera.quaternion);
+
+    const movedXZ = Math.hypot(marker.position.x - beforeX, marker.position.z - beforeZ);
+    const targetMotion = THREE.MathUtils.clamp((movedXZ * 14) + marker.userData.lastNetworkStep * 0.45, 0, 1);
+    marker.userData.motion += (targetMotion - marker.userData.motion) * 0.18;
+    marker.userData.walkCycle += (2.6 + marker.userData.motion * 8.5) * deltaSeconds;
+
+    const swing = Math.sin(marker.userData.walkCycle) * 0.52 * marker.userData.motion;
+    const headBob = Math.abs(Math.sin(marker.userData.walkCycle * 2)) * 0.025 * marker.userData.motion;
+    const parts = marker.userData.parts;
+    if (parts) {
+      const isSleeping = !!pose.sleeping;
+      const isSitting = !!pose.sitting || (!!pose.mounted && !isSleeping);
+      const isSneaking = !!pose.sneaking && !isSleeping && !isSitting;
+
+      const targetAvatarY = isSleeping ? 0.2 : isSitting ? 0.58 : isSneaking ? -0.08 : 0;
+      const targetAvatarTilt = isSleeping ? -Math.PI * 0.5 : 0;
+      marker.userData.avatar.position.y += (targetAvatarY - marker.userData.avatar.position.y) * 0.22;
+      marker.userData.avatar.rotation.x += (targetAvatarTilt - marker.userData.avatar.rotation.x) * 0.22;
+
+      parts.torso.position.y = 0.75 + headBob;
+      parts.torso.position.z = isSitting ? -0.08 : 0;
+      parts.torso.rotation.x = isSleeping ? 0 : (isSneaking ? 0.48 : isSitting ? 0.08 : 0);
+      parts.headPivot.rotation.x = isSleeping ? 0.08 : (isSneaking ? -0.28 : isSitting ? -0.04 : 0);
+      parts.rightArmPivot.rotation.z = 0;
+      parts.leftArmPivot.rotation.z = 0;
+      parts.rightLegPivot.rotation.z = 0;
+      parts.leftLegPivot.rotation.z = 0;
+      parts.rightLegPivot.position.set(-0.125, isSitting ? 0.82 : 0.75, isSitting ? 0.06 : 0);
+      parts.leftLegPivot.position.set(0.125, isSitting ? 0.82 : 0.75, isSitting ? 0.06 : 0);
+      parts.hat.rotation.copy(parts.head.rotation);
+
+      if (isSleeping) {
+        parts.rightArmPivot.rotation.x = 0.08;
+        parts.leftArmPivot.rotation.x = -0.08;
+        parts.rightLegPivot.rotation.x = 0.02;
+        parts.leftLegPivot.rotation.x = -0.02;
+      } else if (isSitting) {
+        parts.rightArmPivot.rotation.x = 0.22 + swing * 0.08;
+        parts.leftArmPivot.rotation.x = 0.22 - swing * 0.08;
+        parts.rightLegPivot.rotation.x = -1.28;
+        parts.leftLegPivot.rotation.x = -1.28;
+        parts.rightLegPivot.rotation.z = 0.14;
+        parts.leftLegPivot.rotation.z = -0.14;
+      } else {
+        const armOffset = isSneaking ? 0.25 : 0;
+        const legOffset = isSneaking ? -0.12 : 0;
+        parts.rightArmPivot.rotation.x = swing + armOffset;
+        parts.leftArmPivot.rotation.x = -swing + armOffset;
+        parts.rightLegPivot.rotation.x = -swing + legOffset;
+        parts.leftLegPivot.rotation.x = swing + legOffset;
+      }
+
+      marker.userData.label.position.y = isSleeping ? 1.5 : isSitting ? 2.15 : isSneaking ? 2.3 : 2.6;
+    }
+    marker.userData.lastNetworkStep *= 0.88;
+  }
 }
 
 // -----------------------------------------------------------------------
 // Animation loop
 // -----------------------------------------------------------------------
-function animate() {
+function animate(now = 0) {
   requestAnimationFrame(animate);
+  const deltaSeconds = Math.min(0.05, Math.max(0.001, (now - lastFrameTime) / 1000));
+  lastFrameTime = now;
   controls.update();
-  updateChunkVisibility();
+  processRegionBuildQueue();
+  updateRegionVisibility(false);
+  updateDayNight(now);
+  updatePlayersVisuals(deltaSeconds);
+  updateChunkEffects(now);
 
-  const t = controls.target;
-  document.getElementById('coords').textContent =
-    'Looking at: ' + Math.round(t.x) + ', ' + Math.round(t.y) + ', ' + Math.round(t.z);
+  if (now >= lastCoordsUpdate) {
+    const target = controls.target;
+    const nextCoordsText = 'Looking at: ' +
+      Math.round(target.x) + ', ' +
+      Math.round(target.y) + ', ' +
+      Math.round(target.z);
+    if (nextCoordsText !== lastCoordsText) {
+      coordsEl.textContent = nextCoordsText;
+      lastCoordsText = nextCoordsText;
+    }
+    lastCoordsUpdate = now + 100;
+  }
 
   renderer.render(scene, camera);
 }
@@ -695,8 +1534,13 @@ window.addEventListener('resize', () => {
 // -----------------------------------------------------------------------
 animate();
 loadMapData();
-setInterval(loadPlayers, 3000);
-setInterval(refreshMapData, 30000);
+loadWorldState();
+loadPlayers();
+loadChunkUpdates();
+setInterval(loadPlayers, 250);
+setInterval(loadWorldState, 250);
+setInterval(loadChunkUpdates, 250);
+setInterval(refreshMapData, 60000);
 </script>
 </body>
 </html>
