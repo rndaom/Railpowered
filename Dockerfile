@@ -47,6 +47,7 @@ COPY --from=plugin-builder /build/jars/ /server/plugins/
 # Copy application files
 COPY manager.py .
 COPY server.properties .
+COPY poseidon.yml .
 COPY ops.txt .
 COPY whitelist.txt .
 COPY start.sh .
