@@ -5,7 +5,7 @@ DATA_DIR="/server/data"
 mkdir -p "$DATA_DIR"
 mkdir -p "$DATA_DIR/plugins"
 
-# Copy server files to persistent data directory (don't overwrite existing)
+# Copy server files to persistent data directory while preserving user-edited config
 # Always update server JAR so Poseidon replaces vanilla on upgrade
 cp -f /server/server.jar "$DATA_DIR/" 2>/dev/null || true
 cp -n /server/server.properties "$DATA_DIR/" 2>/dev/null || true
