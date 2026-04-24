@@ -11,6 +11,7 @@ Beta 1.7.3 Minecraft Server Manager
 from __future__ import annotations
 
 import base64
+import hmac
 import hashlib
 import json
 import os
@@ -24,7 +25,9 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Callable
+from urllib import error as urllib_error
 from urllib.parse import parse_qs
+from urllib import request as urllib_request
 
 # ---------------------------------------------------------------------------
 # Configuration (override via environment variables)
@@ -44,6 +47,9 @@ _ADMIN_KEY_FROM_ENV = bool(ADMIN_KEY)
 if not ADMIN_KEY:
     ADMIN_KEY = base64.urlsafe_b64encode(os.urandom(18)).decode()
 ADMIN_TOKEN = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()[:32]
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
+DISCORD_BRIDGE_SECRET = os.environ.get("DISCORD_BRIDGE_SECRET", "").strip()
+DISCORD_CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "").strip()
 
 LOGIN_HTML = """\
 <!DOCTYPE html>
@@ -398,6 +404,114 @@ def send_command(cmd):
 JOIN_PATTERN = re.compile(r"(\w+) \[/[\d.:]+\] logged in")
 LEAVE_PATTERN = re.compile(r"(\w+) lost connection")
 DONE_PATTERN = re.compile(r"Done \([\d.]+s\)")
+DISCORD_CHAT_PATTERN = re.compile(
+    r"\[DiscordBridge\] CHAT ([A-Za-z0-9+/=]+) ([A-Za-z0-9+/=]+)"
+)
+
+
+def _trim_chat_field(value: str, limit: int) -> str:
+    cleaned = "".join(ch for ch in value if ch >= " " and ch not in "\r\n")
+    return cleaned.strip()[:limit]
+
+
+def _strip_mc_formatting(value: str) -> str:
+    cleaned: list[str] = []
+    skip_color = False
+    for ch in value:
+        if skip_color:
+            skip_color = False
+            continue
+        if ch == "\u00A7":
+            skip_color = True
+            continue
+        if ch in "\r\n":
+            continue
+        cleaned.append(ch)
+    return "".join(cleaned)
+
+
+def _normalize_discord_author(value: str) -> str:
+    value = _trim_chat_field(value, 32)
+    if not value:
+        return "Discord"
+    collapsed = re.sub(r"\s+", "_", value)
+    return collapsed[:32]
+
+
+def _normalize_discord_message(value: str) -> str:
+    value = _strip_mc_formatting(value)
+    value = _trim_chat_field(value, 220)
+    return value
+
+
+def _decode_bridge_value(encoded: str) -> str:
+    return base64.b64decode(encoded).decode("utf-8", errors="replace")
+
+
+def _post_to_discord_webhook(player: str, message: str) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    payload = {
+        "content": f"**{player}**: {message}",
+        "allowed_mentions": {"parse": []},
+    }
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib_request.Request(
+        DISCORD_WEBHOOK_URL,
+        data=data,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "BetaServer-DiscordBridge/1.0",
+        },
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=5) as resp:
+            resp.read()
+    except urllib_error.URLError as e:
+        state.add_log(f"Discord webhook request failed: {e}")
+    except Exception as e:
+        state.add_log(f"Discord webhook error: {e}")
+
+
+def _queue_discord_webhook(player: str, message: str) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    threading.Thread(
+        target=_post_to_discord_webhook,
+        args=(player, message),
+        daemon=True,
+        name="DiscordWebhook",
+    ).start()
+
+
+def _handle_bridge_chat(encoded_player: str, encoded_message: str) -> None:
+    if not DISCORD_WEBHOOK_URL:
+        return
+
+    try:
+        player = _normalize_discord_author(_decode_bridge_value(encoded_player))
+        message = _normalize_discord_message(_decode_bridge_value(encoded_message))
+    except Exception as e:
+        state.add_log(f"Discord bridge decode error: {e}")
+        return
+
+    if not player or not message:
+        return
+
+    _queue_discord_webhook(player, message)
+
+
+def _dispatch_discord_message(author: str, message: str) -> bool:
+    author = _normalize_discord_author(author)
+    message = _normalize_discord_message(message)
+    if not message:
+        return False
+
+    author_b64 = base64.b64encode(author.encode("utf-8")).decode("ascii")
+    message_b64 = base64.b64encode(message.encode("utf-8")).decode("ascii")
+    return send_command(f"dchat {author_b64} {message_b64}")
 
 
 def _monitor_logs():
@@ -412,6 +526,11 @@ def _monitor_logs():
                 break  # EOF — process exited
             line = line.rstrip("\n\r")
             if not line:
+                continue
+
+            bridge_match = DISCORD_CHAT_PATTERN.search(line)
+            if bridge_match:
+                _handle_bridge_chat(bridge_match.group(1), bridge_match.group(2))
                 continue
 
             state.add_log(line)
@@ -520,6 +639,9 @@ class PanelHandler(BaseHTTPRequestHandler):
         if self.path == "/api/login":
             self._do_login()
             return
+        if self.path == "/api/discord-chat":
+            self._do_discord_chat()
+            return
         # All other POST routes require auth
         if not self._is_admin():
             self._send_json({"error": "unauthorized"}, 401)
@@ -575,6 +697,50 @@ class PanelHandler(BaseHTTPRequestHandler):
             self.end_headers()
         else:
             self._send_login("Incorrect admin key.")
+
+    def _do_discord_chat(self):
+        if not DISCORD_BRIDGE_SECRET:
+            self._send_json({"error": "discord_bridge_not_configured"}, 503)
+            return
+
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode() if length else ""
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            self._send_json({"error": "invalid_json"}, 400)
+            return
+
+        provided_secret = (
+            self.headers.get("X-Discord-Bridge-Secret")
+            or data.get("secret", "")
+        )
+        if not hmac.compare_digest(provided_secret, DISCORD_BRIDGE_SECRET):
+            self._send_json({"error": "unauthorized"}, 401)
+            return
+
+        channel_id = str(data.get("channel_id", "")).strip()
+        if DISCORD_CHANNEL_ID and channel_id != DISCORD_CHANNEL_ID:
+            self._send_json({"error": "wrong_channel"}, 403)
+            return
+
+        if not state.running:
+            self._send_json({"error": "server_not_running"}, 409)
+            return
+
+        author = (
+            data.get("author")
+            or data.get("display_name")
+            or data.get("username")
+            or "Discord"
+        )
+        content = data.get("content") or data.get("message") or ""
+        ok = _dispatch_discord_message(str(author), str(content))
+        if not ok:
+            self._send_json({"error": "message_not_sent"}, 400)
+            return
+
+        self._send_json({"success": True})
 
     # -- helpers --
 
@@ -697,6 +863,10 @@ def main():
         state.add_log(f"Admin panel key (auto-generated): {ADMIN_KEY}")
         state.add_log("Tip: Set ADMIN_KEY env var in Railway for a persistent key")
     state.add_log(f"Admin panel on port {WEB_PORT}")
+    if DISCORD_WEBHOOK_URL:
+        state.add_log("Discord bridge outbound relay enabled")
+    if DISCORD_BRIDGE_SECRET:
+        state.add_log("Discord bridge inbound endpoint enabled at /api/discord-chat")
 
     try:
         http.serve_forever()
