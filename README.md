@@ -48,6 +48,7 @@ To keep your world across deploys:
 | `MC_MIN_MEMORY` | `256M` | Min Java heap size |
 | `IDLE_TIMEOUT` | `600` | Seconds of no players before auto-stop |
 | `AUTO_START` | `false` | If `true`, starts the server on container boot instead of the sleep proxy |
+| `MC_PUBLIC_ADDRESS` | unset | Public Railway TCP proxy host and port shown in the admin panel, for example `roundhouse.proxy.rlwy.net:12345` |
 | `DISCORD_WEBHOOK_URL` | unset | Discord incoming webhook URL for Minecraft -> Discord chat |
 | `DISCORD_BRIDGE_SECRET` | unset | Shared secret your existing Discord bot must send to `/api/discord-chat` |
 | `DISCORD_CHANNEL_ID` | unset | Optional Discord channel ID to enforce for inbound bot relays |

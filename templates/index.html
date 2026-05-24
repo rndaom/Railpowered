@@ -370,7 +370,7 @@
     // Determine server address from the current hostname
     // Railway TCP proxy will be on a different port — set this via the
     // MC_PUBLIC_ADDRESS env var or we fall back to hostname guidance.
-    const SERVER_ADDR_OVERRIDE = ""; // set at deploy time if known
+    const SERVER_ADDR_OVERRIDE = __MC_PUBLIC_ADDRESS_JSON__;
 
     // -----------------------------------------------------------------------
     // API helpers

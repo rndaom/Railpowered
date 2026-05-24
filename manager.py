@@ -50,6 +50,7 @@ ADMIN_TOKEN = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()[:32]
 DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
 DISCORD_BRIDGE_SECRET = os.environ.get("DISCORD_BRIDGE_SECRET", "").strip()
 DISCORD_CHANNEL_ID = os.environ.get("DISCORD_CHANNEL_ID", "").strip()
+MC_PUBLIC_ADDRESS = os.environ.get("MC_PUBLIC_ADDRESS", "").strip()
 
 LOGIN_HTML = """\
 <!DOCTYPE html>
@@ -751,6 +752,11 @@ class PanelHandler(BaseHTTPRequestHandler):
         try:
             with open(os.path.join(TEMPLATE_DIR, name)) as f:
                 html = f.read()
+            if name == "index.html":
+                html = html.replace(
+                    "__MC_PUBLIC_ADDRESS_JSON__",
+                    json.dumps(MC_PUBLIC_ADDRESS),
+                )
             self._send_html(html)
         except FileNotFoundError:
             self.send_error(404, "Template not found")
