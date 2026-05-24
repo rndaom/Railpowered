@@ -7,7 +7,7 @@ WORKDIR /build
 
 # Download Poseidon JAR as compile dependency
 RUN curl -fSL -o poseidon.jar \
-    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
+    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260503-0121-a9af58a/poseidon-craftbukkit-1.1.12-260503-0121-a9af58a.jar
 
 # Copy all plugin sources (10 plugins, v8)
 COPY plugins/ plugins/
@@ -38,7 +38,7 @@ WORKDIR /server
 
 # Download Project Poseidon (CraftBukkit fork for Beta 1.7.3 with plugin support)
 RUN curl -fSL -o server.jar \
-    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260328-0558-5ba3017/poseidon-craftbukkit-1.1.12-260328-0558-5ba3017.jar
+    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260503-0121-a9af58a/poseidon-craftbukkit-1.1.12-260503-0121-a9af58a.jar
 
 # Copy compiled plugins from build stage
 RUN mkdir -p /server/plugins
