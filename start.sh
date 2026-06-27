@@ -1,59 +1,56 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 DATA_DIR="/server/data"
+MIGRATION_MARKER="$DATA_DIR/.fabric-migration-complete"
+BETA_ARCHIVE_ROOT="$DATA_DIR/archive/beta-1.7.3"
+
 mkdir -p "$DATA_DIR"
-mkdir -p "$DATA_DIR/plugins"
 
-# Copy server files to persistent data directory while preserving user-edited config
-# Always update server JAR so Poseidon replaces vanilla on upgrade
-cp -f /server/server.jar "$DATA_DIR/" 2>/dev/null || true
-cp -n /server/server.properties "$DATA_DIR/" 2>/dev/null || true
-cp -n /server/poseidon.yml "$DATA_DIR/" 2>/dev/null || true
-cp -n /server/ops.txt "$DATA_DIR/" 2>/dev/null || true
-cp -n /server/whitelist.txt "$DATA_DIR/" 2>/dev/null || true
+if [ ! -f "$MIGRATION_MARKER" ]; then
+  if [ -d "$DATA_DIR/plugins" ] || [ -f "$DATA_DIR/poseidon.yml" ] || [ -f "$DATA_DIR/ops.txt" ] || [ -f "$DATA_DIR/whitelist.txt" ]; then
+    archive_dir="$BETA_ARCHIVE_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$archive_dir"
 
-# Ensure Poseidon's tree-growth blocker always protects cobblestone as well.
-if [ -f "$DATA_DIR/poseidon.yml" ]; then
-python3 - "$DATA_DIR/poseidon.yml" <<'PY'
-import re
-import sys
-from pathlib import Path
+    for path in \
+      world world_nether world_the_end \
+      plugins \
+      poseidon.yml server.properties ops.txt whitelist.txt \
+      server.jar server.log banned-players.txt banned-ips.txt
+    do
+      if [ -e "$DATA_DIR/$path" ]; then
+        mv "$DATA_DIR/$path" "$archive_dir/"
+      fi
+    done
 
-path = Path(sys.argv[1])
-text = path.read_text(encoding="utf-8")
-block_match = re.search(
-    r"(?ms)^(\s*block-tree-growth:\s*\n(?:(?:\s{12}|\t).*\n?)*)",
-    text,
-)
-if not block_match:
-    raise SystemExit(0)
+    echo "[start.sh] Archived beta data to $archive_dir"
+  fi
 
-block = block_match.group(1)
-list_match = re.search(r"(?m)^(\s*list:\s*)([0-9,\s]+)$", block)
-if not list_match:
-    raise SystemExit(0)
-
-values = [value.strip() for value in list_match.group(2).split(",") if value.strip()]
-if "4" in values:
-    raise SystemExit(0)
-
-values.insert(0, "4")
-updated_block = (
-    block[:list_match.start(2)]
-    + ",".join(values)
-    + block[list_match.end(2):]
-)
-path.write_text(
-    text[:block_match.start(1)] + updated_block + text[block_match.end(1):],
-    encoding="utf-8",
-    newline="\n",
-)
-PY
+  {
+    echo "minecraft_version=${MINECRAFT_VERSION:-unknown}"
+    echo "fabric_loader_version=${FABRIC_LOADER_VERSION:-unknown}"
+    echo "migrated_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } > "$MIGRATION_MARKER"
 fi
 
-# Always update plugins to latest build
-cp -f /server/plugins/*.jar "$DATA_DIR/plugins/" 2>/dev/null || true
+cp -f /server/fabric-server-launch.jar "$DATA_DIR/"
+cp -f /server/server.jar "$DATA_DIR/"
+rm -rf "$DATA_DIR/libraries"
+cp -R /server/libraries "$DATA_DIR/libraries"
 
-echo "[start.sh] Starting server manager..."
+if [ -d /server/versions ]; then
+  rm -rf "$DATA_DIR/versions"
+  cp -R /server/versions "$DATA_DIR/versions"
+fi
+
+if [ -d /server/.fabric ]; then
+  rm -rf "$DATA_DIR/.fabric"
+  cp -R /server/.fabric "$DATA_DIR/.fabric"
+fi
+
+cp -n /server/server.properties "$DATA_DIR/server.properties" 2>/dev/null || true
+mkdir -p "$DATA_DIR/mods"
+printf "eula=true\n" > "$DATA_DIR/eula.txt"
+
+echo "[start.sh] Starting Fabric server manager..."
 exec python3 /server/manager.py

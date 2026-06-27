@@ -3,6 +3,7 @@
 .env
 README.md
 world/
+archive/
 *.log
 .idea/
 .vscode/
