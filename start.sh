@@ -50,6 +50,11 @@ fi
 
 cp -n /server/server.properties "$DATA_DIR/server.properties" 2>/dev/null || true
 mkdir -p "$DATA_DIR/mods"
+if [ -d /server/mods ]; then
+  rm -f "$DATA_DIR"/mods/fabric-api-*.jar
+  rm -f "$DATA_DIR"/mods/vanilla-minions-*.jar
+  cp -f /server/mods/*.jar "$DATA_DIR/mods/" 2>/dev/null || true
+fi
 printf "eula=true\n" > "$DATA_DIR/eula.txt"
 
 echo "[start.sh] Starting Fabric server manager..."
