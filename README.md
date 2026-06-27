@@ -7,6 +7,7 @@ A current Minecraft Java server running on Fabric, hosted on Railway with the ex
 - Minecraft Java: `26.2`
 - Fabric Loader: `0.19.3`
 - Fabric Installer: `1.1.1`
+- Fabric API: `0.153.0+26.2`
 - Java runtime: `25`
 
 These are pinned in the `Dockerfile` for reproducible Railway builds.
@@ -19,6 +20,7 @@ These are pinned in the `Dockerfile` for reproducible Railway builds.
 - **Admin web panel** on Railway's HTTP port for status, logs, start/stop, and console commands
 - **Persistent server data** under `/server/data`
 - **One-time beta archive migration** for old world/plugin data on the Railway volume
+- **Managed server mods** copied into `/server/data/mods` on each deploy
 
 ## Beta Archive
 
@@ -73,7 +75,8 @@ This stores the Fabric world, server properties, `mods/`, EULA file, and the bet
 - Admin panel: `https://your-service.up.railway.app`
 - Console commands: use `POST /api/command` or the admin panel command box
 - To op a player after migration, start the server and run `op <playername>` from the admin command box
-- Fabric mods can be uploaded into `/server/data/mods` and loaded on the next server start
+- Fabric API and Vanilla Minions are managed by the Docker image and copied into `/server/data/mods`
+- Additional Fabric mods can be uploaded into `/server/data/mods` and loaded on the next server start
 
 ## Project Structure
 
@@ -83,6 +86,7 @@ BetaServer/
 |-- manager.py          # Sleep proxy + server manager + admin panel
 |-- railway.toml        # Railway deployment config
 |-- server.properties   # Modern Minecraft server defaults
+|-- server-mods/         # Managed local mod jars copied into the server image
 |-- start.sh            # Container entrypoint and beta volume migration
 |-- templates/          # Admin web panel UI
 `-- archive/            # Retired beta server assets
