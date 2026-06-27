@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Beta 1.7.3 Server</title>
+  <title>Fabric Minecraft Server</title>
   <style>
     /* --- Reset & Base --- */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -239,7 +239,7 @@
   <div class="container">
     <!-- Header -->
     <header>
-      <h1>Minecraft <span>Beta 1.7.3</span></h1>
+      <h1>Minecraft <span>Fabric</span></h1>
       <p>Admin Control Panel &middot; <a href="/api/logout" style="color:var(--muted);font-size:.85rem;">Logout</a></p>
     </header>
 
@@ -278,7 +278,7 @@
     <div class="card">
       <h3>Connection Info</h3>
       <p style="color:var(--muted); margin-bottom:12px; font-size:0.9rem;">
-        Use this address in the Beta 1.7.3 multiplayer menu:
+        Use this address in Minecraft Multiplayer:
       </p>
       <div class="connect-box">
         <span id="serverAddr">Loading...</span>
@@ -287,9 +287,6 @@
       <p style="color:var(--muted); margin-top:10px; font-size:0.85rem;">
         Players can connect anytime &mdash; the sleep proxy auto-starts the server
         and tells them to reconnect in ~30 seconds.
-      </p>
-      <p style="margin-top:12px;">
-        <a href="/map" target="_blank" style="color:var(--green); font-size:0.95rem;">View Live Map &rarr;</a>
       </p>
     </div>
 
@@ -305,34 +302,31 @@
 
     <div id="tab-guide" class="card tabbed-card tab-content">
       <details class="guide-section" open>
-        <summary>1. Install BetaCraft Launcher (recommended)</summary>
-        <p>BetaCraft is the best way to play Beta 1.7.3 with <strong>working skins</strong>, sounds, and textures.</p>
+        <summary>1. Use the current Minecraft release</summary>
+        <p>Open the official Minecraft Launcher and select the latest Java Edition release.</p>
         <ol>
-          <li>Download BetaCraft from <a href="https://betacraft.uk" target="_blank">betacraft.uk</a></li>
-          <li>Install and open the launcher</li>
-          <li>Select version <strong>b1.7.3</strong> from the version list</li>
-          <li>Enter your username and click Play</li>
+          <li>Open Minecraft Launcher</li>
+          <li>Select <strong>Java Edition</strong></li>
+          <li>Choose the latest release profile</li>
+          <li>Click Play</li>
         </ol>
       </details>
 
       <details class="guide-section">
-        <summary>2. Alternative: Official Minecraft Launcher</summary>
+        <summary>2. Optional: Fabric client</summary>
         <ol>
-          <li>Open the Minecraft Launcher</li>
-          <li>Go to <strong>Installations</strong> &rarr; <strong>New Installation</strong></li>
-          <li>Select version <code>old_beta b1.7.3</code></li>
-          <li>Create and play the installation</li>
+          <li>Install Fabric Loader for the same Minecraft version as the server</li>
+          <li>Add any client-side mods you want locally</li>
+          <li>Use the Fabric profile in the launcher</li>
         </ol>
         <p style="margin-top:8px; color:var(--muted); font-size:0.9rem;">
-          Note: The official launcher may not display skins correctly for Beta versions.
-          BetaCraft patches the old skin URLs to work with modern Mojang servers.
+          The server currently ships with Fabric Loader and no bundled gameplay mods.
         </p>
       </details>
 
       <details class="guide-section">
         <summary>3. Connecting to the Server</summary>
         <ol>
-          <li>Launch Beta 1.7.3 using BetaCraft or the official launcher</li>
           <li>Click <strong>Multiplayer</strong> on the main menu</li>
           <li>Enter the server address shown above and click <strong>Connect</strong></li>
           <li>If the server is sleeping you'll see <em>"Server is waking up! Reconnect in ~30 seconds."</em> &mdash; just wait and reconnect</li>
@@ -340,11 +334,11 @@
       </details>
 
       <details class="guide-section">
-        <summary>4. About Skins, Sounds & Textures</summary>
+        <summary>4. Server Notes</summary>
         <ul>
-          <li><strong>Skins:</strong> BetaCraft automatically fixes skins by redirecting the old skin URLs to Mojang's current API. Your Mojang/Microsoft account skin will display correctly.</li>
-          <li><strong>Sounds:</strong> Beta 1.7.3 sounds are bundled with the game client. BetaCraft ensures all sound resources are downloaded properly.</li>
-          <li><strong>Textures:</strong> The classic Beta textures are built into the client. No resource packs needed &mdash; you get the authentic experience.</li>
+          <li>The beta world and plugin data are archived on the Railway volume during the first Fabric boot.</li>
+          <li>Fabric mods can be added to the persistent <code>mods/</code> directory later.</li>
+          <li>Use the admin command box to run console commands such as <code>op playername</code>.</li>
         </ul>
       </details>
 

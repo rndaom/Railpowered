@@ -1,61 +1,34 @@
-# Stage 1: Build plugins
-FROM eclipse-temurin:8-jdk AS plugin-builder
+FROM eclipse-temurin:25-jre
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+ARG MINECRAFT_VERSION=26.2
+ARG FABRIC_LOADER_VERSION=0.19.3
+ARG FABRIC_INSTALLER_VERSION=1.1.1
 
-WORKDIR /build
-
-# Download Poseidon JAR as compile dependency
-RUN curl -fSL -o poseidon.jar \
-    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260503-0121-a9af58a/poseidon-craftbukkit-1.1.12-260503-0121-a9af58a.jar
-
-# Copy all plugin sources (10 plugins, v8)
-COPY plugins/ plugins/
-
-# Build every plugin under plugins/
-RUN mkdir -p /build/jars && \
-    for plugin_dir in plugins/*/; do \
-        [ -d "$plugin_dir/src" ] || continue; \
-        name=$(basename "$plugin_dir"); \
-        echo "=== Building $name ==="; \
-        mkdir -p "classes/$name"; \
-        find "$plugin_dir/src/main/java" -name "*.java" > "/tmp/$name-sources.txt"; \
-        javac -cp poseidon.jar -d "classes/$name" @"/tmp/$name-sources.txt"; \
-        cp "$plugin_dir/src/main/resources/plugin.yml" "classes/$name/plugin.yml"; \
-        sed -i 's/${project.version}/1.0.0/' "classes/$name/plugin.yml"; \
-        (cd "classes/$name" && jar cf "/build/jars/$name.jar" .); \
-        echo "=== $name built ==="; \
-    done
-
-# Stage 2: Runtime
-FROM eclipse-temurin:8-jre
+ENV MINECRAFT_VERSION=${MINECRAFT_VERSION}
+ENV FABRIC_LOADER_VERSION=${FABRIC_LOADER_VERSION}
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends python3 curl && \
+    apt-get install -y --no-install-recommends ca-certificates curl python3 && \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /server
 
-# Download Project Poseidon (CraftBukkit fork for Beta 1.7.3 with plugin support)
-RUN curl -fSL -o server.jar \
-    https://github.com/retromcorg/Project-Poseidon/releases/download/1.1.12-260503-0121-a9af58a/poseidon-craftbukkit-1.1.12-260503-0121-a9af58a.jar
+RUN curl -fSL -o /tmp/fabric-installer.jar \
+        "https://maven.fabricmc.net/net/fabricmc/fabric-installer/${FABRIC_INSTALLER_VERSION}/fabric-installer-${FABRIC_INSTALLER_VERSION}.jar" && \
+    java -jar /tmp/fabric-installer.jar server \
+        -mcversion "${MINECRAFT_VERSION}" \
+        -loader "${FABRIC_LOADER_VERSION}" \
+        -downloadMinecraft \
+        -noprofile && \
+    rm /tmp/fabric-installer.jar
 
-# Copy compiled plugins from build stage
-RUN mkdir -p /server/plugins
-COPY --from=plugin-builder /build/jars/ /server/plugins/
-
-# Copy application files
 COPY manager.py .
 COPY server.properties .
-COPY poseidon.yml .
-COPY ops.txt .
-COPY whitelist.txt .
 COPY start.sh .
 COPY templates/ templates/
 
 RUN chmod +x start.sh
 
-# Web panel port — only expose HTTP; the MC port is handled by Railway's TCP proxy
 EXPOSE 8080
 
 CMD ["./start.sh"]
