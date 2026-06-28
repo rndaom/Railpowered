@@ -75,7 +75,7 @@ This stores the Fabric world, server properties, `mods/`, EULA file, and the bet
 - Admin panel: `https://your-service.up.railway.app`
 - Console commands: use `POST /api/command` or the admin panel command box
 - To op a player after migration, start the server and run `op <playername>` from the admin command box
-- Fabric API and Vanilla Minions are managed by the Docker image and copied into `/server/data/mods`
+- Fabric API, Vanilla Minions, and AI Builder are managed by the Docker image and copied into `/server/data/mods`
 - Additional Fabric mods can be uploaded into `/server/data/mods` and loaded on the next server start
 
 ## Project Structure
