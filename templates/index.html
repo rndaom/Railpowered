@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Fabric Minecraft Server</title>
+  <title>Vanilla Minecraft Server</title>
   <style>
     /* --- Reset & Base --- */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -239,7 +239,7 @@
   <div class="container">
     <!-- Header -->
     <header>
-      <h1>Minecraft <span>Fabric</span></h1>
+      <h1>Minecraft <span>Vanilla</span></h1>
       <p>Admin Control Panel &middot; <a href="/api/logout" style="color:var(--muted);font-size:.85rem;">Logout</a></p>
     </header>
 
@@ -313,14 +313,14 @@
       </details>
 
       <details class="guide-section">
-        <summary>2. Optional: Fabric client</summary>
+        <summary>2. Use the vanilla client</summary>
         <ol>
-          <li>Install Fabric Loader for the same Minecraft version as the server</li>
-          <li>Add any client-side mods you want locally</li>
-          <li>Use the Fabric profile in the launcher</li>
+          <li>Use the latest Java Edition release profile</li>
+          <li>No Fabric, Forge, plugins, or server mods are required</li>
+          <li>Join with an unmodified vanilla client</li>
         </ol>
         <p style="margin-top:8px; color:var(--muted); font-size:0.9rem;">
-          The server currently ships with Fabric Loader and no bundled gameplay mods.
+          The server runs Mojang's official vanilla Java server.
         </p>
       </details>
 
@@ -336,8 +336,8 @@
       <details class="guide-section">
         <summary>4. Server Notes</summary>
         <ul>
-          <li>The beta world and plugin data are archived on the Railway volume during the first Fabric boot.</li>
-          <li>Fabric mods can be added to the persistent <code>mods/</code> directory later.</li>
+          <li>Previous world, mod, plugin, and loader data are archived on the Railway volume during the first vanilla boot.</li>
+          <li>The active server starts with a fresh vanilla world and no bundled mods or plugins.</li>
           <li>Use the admin command box to run console commands such as <code>op playername</code>.</li>
         </ul>
       </details>

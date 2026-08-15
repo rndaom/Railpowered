@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Fabric Minecraft Server Manager
+Vanilla Minecraft Server Manager
 
 - Sleep proxy on port 25565: auto-starts the server when a player connects
 - Monitors player activity from server logs
@@ -29,7 +29,7 @@ from urllib.parse import parse_qs
 # Configuration (override via environment variables)
 # ---------------------------------------------------------------------------
 MC_DIR = "/server/data"
-MC_JAR = os.environ.get("MC_JAR", "fabric-server-launch.jar")
+MC_JAR = os.environ.get("MC_JAR", "server.jar")
 MC_VERSION = os.environ.get("MINECRAFT_VERSION", "26.2")
 MC_PORT = 25565
 WEB_PORT = int(os.environ.get("PORT", 8080))
@@ -405,7 +405,7 @@ def start_server():
 
     state.players.clear()
     state.last_activity = time.time()
-    state.add_log(f"Starting Minecraft {MC_VERSION} Fabric server...")
+    state.add_log(f"Starting Minecraft {MC_VERSION} vanilla server...")
 
     try:
         state.process = subprocess.Popen(

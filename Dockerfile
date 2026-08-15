@@ -1,13 +1,10 @@
 FROM eclipse-temurin:25-jre
 
 ARG MINECRAFT_VERSION=26.2
-ARG FABRIC_LOADER_VERSION=0.19.3
-ARG FABRIC_INSTALLER_VERSION=1.1.1
-ARG FABRIC_API_VERSION=0.153.0+26.2
+ARG SERVER_DOWNLOAD_URL=https://piston-data.mojang.com/v1/objects/823e2250d24b3ddac457a60c92a6a941943fcd6a/server.jar
+ARG SERVER_SHA1=823e2250d24b3ddac457a60c92a6a941943fcd6a
 
 ENV MINECRAFT_VERSION=${MINECRAFT_VERSION}
-ENV FABRIC_LOADER_VERSION=${FABRIC_LOADER_VERSION}
-ENV FABRIC_API_VERSION=${FABRIC_API_VERSION}
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates curl python3 && \
@@ -15,27 +12,16 @@ RUN apt-get update && \
 
 WORKDIR /server
 
-RUN curl -fSL -o /tmp/fabric-installer.jar \
-        "https://maven.fabricmc.net/net/fabricmc/fabric-installer/${FABRIC_INSTALLER_VERSION}/fabric-installer-${FABRIC_INSTALLER_VERSION}.jar" && \
-    java -jar /tmp/fabric-installer.jar server \
-        -mcversion "${MINECRAFT_VERSION}" \
-        -loader "${FABRIC_LOADER_VERSION}" \
-        -downloadMinecraft \
-        -noprofile && \
-    rm /tmp/fabric-installer.jar
-
-RUN mkdir -p /server/mods && \
-    curl -fSL -o "/server/mods/fabric-api-${FABRIC_API_VERSION}.jar" \
-        "https://cdn.modrinth.com/data/P7dR8mSH/versions/M8Kbv865/fabric-api-0.153.0%2B26.2.jar"
+RUN curl -fSL -o /server/server.jar "${SERVER_DOWNLOAD_URL}" && \
+    echo "${SERVER_SHA1}  /server/server.jar" | sha1sum -c -
 
 COPY manager.py .
 COPY server.properties .
-COPY server-mods/ mods/
 COPY start.sh .
 COPY templates/ templates/
 
 RUN chmod +x start.sh
 
-EXPOSE 8080
+EXPOSE 8080 25565
 
 CMD ["./start.sh"]

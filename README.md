@@ -1,42 +1,45 @@
-# Fabric Minecraft Server on Railway
+# Vanilla Minecraft Server on Railway
 
-A current Minecraft Java server running on Fabric, hosted on Railway with the existing admin panel, sleep proxy, and idle shutdown behavior.
+A current vanilla Minecraft Java server hosted on Railway with the existing admin panel, sleep proxy, and idle shutdown behavior.
 
-## Current Versions
+## Current Version
 
 - Minecraft Java: `26.2`
-- Fabric Loader: `0.19.3`
-- Fabric Installer: `1.1.1`
-- Fabric API: `0.153.0+26.2`
 - Java runtime: `25`
+- Server jar: Mojang vanilla server jar, SHA-1 `823e2250d24b3ddac457a60c92a6a941943fcd6a`
 
-These are pinned in the `Dockerfile` for reproducible Railway builds.
+Minecraft `26.2` is the latest release resolved from Mojang's version manifest on 2026-07-05. The server jar is pinned in the `Dockerfile` for reproducible Railway builds.
 
 ## Features
 
-- **Modern Fabric server** for the latest stable Minecraft Java release
+- **Official vanilla Java server** with no Fabric, Forge, plugins, or bundled mods
 - **Auto-wake sleep proxy** on port `25565`
 - **Auto-shutdown** after 10 minutes with no players, configurable through `IDLE_TIMEOUT`
 - **Admin web panel** on Railway's HTTP port for status, logs, start/stop, and console commands
 - **Persistent server data** under `/server/data`
-- **One-time beta archive migration** for old world/plugin data on the Railway volume
-- **Managed server mods** copied into `/server/data/mods` on each deploy
+- **One-time vanilla reset** that archives old world, mod, plugin, and loader data before the fresh world is created
 
-## Beta Archive
+## Fresh Vanilla Reset
 
-The retired Beta 1.7.3 / Project Poseidon files are preserved under:
+On first boot after this reset, `start.sh` archives previous runtime data from the Railway volume into:
+
+```text
+/server/data/archive/reset-to-vanilla/<timestamp>/
+```
+
+It moves existing worlds, `mods/`, `plugins/`, Fabric files, old jars, logs, and server access lists out of the active data directory. Then it writes:
+
+```text
+/server/data/.vanilla-reset-complete
+```
+
+That marker prevents later restarts from wiping the new vanilla world.
+
+The retired Beta 1.7.3 / Project Poseidon source archive remains under:
 
 ```text
 archive/beta-1.7.3/
 ```
-
-On the first Fabric boot, `start.sh` also checks the Railway persistent volume for beta markers such as `plugins/`, `poseidon.yml`, `ops.txt`, or `whitelist.txt`. If found, it moves the old runtime data into:
-
-```text
-/server/data/archive/beta-1.7.3/<timestamp>/
-```
-
-Then it writes `/server/data/.fabric-migration-complete` so later restarts do not archive the new Fabric world.
 
 ## Deploy to Railway
 
@@ -57,7 +60,7 @@ Mount the volume at:
 /server/data
 ```
 
-This stores the Fabric world, server properties, `mods/`, EULA file, and the beta archive created during migration.
+This stores the vanilla world, server properties, EULA file, and the archive created during the reset.
 
 ### 3. Environment variables
 
@@ -74,20 +77,17 @@ This stores the Fabric world, server properties, `mods/`, EULA file, and the bet
 
 - Admin panel: `https://your-service.up.railway.app`
 - Console commands: use `POST /api/command` or the admin panel command box
-- To op a player after migration, start the server and run `op <playername>` from the admin command box
-- Fabric API, Vanilla Minions, and AI Builder are managed by the Docker image and copied into `/server/data/mods`
-- Additional Fabric mods can be uploaded into `/server/data/mods` and loaded on the next server start
+- To op a player after reset, start the server and run `op <playername>` from the admin command box
 
 ## Project Structure
 
 ```text
 BetaServer/
-|-- Dockerfile          # Java 25 + Fabric server image
+|-- Dockerfile          # Java 25 + vanilla server image
 |-- manager.py          # Sleep proxy + server manager + admin panel
 |-- railway.toml        # Railway deployment config
 |-- server.properties   # Modern Minecraft server defaults
-|-- server-mods/         # Managed local mod jars copied into the server image
-|-- start.sh            # Container entrypoint and beta volume migration
+|-- start.sh            # Container entrypoint and one-time vanilla reset
 |-- templates/          # Admin web panel UI
 `-- archive/            # Retired beta server assets
 ```
