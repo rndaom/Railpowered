@@ -1,0 +1,25 @@
+{
+  "name": "Fabric Minecraft Server",
+  "user": "ubuntu",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "mc-manager",
+      "command": "bash .cursor/run.sh",
+      "description": "Fabric server manager: admin web panel on port 8080 and Minecraft sleep proxy on 25565. Log in to the panel with the ADMIN_KEY (dev default: 'admin') to start/stop the server and run console commands."
+    }
+  ],
+  "ports": [
+    {
+      "name": "admin-panel",
+      "port": 8080
+    },
+    {
+      "name": "minecraft",
+      "port": 25565
+    }
+  ]
+}
