@@ -1,37 +1,38 @@
-FROM eclipse-temurin:25-jre
+FROM eclipse-temurin:8-jre AS java8
+FROM eclipse-temurin:21-jre AS java21
+FROM eclipse-temurin:25-jre AS java25
 
-ARG MINECRAFT_VERSION=26.2
-ARG FABRIC_LOADER_VERSION=0.19.3
-ARG FABRIC_INSTALLER_VERSION=1.1.1
-ARG FABRIC_API_VERSION=0.153.0+26.2
-
-ENV MINECRAFT_VERSION=${MINECRAFT_VERSION}
-ENV FABRIC_LOADER_VERSION=${FABRIC_LOADER_VERSION}
-ENV FABRIC_API_VERSION=${FABRIC_API_VERSION}
+FROM ubuntu:24.04
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl python3 && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        python3 \
+        unzip && \
     rm -rf /var/lib/apt/lists/*
+
+COPY --from=java8 /opt/java/openjdk /opt/java/8
+COPY --from=java21 /opt/java/openjdk /opt/java/21
+COPY --from=java25 /opt/java/openjdk /opt/java/25
+
+ENV JAVA_8_HOME=/opt/java/8 \
+    JAVA_21_HOME=/opt/java/21 \
+    JAVA_25_HOME=/opt/java/25 \
+    JAVA_HOME=/opt/java/8 \
+    PATH="/opt/java/8/bin:${PATH}" \
+    MINECRAFT_VERSION=1.2.5 \
+    SERVER_TYPE=vanilla
 
 WORKDIR /server
 
-RUN curl -fSL -o /tmp/fabric-installer.jar \
-        "https://maven.fabricmc.net/net/fabricmc/fabric-installer/${FABRIC_INSTALLER_VERSION}/fabric-installer-${FABRIC_INSTALLER_VERSION}.jar" && \
-    java -jar /tmp/fabric-installer.jar server \
-        -mcversion "${MINECRAFT_VERSION}" \
-        -loader "${FABRIC_LOADER_VERSION}" \
-        -downloadMinecraft \
-        -noprofile && \
-    rm /tmp/fabric-installer.jar
+ARG MC_125_SHA=d8321edc9470e56b8ad5c67bbd16beba25843336
+RUN mkdir -p /server/jars && \
+    curl -fSL -o /server/jars/minecraft_server.1.2.5.jar \
+        "https://launcher.mojang.com/v1/objects/${MC_125_SHA}/server.jar" && \
+    echo "${MC_125_SHA}  /server/jars/minecraft_server.1.2.5.jar" | sha1sum -c -
 
-RUN mkdir -p /server/mods && \
-    curl -fSL -o "/server/mods/fabric-api-${FABRIC_API_VERSION}.jar" \
-        "https://cdn.modrinth.com/data/P7dR8mSH/versions/M8Kbv865/fabric-api-0.153.0%2B26.2.jar"
-
-COPY manager.py .
-COPY server.properties .
-COPY server-mods/ mods/
-COPY start.sh .
+COPY manager.py installer.py manager.json server.properties start.sh ./
 COPY templates/ templates/
 
 RUN chmod +x start.sh
