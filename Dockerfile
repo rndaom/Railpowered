@@ -1,37 +1,47 @@
-FROM eclipse-temurin:25-jre
-
-ARG MINECRAFT_VERSION=26.2
-ARG FABRIC_LOADER_VERSION=0.19.3
-ARG FABRIC_INSTALLER_VERSION=1.1.1
-ARG FABRIC_API_VERSION=0.153.0+26.2
-
-ENV MINECRAFT_VERSION=${MINECRAFT_VERSION}
-ENV FABRIC_LOADER_VERSION=${FABRIC_LOADER_VERSION}
-ENV FABRIC_API_VERSION=${FABRIC_API_VERSION}
+FROM ubuntu:24.04
 
 RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates curl python3 && \
+    apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        python3 \
+        unzip && \
     rm -rf /var/lib/apt/lists/*
+
+# Temurin JREs from Adoptium. Multi-stage COPY from eclipse-temurin hits
+# overlayfs whiteout errors in some builders; tarball extract is reliable.
+RUN mkdir -p /opt/java/8 /opt/java/21 /opt/java/25 && \
+    curl -fSL -o /tmp/jre8.tar.gz \
+        "https://api.adoptium.net/v3/binary/latest/8/ga/linux/x64/jre/hotspot/normal/eclipse" && \
+    tar -xzf /tmp/jre8.tar.gz -C /opt/java/8 --strip-components=1 && \
+    curl -fSL -o /tmp/jre21.tar.gz \
+        "https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jre/hotspot/normal/eclipse" && \
+    tar -xzf /tmp/jre21.tar.gz -C /opt/java/21 --strip-components=1 && \
+    curl -fSL -o /tmp/jre25.tar.gz \
+        "https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jre/hotspot/normal/eclipse" && \
+    tar -xzf /tmp/jre25.tar.gz -C /opt/java/25 --strip-components=1 && \
+    rm -f /tmp/jre8.tar.gz /tmp/jre21.tar.gz /tmp/jre25.tar.gz && \
+    /opt/java/8/bin/java -version && \
+    /opt/java/21/bin/java -version && \
+    /opt/java/25/bin/java -version
+
+ENV JAVA_8_HOME=/opt/java/8 \
+    JAVA_21_HOME=/opt/java/21 \
+    JAVA_25_HOME=/opt/java/25 \
+    JAVA_HOME=/opt/java/8 \
+    PATH="/opt/java/8/bin:${PATH}" \
+    MINECRAFT_VERSION=1.2.5 \
+    SERVER_TYPE=vanilla
 
 WORKDIR /server
 
-RUN curl -fSL -o /tmp/fabric-installer.jar \
-        "https://maven.fabricmc.net/net/fabricmc/fabric-installer/${FABRIC_INSTALLER_VERSION}/fabric-installer-${FABRIC_INSTALLER_VERSION}.jar" && \
-    java -jar /tmp/fabric-installer.jar server \
-        -mcversion "${MINECRAFT_VERSION}" \
-        -loader "${FABRIC_LOADER_VERSION}" \
-        -downloadMinecraft \
-        -noprofile && \
-    rm /tmp/fabric-installer.jar
+ARG MC_125_SHA=d8321edc9470e56b8ad5c67bbd16beba25843336
+RUN mkdir -p /server/jars && \
+    curl -fSL -o /server/jars/minecraft_server.1.2.5.jar \
+        "https://launcher.mojang.com/v1/objects/${MC_125_SHA}/server.jar" && \
+    echo "${MC_125_SHA}  /server/jars/minecraft_server.1.2.5.jar" | sha1sum -c -
 
-RUN mkdir -p /server/mods && \
-    curl -fSL -o "/server/mods/fabric-api-${FABRIC_API_VERSION}.jar" \
-        "https://cdn.modrinth.com/data/P7dR8mSH/versions/M8Kbv865/fabric-api-0.153.0%2B26.2.jar"
-
-COPY manager.py .
-COPY server.properties .
-COPY server-mods/ mods/
-COPY start.sh .
+COPY manager.py installer.py manager.json server.properties start.sh ./
 COPY templates/ templates/
 
 RUN chmod +x start.sh

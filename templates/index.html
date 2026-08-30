@@ -3,23 +3,20 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Fabric Minecraft Server</title>
+  <title>Minecraft Admin</title>
   <style>
-    /* --- Reset & Base --- */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
     :root {
-      --bg:        #1a1a2e;
-      --surface:   #16213e;
-      --card:      #0f3460;
-      --accent:    #e94560;
-      --green:     #4ecca3;
-      --yellow:    #f0c040;
-      --text:      #eaeaea;
-      --muted:     #8892a4;
-      --radius:    8px;
+      --bg: #1a1a2e;
+      --surface: #16213e;
+      --card: #0f3460;
+      --accent: #e94560;
+      --green: #4ecca3;
+      --yellow: #f0c040;
+      --text: #eaeaea;
+      --muted: #8892a4;
+      --radius: 8px;
     }
-
     body {
       font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
       background: var(--bg);
@@ -27,223 +24,110 @@
       min-height: 100vh;
       line-height: 1.5;
     }
-
-    /* --- Layout --- */
-    .container { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
-
-    header {
-      text-align: center;
-      margin-bottom: 32px;
-    }
-    header h1 {
-      font-size: 2rem;
-      letter-spacing: 1px;
-    }
+    .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+    header { text-align: center; margin-bottom: 28px; }
+    header h1 { font-size: 2rem; letter-spacing: 1px; }
     header h1 span { color: var(--green); }
     header p { color: var(--muted); margin-top: 4px; }
-
-    /* --- Status Card --- */
-    .status-card {
+    header a { color: var(--muted); font-size: .85rem; }
+    .status-card, .card {
       background: var(--surface);
       border-radius: var(--radius);
-      padding: 24px;
-      margin-bottom: 20px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .status-card {
       display: flex;
       flex-wrap: wrap;
       gap: 20px;
       align-items: center;
     }
-
     .status-indicator {
-      width: 18px; height: 18px;
-      border-radius: 50%;
-      display: inline-block;
-      margin-right: 10px;
+      width: 18px; height: 18px; border-radius: 50%;
+      display: inline-block; margin-right: 10px;
       animation: pulse 2s infinite;
     }
-    .status-indicator.online  { background: var(--green); box-shadow: 0 0 12px var(--green); }
+    .status-indicator.online { background: var(--green); box-shadow: 0 0 12px var(--green); }
     .status-indicator.offline { background: var(--accent); box-shadow: none; animation: none; }
     .status-indicator.loading { background: var(--yellow); box-shadow: 0 0 12px var(--yellow); }
-
-    @keyframes pulse {
-      0%, 100% { opacity: 1; }
-      50%      { opacity: .5; }
-    }
-
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
     .status-left { flex: 1; min-width: 200px; }
     .status-left h2 { font-size: 1.3rem; display: flex; align-items: center; }
     .status-meta { color: var(--muted); font-size: 0.9rem; margin-top: 6px; }
-
-    .status-right { display: flex; gap: 10px; }
-
-    /* --- Buttons --- */
-    button {
-      border: none;
-      border-radius: var(--radius);
-      padding: 10px 24px;
-      font-size: 0.95rem;
-      font-weight: 600;
-      cursor: pointer;
-      transition: transform .1s, opacity .2s;
+    .status-right { display: flex; gap: 10px; flex-wrap: wrap; }
+    button, .btn {
+      border: none; border-radius: var(--radius);
+      padding: 10px 18px; font-size: 0.92rem; font-weight: 600;
+      cursor: pointer; transition: transform .1s, opacity .2s;
+      color: #111; background: var(--green);
     }
     button:active { transform: scale(.96); }
     button:disabled { opacity: .4; cursor: not-allowed; }
-
-    .btn-start { background: var(--green); color: #111; }
-    .btn-stop  { background: var(--accent); color: #fff; }
-
-    /* --- Cards --- */
-    .card {
-      background: var(--surface);
-      border-radius: var(--radius);
-      padding: 20px;
-      margin-bottom: 20px;
+    .btn-stop, .btn-danger { background: var(--accent); color: #fff; }
+    .btn-quiet { background: var(--card); color: var(--text); }
+    .card h3 { font-size: 1.05rem; margin-bottom: 12px; color: var(--green); }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
+    input, select {
+      background: var(--card); color: var(--text); border: 1px solid #334;
+      border-radius: 6px; padding: 8px 10px; font-size: 0.95rem;
     }
-    .card h3 {
-      font-size: 1.05rem;
-      margin-bottom: 12px;
-      color: var(--green);
+    input { min-width: 160px; flex: 1; }
+    label { color: var(--muted); font-size: 0.85rem; }
+    .player-list, .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .player-tag, .chip {
+      background: var(--card); padding: 6px 12px; border-radius: 20px; font-size: 0.9rem;
     }
-
-    /* --- Players --- */
-    .player-list {
-      display: flex; flex-wrap: wrap; gap: 8px;
-    }
-    .player-tag {
-      background: var(--card);
-      padding: 6px 14px;
-      border-radius: 20px;
-      font-size: 0.9rem;
+    .chip button {
+      background: none; color: var(--accent); padding: 0 0 0 8px; font-size: 0.8rem;
     }
     .no-players { color: var(--muted); font-style: italic; }
-
-    /* --- Connection Info --- */
+    .connect-box, .log-viewer {
+      background: #0a0a18; border-radius: var(--radius); padding: 14px;
+      font-family: Consolas, 'Courier New', monospace;
+    }
     .connect-box {
-      background: var(--card);
-      border-radius: var(--radius);
-      padding: 14px 18px;
-      font-family: 'Consolas', 'Courier New', monospace;
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
       font-size: 1.05rem;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
     }
-    .connect-box .copy-btn {
-      background: var(--green);
-      color: #111;
-      padding: 6px 14px;
-      font-size: 0.8rem;
-      border-radius: 4px;
-      white-space: nowrap;
-    }
-
-    /* --- Log Viewer --- */
     .log-viewer {
-      background: #0a0a18;
-      border-radius: var(--radius);
-      padding: 14px;
-      max-height: 300px;
-      overflow-y: auto;
-      font-family: 'Consolas', 'Courier New', monospace;
-      font-size: 0.8rem;
-      line-height: 1.6;
-      color: #aab;
+      max-height: 260px; overflow-y: auto; font-size: 0.8rem; line-height: 1.6; color: #aab;
     }
-    .log-viewer::-webkit-scrollbar { width: 6px; }
-    .log-viewer::-webkit-scrollbar-thumb { background: #334; border-radius: 3px; }
-
-    /* --- Idle Bar --- */
-    .idle-bar-container {
-      margin-top: 10px;
-    }
-    .idle-bar-label {
-      font-size: 0.85rem;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    .idle-bar-track {
-      height: 6px;
-      background: var(--card);
-      border-radius: 3px;
-      overflow: hidden;
-    }
-    .idle-bar-fill {
-      height: 100%;
-      background: var(--yellow);
-      border-radius: 3px;
-      transition: width 1s linear;
-    }
-
-    /* --- Setup Guide --- */
-    .guide-section { margin-top: 8px; }
-    .guide-section summary {
-      cursor: pointer;
-      font-weight: 600;
-      color: var(--green);
-      padding: 6px 0;
-    }
-    .guide-section ol, .guide-section ul {
-      padding-left: 20px;
-      margin-top: 8px;
-    }
-    .guide-section li { margin-bottom: 6px; }
-    .guide-section code {
-      background: var(--card);
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: 0.9em;
-    }
-    .guide-section a {
-      color: var(--green);
-    }
-
-    /* --- Tabs --- */
-    .tabs {
-      display: flex;
-      gap: 2px;
-      margin-bottom: 0;
-    }
+    .idle-bar-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+    .idle-bar-track { height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
+    .idle-bar-fill { height: 100%; background: var(--yellow); border-radius: 3px; }
+    .tabs { display: flex; gap: 2px; }
     .tab {
-      background: var(--card);
-      padding: 8px 20px;
+      background: var(--card); padding: 8px 16px;
       border-radius: var(--radius) var(--radius) 0 0;
-      cursor: pointer;
-      font-size: 0.9rem;
       color: var(--muted);
-      border: none;
     }
-    .tab.active {
-      background: var(--surface);
-      color: var(--text);
-    }
-    .tab-content {
-      display: none;
-    }
-    .tab-content.active {
-      display: block;
-    }
-    .tabbed-card {
-      border-radius: 0 var(--radius) var(--radius) var(--radius);
-    }
-
-    /* --- Responsive --- */
+    .tab.active { background: var(--surface); color: var(--text); }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .tabbed-card { border-radius: 0 var(--radius) var(--radius) var(--radius); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid #243; }
+    th { color: var(--muted); font-weight: 600; }
+    .guide-section { margin-top: 8px; }
+    .guide-section summary { cursor: pointer; font-weight: 600; color: var(--green); padding: 6px 0; }
+    .guide-section ol, .guide-section ul { padding-left: 20px; margin-top: 8px; }
+    .guide-section li { margin-bottom: 6px; }
+    .guide-section code { background: var(--card); padding: 2px 6px; border-radius: 3px; }
+    .note { color: var(--muted); font-size: 0.85rem; margin-top: 8px; }
+    .error { color: var(--accent); font-size: 0.9rem; margin-top: 8px; }
     @media (max-width: 600px) {
       header h1 { font-size: 1.4rem; }
       .status-card { flex-direction: column; align-items: stretch; }
-      .status-right { justify-content: center; }
     }
   </style>
 </head>
 <body>
   <div class="container">
-    <!-- Header -->
     <header>
-      <h1>Minecraft <span>Fabric</span></h1>
-      <p>Admin Control Panel &middot; <a href="/api/logout" style="color:var(--muted);font-size:.85rem;">Logout</a></p>
+      <h1>Minecraft <span id="headerVersion">1.2.5</span></h1>
+      <p>Admin Control Panel &middot; <a href="/api/logout">Logout</a></p>
     </header>
 
-    <!-- Status Card -->
     <div class="status-card">
       <div class="status-left">
         <h2>
@@ -252,131 +136,164 @@
         </h2>
         <div id="statusMeta" class="status-meta"></div>
         <div id="idleBar" class="idle-bar-container" style="display:none;">
-          <div class="idle-bar-label">
-            Auto-shutdown in <span id="idleCountdown">--</span>
-          </div>
-          <div class="idle-bar-track">
-            <div id="idleBarFill" class="idle-bar-fill" style="width:0%"></div>
-          </div>
+          <div class="idle-bar-label">Auto-shutdown in <span id="idleCountdown">--</span></div>
+          <div class="idle-bar-track"><div id="idleBarFill" class="idle-bar-fill" style="width:0%"></div></div>
         </div>
       </div>
       <div class="status-right">
         <button id="btnStart" class="btn-start" onclick="doStart()">Start Server</button>
         <button id="btnStop" class="btn-stop" onclick="doStop()" disabled>Stop Server</button>
+        <button class="btn-quiet" onclick="doSave()">Save World</button>
       </div>
     </div>
 
-    <!-- Players -->
     <div class="card">
       <h3>Players Online (<span id="playerCount">0</span>)</h3>
-      <div id="playerList" class="player-list">
-        <span class="no-players">No players online</span>
-      </div>
+      <div id="playerList" class="player-list"><span class="no-players">No players online</span></div>
     </div>
 
-    <!-- Connection Info -->
     <div class="card">
       <h3>Connection Info</h3>
-      <p style="color:var(--muted); margin-bottom:12px; font-size:0.9rem;">
-        Use this address in Minecraft Multiplayer:
-      </p>
+      <p class="note">Use this address in Minecraft Multiplayer. Friends need the <strong>same version</strong> as the server.</p>
       <div class="connect-box">
         <span id="serverAddr">Loading...</span>
         <button class="copy-btn" onclick="copyAddress()">Copy</button>
       </div>
-      <p style="color:var(--muted); margin-top:10px; font-size:0.85rem;">
-        Players can connect anytime &mdash; the sleep proxy auto-starts the server
-        and tells them to reconnect in ~30 seconds.
-      </p>
     </div>
 
-    <!-- Tabbed: Logs / Setup Guide -->
+    <div class="card">
+      <h3>Version and type</h3>
+      <p class="note">Stop the server before switching. A version change creates or uses a matching world so old worlds are not overwritten.</p>
+      <div class="row">
+        <label>Type
+          <select id="typeSelect" onchange="onTypeChange()">
+            <option value="vanilla">Vanilla</option>
+            <option value="fabric">Fabric</option>
+            <option value="forge">Forge</option>
+            <option value="modpack">Modpack</option>
+          </select>
+        </label>
+        <label>Version
+          <select id="versionSelect"></select>
+        </label>
+        <input id="worldForVersion" placeholder="World name for this version">
+        <button onclick="applyVersion()">Apply</button>
+      </div>
+      <div id="modpackRow" class="row" style="display:none;">
+        <input id="modpackUrl" placeholder="Modrinth .mrpack or zip URL">
+        <input id="modpackName" placeholder="Instance name">
+        <button onclick="installModpackUrl()">Install URL</button>
+        <input id="modpackFile" type="file" accept=".mrpack,.zip">
+        <button onclick="uploadModpack()">Upload pack</button>
+      </div>
+      <div id="versionError" class="error"></div>
+    </div>
+
+    <div class="card">
+      <h3>Worlds</h3>
+      <div class="row">
+        <input id="newWorldName" placeholder="New world name">
+        <button onclick="createWorld()">Create</button>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Size</th><th></th></tr></thead>
+        <tbody id="worldRows"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Backups</h3>
+      <div class="row">
+        <button onclick="createBackup()">Backup current world</button>
+      </div>
+      <table>
+        <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
+        <tbody id="backupRows"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Whitelist and ops</h3>
+      <p class="note">1.2.5 runs offline. Anyone who can reach the TCP port can spoof a name, so keep the whitelist on.</p>
+      <div class="row">
+        <input id="playerName" placeholder="Player name">
+        <button onclick="addList('whitelist')">Add to whitelist</button>
+        <button onclick="addList('ops')">Make op</button>
+      </div>
+      <p class="note">Whitelist</p>
+      <div id="whitelistChips" class="chip-list"></div>
+      <p class="note" style="margin-top:10px;">Ops</p>
+      <div id="opsChips" class="chip-list"></div>
+    </div>
+
+    <div class="card">
+      <h3>Console</h3>
+      <div class="row">
+        <input id="cmdInput" placeholder="save-all, op Steve, whitelist add Alex">
+        <button onclick="runCommand()">Run</button>
+      </div>
+    </div>
+
     <div class="tabs">
       <button class="tab active" onclick="switchTab('logs', this)">Server Logs</button>
       <button class="tab" onclick="switchTab('guide', this)">Setup Guide</button>
     </div>
-
     <div id="tab-logs" class="card tabbed-card tab-content active">
       <div id="logViewer" class="log-viewer">Waiting for logs...</div>
     </div>
-
     <div id="tab-guide" class="card tabbed-card tab-content">
       <details class="guide-section" open>
-        <summary>1. Use the current Minecraft release</summary>
-        <p>Open the official Minecraft Launcher and select the latest Java Edition release.</p>
+        <summary>1. Install Minecraft 1.2.5</summary>
+        <p>The default server is vanilla Java 1.2.5. Latest Minecraft cannot join.</p>
         <ol>
-          <li>Open Minecraft Launcher</li>
-          <li>Select <strong>Java Edition</strong></li>
-          <li>Choose the latest release profile</li>
-          <li>Click Play</li>
+          <li>Open the official Minecraft Launcher</li>
+          <li>Create a new installation and pick release <strong>1.2.5</strong></li>
+          <li>Or use Prism/MultiMC with 1.2.5 and the Betacraft proxy <code>betacraft.ee:11707</code></li>
         </ol>
       </details>
-
       <details class="guide-section">
-        <summary>2. Optional: Fabric client</summary>
+        <summary>2. Connecting</summary>
         <ol>
-          <li>Install Fabric Loader for the same Minecraft version as the server</li>
-          <li>Add any client-side mods you want locally</li>
-          <li>Use the Fabric profile in the launcher</li>
-        </ol>
-        <p style="margin-top:8px; color:var(--muted); font-size:0.9rem;">
-          The server currently ships with Fabric Loader and no bundled gameplay mods.
-        </p>
-      </details>
-
-      <details class="guide-section">
-        <summary>3. Connecting to the Server</summary>
-        <ol>
-          <li>Click <strong>Multiplayer</strong> on the main menu</li>
-          <li>Enter the server address shown above and click <strong>Connect</strong></li>
-          <li>If the server is sleeping you'll see <em>"Server is waking up! Reconnect in ~30 seconds."</em> &mdash; just wait and reconnect</li>
+          <li>Click Multiplayer and enter the address above</li>
+          <li>If the server is sleeping you will be kicked with a wake message — wait about 30 seconds and reconnect</li>
+          <li>Ask an admin to whitelist your exact player name first</li>
         </ol>
       </details>
-
       <details class="guide-section">
-        <summary>4. Server Notes</summary>
+        <summary>3. Changing version later</summary>
         <ul>
-          <li>The beta world and plugin data are archived on the Railway volume during the first Fabric boot.</li>
-          <li>Fabric mods can be added to the persistent <code>mods/</code> directory later.</li>
-          <li>Use the admin command box to run console commands such as <code>op playername</code>.</li>
+          <li>Use this panel. You do not need to change Railway variables for a version switch.</li>
+          <li>Vanilla, Fabric, curated Forge (1.7.10 / 1.12.2 / 1.16.5), and uploaded modpacks are supported.</li>
+          <li>Worlds from other versions are not reused automatically. Pick or create a world for the new version.</li>
         </ul>
       </details>
-
       <details class="guide-section">
-        <summary>5. Server Rules</summary>
+        <summary>4. Server notes</summary>
         <ul>
-          <li>Be respectful to other players</li>
-          <li>No griefing or stealing</li>
-          <li>The server auto-shuts down after 10 minutes with no players to save hosting costs</li>
-          <li>Just connect to the server address and it will wake up automatically</li>
+          <li>Old Fabric and beta data on the Railway volume is archived, not deleted.</li>
+          <li>The server auto-stops after 10 minutes with no players.</li>
+          <li>Be respectful. No griefing or stealing.</li>
         </ul>
       </details>
     </div>
   </div>
 
   <script>
-    // -----------------------------------------------------------------------
-    // State
-    // -----------------------------------------------------------------------
-    let autoRefresh = null;
-    let logRefresh = null;
-
-    // Determine server address from the current hostname
-    // Railway TCP proxy will be on a different port — set this via the
-    // MC_PUBLIC_ADDRESS env var or we fall back to hostname guidance.
     const SERVER_ADDR_OVERRIDE = __MC_PUBLIC_ADDRESS_JSON__;
+    let versionCatalog = { vanilla: ["1.2.5"], fabric: [], forge: [] };
 
-    // -----------------------------------------------------------------------
-    // API helpers
-    // -----------------------------------------------------------------------
-    async function api(method, path, body) {
+    async function api(method, path, body, raw) {
       const opts = { method };
-      if (body) {
+      if (raw) {
+        opts.body = raw;
+        opts.headers = body || {};
+      } else if (body) {
         opts.headers = { "Content-Type": "application/json" };
         opts.body = JSON.stringify(body);
       }
       const res = await fetch(path, opts);
-      return res.json();
+      const text = await res.text();
+      try { return JSON.parse(text); } catch (e) { return { error: text || res.statusText }; }
     }
 
     async function doStart() {
@@ -384,121 +301,31 @@
       await api("POST", "/api/start");
       setTimeout(refreshStatus, 500);
     }
-
     async function doStop() {
+      if (!confirm("Stop the Minecraft server?")) return;
       document.getElementById("btnStop").disabled = true;
       await api("POST", "/api/stop");
       setTimeout(refreshStatus, 500);
     }
-
-    // -----------------------------------------------------------------------
-    // Status updates
-    // -----------------------------------------------------------------------
-    async function refreshStatus() {
-      try {
-        const s = await api("GET", "/api/status");
-        const dot  = document.getElementById("statusDot");
-        const text = document.getElementById("statusText");
-        const meta = document.getElementById("statusMeta");
-        const idle = document.getElementById("idleBar");
-        const btnStart = document.getElementById("btnStart");
-        const btnStop  = document.getElementById("btnStop");
-
-        // Status indicator
-        if (s.starting) {
-          dot.className = "status-indicator loading";
-          text.textContent = "Starting...";
-          meta.textContent = "The server is booting up. This may take a moment.";
-          btnStart.disabled = true;
-          btnStop.disabled  = true;
-        } else if (s.stopping) {
-          dot.className = "status-indicator loading";
-          text.textContent = "Stopping...";
-          meta.textContent = "The server is shutting down.";
-          btnStart.disabled = true;
-          btnStop.disabled  = true;
-        } else if (s.running) {
-          dot.className = "status-indicator online";
-          text.textContent = "Online";
-          const uptimeStr = s.uptime ? formatDuration(s.uptime) : "";
-          meta.textContent = `${s.player_count} player${s.player_count !== 1 ? "s" : ""} online` +
-                             (uptimeStr ? ` · Uptime: ${uptimeStr}` : "");
-          btnStart.disabled = true;
-          btnStop.disabled  = false;
-        } else {
-          dot.className = "status-indicator offline";
-          text.textContent = "Offline";
-          meta.textContent = s.proxy_active
-            ? "Sleep proxy active \u2014 server will auto-start when a player connects."
-            : "Server is offline.";
-          btnStart.disabled = false;
-          btnStop.disabled  = true;
-        }
-
-        // Idle countdown bar
-        if (s.running && s.player_count === 0 && s.idle_seconds > 0) {
-          idle.style.display = "block";
-          const remaining = Math.max(0, s.idle_timeout - s.idle_seconds);
-          document.getElementById("idleCountdown").textContent = formatDuration(remaining);
-          const pct = Math.min(100, (s.idle_seconds / s.idle_timeout) * 100);
-          document.getElementById("idleBarFill").style.width = pct + "%";
-        } else {
-          idle.style.display = "none";
-        }
-
-        // Players
-        const pc = document.getElementById("playerCount");
-        const pl = document.getElementById("playerList");
-        pc.textContent = s.player_count;
-        if (s.players && s.players.length > 0) {
-          pl.innerHTML = s.players.map(p =>
-            `<span class="player-tag">${escHtml(p)}</span>`
-          ).join("");
-        } else {
-          pl.innerHTML = `<span class="no-players">No players online</span>`;
-        }
-      } catch (e) {
-        // Panel unreachable
-      }
+    async function doSave() {
+      const out = await api("POST", "/api/save");
+      alert(out.success ? "Save requested." : (out.error || "Server is not running."));
+    }
+    async function runCommand() {
+      const input = document.getElementById("cmdInput");
+      const command = input.value.trim();
+      if (!command) return;
+      const out = await api("POST", "/api/command", { command });
+      if (!out.success) alert(out.error || "Command failed. Is the server running?");
+      input.value = "";
+      setTimeout(refreshLogs, 400);
     }
 
-    async function refreshLogs() {
-      try {
-        const data = await api("GET", "/api/logs");
-        const viewer = document.getElementById("logViewer");
-        if (data.logs && data.logs.length > 0) {
-          viewer.textContent = data.logs.join("\n");
-          // Auto-scroll to bottom
-          viewer.scrollTop = viewer.scrollHeight;
-        }
-      } catch (e) {}
+    function formatBytes(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1048576).toFixed(1) + " MB";
     }
-
-    // -----------------------------------------------------------------------
-    // Connection address
-    // -----------------------------------------------------------------------
-    function updateAddress() {
-      const el = document.getElementById("serverAddr");
-      if (SERVER_ADDR_OVERRIDE) {
-        el.textContent = SERVER_ADDR_OVERRIDE;
-      } else {
-        // Provide guidance — the actual TCP address depends on Railway config
-        el.textContent = location.hostname + " (see Setup Guide for port)";
-      }
-    }
-
-    function copyAddress() {
-      const addr = document.getElementById("serverAddr").textContent;
-      navigator.clipboard.writeText(addr).then(() => {
-        const btn = document.querySelector(".copy-btn");
-        btn.textContent = "Copied!";
-        setTimeout(() => btn.textContent = "Copy", 1500);
-      });
-    }
-
-    // -----------------------------------------------------------------------
-    // Utilities
-    // -----------------------------------------------------------------------
     function formatDuration(seconds) {
       const h = Math.floor(seconds / 3600);
       const m = Math.floor((seconds % 3600) / 60);
@@ -507,13 +334,245 @@
       if (m > 0) return `${m}m ${s}s`;
       return `${s}s`;
     }
-
     function escHtml(str) {
       const d = document.createElement("div");
       d.textContent = str;
       return d.innerHTML;
     }
 
+    async function refreshStatus() {
+      try {
+        const s = await api("GET", "/api/status");
+        const dot = document.getElementById("statusDot");
+        const text = document.getElementById("statusText");
+        const meta = document.getElementById("statusMeta");
+        const idle = document.getElementById("idleBar");
+        const btnStart = document.getElementById("btnStart");
+        const btnStop = document.getElementById("btnStop");
+        document.getElementById("headerVersion").textContent = s.minecraft_version || "1.2.5";
+
+        if (s.starting) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Starting...";
+          meta.textContent = `${s.type || "vanilla"} ${s.minecraft_version || ""} is booting.`;
+          btnStart.disabled = true; btnStop.disabled = true;
+        } else if (s.stopping) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Stopping...";
+          meta.textContent = "The server is shutting down.";
+          btnStart.disabled = true; btnStop.disabled = true;
+        } else if (s.running) {
+          dot.className = "status-indicator online";
+          text.textContent = "Online";
+          const uptimeStr = s.uptime ? formatDuration(s.uptime) : "";
+          meta.textContent = `${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · Java ${s.java || "?"} · ${s.player_count} player${s.player_count !== 1 ? "s" : ""}` + (uptimeStr ? ` · ${uptimeStr}` : "");
+          btnStart.disabled = true; btnStop.disabled = false;
+        } else {
+          dot.className = "status-indicator offline";
+          text.textContent = "Offline";
+          meta.textContent = s.proxy_active
+            ? `${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · sleep proxy waiting`
+            : "Server is offline.";
+          btnStart.disabled = false; btnStop.disabled = true;
+        }
+
+        if (s.running && s.player_count === 0 && s.idle_seconds > 0) {
+          idle.style.display = "block";
+          const remaining = Math.max(0, s.idle_timeout - s.idle_seconds);
+          document.getElementById("idleCountdown").textContent = formatDuration(remaining);
+          document.getElementById("idleBarFill").style.width = Math.min(100, (s.idle_seconds / s.idle_timeout) * 100) + "%";
+        } else idle.style.display = "none";
+
+        const pl = document.getElementById("playerList");
+        document.getElementById("playerCount").textContent = s.player_count;
+        if (s.players && s.players.length) {
+          pl.innerHTML = s.players.map(p => `<span class="player-tag">${escHtml(p)}</span>`).join("");
+        } else pl.innerHTML = `<span class="no-players">No players online</span>`;
+
+        if (s.type) document.getElementById("typeSelect").value = s.type;
+        onTypeChange();
+        if (s.minecraft_version) document.getElementById("versionSelect").value = s.minecraft_version;
+        if (s.level_name) document.getElementById("worldForVersion").placeholder = s.level_name;
+      } catch (e) {}
+    }
+
+    async function refreshLogs() {
+      try {
+        const data = await api("GET", "/api/logs");
+        const viewer = document.getElementById("logViewer");
+        if (data.logs && data.logs.length) {
+          viewer.textContent = data.logs.join("\n");
+          viewer.scrollTop = viewer.scrollHeight;
+        }
+      } catch (e) {}
+    }
+
+    function fillVersions() {
+      const type = document.getElementById("typeSelect").value;
+      const select = document.getElementById("versionSelect");
+      const list = versionCatalog[type] || versionCatalog.vanilla || ["1.2.5"];
+      select.innerHTML = list.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
+    }
+    function onTypeChange() {
+      const type = document.getElementById("typeSelect").value;
+      document.getElementById("modpackRow").style.display = type === "modpack" ? "flex" : "none";
+      fillVersions();
+    }
+
+    async function loadVersions() {
+      const data = await api("GET", "/api/versions");
+      versionCatalog = data;
+      if (data.current) {
+        document.getElementById("typeSelect").value = data.current.type || "vanilla";
+      }
+      onTypeChange();
+      if (data.current && data.current.minecraft_version) {
+        document.getElementById("versionSelect").value = data.current.minecraft_version;
+      }
+    }
+
+    async function applyVersion() {
+      if (!confirm("Stop is required. Switch version and use the chosen world?")) return;
+      const err = document.getElementById("versionError");
+      err.textContent = "";
+      const body = {
+        type: document.getElementById("typeSelect").value,
+        minecraft_version: document.getElementById("versionSelect").value,
+        level_name: document.getElementById("worldForVersion").value.trim()
+      };
+      const out = await api("POST", "/api/version", body);
+      if (out.error) err.textContent = out.error;
+      else {
+        await loadWorlds();
+        await refreshStatus();
+      }
+    }
+
+    async function installModpackUrl() {
+      const out = await api("POST", "/api/modpack", {
+        url: document.getElementById("modpackUrl").value.trim(),
+        name: document.getElementById("modpackName").value.trim()
+      });
+      document.getElementById("versionError").textContent = out.error || (out.success ? "Modpack installed." : "");
+      refreshStatus();
+    }
+    async function uploadModpack() {
+      const file = document.getElementById("modpackFile").files[0];
+      if (!file) { alert("Choose a .mrpack or .zip first"); return; }
+      const name = document.getElementById("modpackName").value.trim() || file.name.replace(/\.(mrpack|zip)$/i, "");
+      const out = await api("POST", "/api/modpack/upload", {
+        "X-Filename": file.name,
+        "X-Instance-Name": name
+      }, file);
+      document.getElementById("versionError").textContent = out.error || (out.success ? "Modpack uploaded." : "");
+      refreshStatus();
+    }
+
+    async function loadWorlds() {
+      const data = await api("GET", "/api/worlds");
+      const rows = document.getElementById("worldRows");
+      rows.innerHTML = (data.worlds || []).map(w => `
+        <tr>
+          <td>${escHtml(w.name)}${w.active ? " (active)" : ""}${w.has_level ? "" : " · empty"}</td>
+          <td>${formatBytes(w.size || 0)}</td>
+          <td>
+            ${w.active ? "" : `<button onclick="selectWorld('${escHtml(w.name)}')">Use</button>`}
+            ${w.active ? "" : `<button class="btn-danger" onclick="deleteWorld('${escHtml(w.name)}')">Delete</button>`}
+          </td>
+        </tr>`).join("");
+    }
+    async function createWorld() {
+      const name = document.getElementById("newWorldName").value.trim();
+      const out = await api("POST", "/api/worlds", { name });
+      if (out.error) alert(out.error);
+      document.getElementById("newWorldName").value = "";
+      loadWorlds();
+    }
+    async function selectWorld(name) {
+      if (!confirm("Switch to world " + name + "? The server must be stopped.")) return;
+      const out = await api("POST", "/api/worlds/select", { name });
+      if (out.error) alert(out.error);
+      loadWorlds(); refreshStatus();
+    }
+    async function deleteWorld(name) {
+      if (!confirm("Delete world " + name + "?")) return;
+      const out = await api("DELETE", "/api/worlds/" + encodeURIComponent(name));
+      if (out.error) alert(out.error);
+      loadWorlds();
+    }
+
+    async function loadBackups() {
+      const data = await api("GET", "/api/backups");
+      const rows = document.getElementById("backupRows");
+      rows.innerHTML = (data.backups || []).map(b => `
+        <tr>
+          <td>${escHtml(b.name)}</td>
+          <td>${formatBytes(b.size || 0)}</td>
+          <td>
+            <a href="/api/backups/${encodeURIComponent(b.name)}" style="color:var(--green);margin-right:8px;">Download</a>
+            <button onclick="restoreBackup('${escHtml(b.name)}')">Restore</button>
+            <button class="btn-danger" onclick="deleteBackup('${escHtml(b.name)}')">Delete</button>
+          </td>
+        </tr>`).join("") || `<tr><td colspan="3" class="no-players">No backups yet</td></tr>`;
+    }
+    async function createBackup() {
+      const out = await api("POST", "/api/backups", {});
+      if (out.error) alert(out.error);
+      loadBackups();
+    }
+    async function restoreBackup(name) {
+      if (!confirm("Restore " + name + "? This overwrites that world folder. Server must be stopped.")) return;
+      const out = await api("POST", "/api/backups/restore", { name });
+      if (out.error) alert(out.error);
+      loadWorlds(); loadBackups();
+    }
+    async function deleteBackup(name) {
+      if (!confirm("Delete backup " + name + "?")) return;
+      const out = await api("DELETE", "/api/backups/" + encodeURIComponent(name));
+      if (out.error) alert(out.error);
+      loadBackups();
+    }
+
+    function renderChips(id, names, kind) {
+      const el = document.getElementById(id);
+      if (!names || !names.length) {
+        el.innerHTML = `<span class="no-players">Empty</span>`;
+        return;
+      }
+      el.innerHTML = names.map(n =>
+        `<span class="chip">${escHtml(n)}<button onclick="removeList('${kind}','${escHtml(n)}')">x</button></span>`
+      ).join("");
+    }
+    async function loadPlayers() {
+      const data = await api("GET", "/api/players");
+      renderChips("whitelistChips", data.whitelist, "whitelist");
+      renderChips("opsChips", data.ops, "ops");
+    }
+    async function addList(kind) {
+      const name = document.getElementById("playerName").value.trim();
+      if (!name) return;
+      const out = await api("POST", "/api/" + kind, { name, action: "add" });
+      if (out.error) alert(out.error);
+      document.getElementById("playerName").value = "";
+      loadPlayers();
+    }
+    async function removeList(kind, name) {
+      const out = await api("POST", "/api/" + kind, { name, action: "remove" });
+      if (out.error) alert(out.error);
+      loadPlayers();
+    }
+
+    function updateAddress() {
+      const el = document.getElementById("serverAddr");
+      el.textContent = SERVER_ADDR_OVERRIDE || (location.hostname + " (set MC_PUBLIC_ADDRESS for the TCP proxy)");
+    }
+    function copyAddress() {
+      navigator.clipboard.writeText(document.getElementById("serverAddr").textContent).then(() => {
+        const btn = document.querySelector(".copy-btn");
+        btn.textContent = "Copied!";
+        setTimeout(() => btn.textContent = "Copy", 1500);
+      });
+    }
     function switchTab(name, btn) {
       document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
       document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
@@ -521,14 +580,15 @@
       document.getElementById("tab-" + name).classList.add("active");
     }
 
-    // -----------------------------------------------------------------------
-    // Init
-    // -----------------------------------------------------------------------
     updateAddress();
+    loadVersions();
     refreshStatus();
     refreshLogs();
-    autoRefresh = setInterval(refreshStatus, 3000);
-    logRefresh  = setInterval(refreshLogs, 5000);
+    loadWorlds();
+    loadBackups();
+    loadPlayers();
+    setInterval(refreshStatus, 3000);
+    setInterval(refreshLogs, 5000);
   </script>
 </body>
 </html>
