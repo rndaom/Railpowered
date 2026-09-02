@@ -292,14 +292,13 @@
     </div>
     <div id="tab-guide" class="card tabbed-card tab-content">
       <details class="guide-section" open>
-        <summary>Do this once in Railway</summary>
-        <div class="steps">
-          <div class="step"><span class="num">1</span><div><strong>Save the world</strong><p>Add a volume and mount it at <code>/server/data</code>.</p></div></div>
-          <div class="step"><span class="num">2</span><div><strong>Open the game port</strong><p>Add a TCP proxy on port <code>25565</code>. Copy the host:port Railway gives you.</p></div></div>
-          <div class="step"><span class="num">3</span><div><strong>Set a dashboard password</strong><p>Add variable <code>ADMIN_KEY</code> and pick a password you will remember.</p></div></div>
-          <div class="step"><span class="num">4</span><div><strong>Show the join address</strong><p>Add variable <code>MC_PUBLIC_ADDRESS</code> and paste the TCP host:port from step 2.</p></div></div>
-          <div class="step"><span class="num">5</span><div><strong>Open this dashboard</strong><p>Click the Railway web URL, log in with <code>ADMIN_KEY</code>, then press Start when friends are ready.</p></div></div>
-        </div>
+        <summary>You are done</summary>
+        <p class="note">The Railway template already attached the world volume, opened TCP 25565, generated <code>ADMIN_KEY</code>, and published this dashboard.</p>
+        <p class="note">Log in with <code>ADMIN_KEY</code> from Railway → Minecraft → Variables. Friends join with the address above. Press Start when they are ready.</p>
+      </details>
+      <details class="guide-section">
+        <summary>If the join address is empty</summary>
+        <p class="note">The service is missing Railway’s TCP proxy on <code>25565</code>. That is included in the one-click template. If you deployed from GitHub by hand, add that proxy once — you do not type any variables.</p>
       </details>
       <details class="guide-section">
         <summary>Join from Minecraft</summary>
@@ -671,7 +670,7 @@
 
     function updateAddress() {
       const el = document.getElementById("serverAddr");
-      el.textContent = SERVER_ADDR_OVERRIDE || (location.hostname + " (set MC_PUBLIC_ADDRESS to the Railway TCP address)");
+      el.textContent = SERVER_ADDR_OVERRIDE || "Waiting for Railway TCP 25565";
     }
     function copyAddress() {
       navigator.clipboard.writeText(document.getElementById("serverAddr").textContent).then(() => {

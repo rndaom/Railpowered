@@ -563,5 +563,65 @@ class HttpServerTests(unittest.TestCase):
             tmp.cleanup()
 
 
+class RailwayRuntimeConfigTests(unittest.TestCase):
+    def test_public_address_prefers_override(self):
+        from mc_host.config import resolve_public_address
+
+        self.assertEqual(
+            resolve_public_address(
+                {
+                    "MC_PUBLIC_ADDRESS": "play.example:25565",
+                    "RAILWAY_TCP_PROXY_DOMAIN": "x.proxy.rlwy.net",
+                    "RAILWAY_TCP_PROXY_PORT": "11105",
+                }
+            ),
+            "play.example:25565",
+        )
+
+    def test_public_address_uses_railway_tcp_proxy(self):
+        from mc_host.config import resolve_public_address
+
+        self.assertEqual(
+            resolve_public_address(
+                {
+                    "RAILWAY_TCP_PROXY_DOMAIN": "roundhouse.proxy.rlwy.net",
+                    "RAILWAY_TCP_PROXY_PORT": "11105",
+                }
+            ),
+            "roundhouse.proxy.rlwy.net:11105",
+        )
+
+    def test_public_address_ignores_unevaluated_template(self):
+        from mc_host.config import resolve_public_address
+
+        self.assertEqual(
+            resolve_public_address(
+                {
+                    "MC_PUBLIC_ADDRESS": "${{Minecraft.RAILWAY_TCP_PROXY_DOMAIN}}",
+                    "RAILWAY_TCP_PROXY_DOMAIN": "host.proxy.rlwy.net",
+                    "RAILWAY_TCP_PROXY_PORT": "2000",
+                }
+            ),
+            "host.proxy.rlwy.net:2000",
+        )
+
+    def test_admin_key_persists_on_volume(self):
+        from mc_host.config import resolve_admin_key
+
+        tmp = tempfile.TemporaryDirectory()
+        try:
+            first, from_env = resolve_admin_key(tmp.name, {})
+            self.assertFalse(from_env)
+            self.assertTrue(first)
+            second, again_from_env = resolve_admin_key(tmp.name, {})
+            self.assertFalse(again_from_env)
+            self.assertEqual(first, second)
+            chosen, env_set = resolve_admin_key(tmp.name, {"ADMIN_KEY": "chosen-key"})
+            self.assertTrue(env_set)
+            self.assertEqual(chosen, "chosen-key")
+        finally:
+            tmp.cleanup()
+
+
 if __name__ == "__main__":
     unittest.main()

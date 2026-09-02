@@ -6,14 +6,25 @@ export default defineRailway(() => {
   });
 
   const minecraft = service("Minecraft", {
-    source: github("rndaom/powered-rail"),
+    source: github("rndaom/Rail-Powered"),
     start: "./start.sh",
     healthcheck: "/health",
     healthcheckTimeout: 300,
+    tcp: [25565],
+    deploy: {
+      requiredMountPath: "/server/data",
+      restartPolicyType: "ON_FAILURE",
+      restartPolicyMaxRetries: 3,
+    },
     volumeMounts: {
       "/server/data": world,
     },
     env: {
+      ADMIN_KEY: {
+        generator: "secret",
+        isSealed: true,
+        description: "Dashboard login. Copy this from Variables after deploy.",
+      },
       MINECRAFT_VERSION: "latest",
       SERVER_TYPE: "vanilla",
       AUTO_START: "false",

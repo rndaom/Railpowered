@@ -5,8 +5,56 @@ from __future__ import annotations
 import base64
 import hashlib
 import os
+from collections.abc import Mapping
 
 import installer
+
+ADMIN_KEY_FILE = ".admin-key"
+
+
+def resolve_public_address(env: Mapping[str, str] | None = None) -> str:
+    """Join address: explicit override, else Railway's TCP proxy host:port."""
+    environ = os.environ if env is None else env
+    override = str(environ.get("MC_PUBLIC_ADDRESS", "")).strip()
+    if override and not _unevaluated_template(override):
+        return override
+    domain = str(environ.get("RAILWAY_TCP_PROXY_DOMAIN", "")).strip()
+    port = str(environ.get("RAILWAY_TCP_PROXY_PORT", "")).strip()
+    if domain and port:
+        return f"{domain}:{port}"
+    return ""
+
+
+def resolve_admin_key(
+    data_dir: str, env: Mapping[str, str] | None = None
+) -> tuple[str, bool]:
+    """Use ADMIN_KEY when set; otherwise reuse or create a key on the volume."""
+    environ = os.environ if env is None else env
+    env_key = str(environ.get("ADMIN_KEY", "")).strip()
+    if env_key and not _unevaluated_template(env_key):
+        return env_key, True
+    path = os.path.join(data_dir, ADMIN_KEY_FILE)
+    try:
+        with open(path, encoding="utf-8") as handle:
+            stored = handle.read().strip()
+        if stored:
+            return stored, False
+    except OSError:
+        pass
+    key = base64.urlsafe_b64encode(os.urandom(18)).decode()
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(key)
+    except OSError:
+        pass
+    return key, False
+
+
+def _unevaluated_template(value: str) -> bool:
+    return value.startswith("${{") and "}}" in value
+
 
 MC_DIR = installer.DATA_DIR
 MC_PORT = 25565
@@ -22,12 +70,9 @@ if not os.path.isdir(TEMPLATE_DIR):
     )
     if os.path.isdir(_local_templates):
         TEMPLATE_DIR = _local_templates
-ADMIN_KEY = os.environ.get("ADMIN_KEY", "")
-ADMIN_KEY_FROM_ENV = bool(ADMIN_KEY)
-if not ADMIN_KEY:
-    ADMIN_KEY = base64.urlsafe_b64encode(os.urandom(18)).decode()
+ADMIN_KEY, ADMIN_KEY_FROM_ENV = resolve_admin_key(installer.DATA_DIR)
 ADMIN_TOKEN = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()[:32]
-MC_PUBLIC_ADDRESS = os.environ.get("MC_PUBLIC_ADDRESS", "").strip()
+MC_PUBLIC_ADDRESS = resolve_public_address()
 
 LOGIN_HTML = """\
 <!DOCTYPE html>
@@ -45,6 +90,7 @@ LOGIN_HTML = """\
     .mark{width:56px;height:56px;margin:0 auto 16px;display:block}
     h2{color:#e4b23a;margin-bottom:6px;text-align:center;letter-spacing:.04em}
     p{color:#b09a7c;text-align:center;font-size:.92rem;margin-bottom:18px}
+    .hint{font-size:.8rem;margin-top:14px;margin-bottom:0}
     input{width:100%;padding:12px;border-radius:10px;border:1px solid #453526;
           background:#16110c;color:#f4ead6;font-size:1rem;margin-bottom:14px}
     input:focus{outline:none;border-color:#e4b23a}
@@ -73,6 +119,7 @@ LOGIN_HTML = """\
       <input type="password" name="key" placeholder="Admin key" autofocus>
       <button type="submit">Open dashboard</button>
     </form>
+    <p class="hint">On Railway this is the ADMIN_KEY variable.</p>
   </div>
 </body>
 </html>"""

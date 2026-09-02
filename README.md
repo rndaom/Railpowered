@@ -10,14 +10,18 @@
 </p>
 
 <p align="center">
-  <a href="https://railway.com/new?template=https://github.com/rndaom/powered-rail">
+  <a href="https://railway.com/new/template/TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=powered-rail">
     <img src="https://railway.com/button.svg" alt="Deploy on Railway">
   </a>
 </p>
 
+<p align="center">
+  <sub>The button must be a Railway template (<code>/new/template/…</code>), not a GitHub URL. Publish it once — <a href=".railway/README.md">how</a>.</sub>
+</p>
+
 ## Preview
 
-Login, the gold dashboard, one-click setup switch, and the After deploy steps.
+Login, the gold dashboard, one-click setup switch, and the dashboard after deploy.
 
 <p align="center">
   <img src="docs/assets/preview.gif" alt="Powered Rail dashboard preview" width="920">
@@ -25,41 +29,17 @@ Login, the gold dashboard, one-click setup switch, and the After deploy steps.
 
 ## After you deploy
 
-Do these five things once in Railway, then open the web URL. That URL is this dashboard.
+Open the Railway web URL. Log in with `ADMIN_KEY` from the Minecraft service Variables. Press Start when friends are ready.
 
-<p align="center">
-  <img src="docs/assets/login.jpg" alt="Powered Rail dashboard login" width="920">
-</p>
+The join address fills itself from Railway’s TCP proxy. Latest vanilla is already selected. The server sleeps after ten minutes empty.
 
-<p align="center">
-  <img src="docs/assets/after-deploy.jpg" alt="After deploy steps in the Powered Rail dashboard" width="920">
-</p>
-
-1. Add a volume at `/server/data`
-2. Add a TCP proxy on port `25565` and copy that host:port
-3. Set `ADMIN_KEY` to a password you will remember
-4. Set `MC_PUBLIC_ADDRESS` to the TCP address
-5. Open the Railway web URL and log in with `ADMIN_KEY`
-
-## The dashboard
-
-Latest vanilla is already selected. Press Start when someone wants to play. The server sleeps after ten minutes empty.
-
-<p align="center">
-  <img src="docs/assets/dashboard.jpg" alt="Powered Rail dashboard" width="920">
-</p>
-
-Saved setups remember the version, world, and mods. Switch is one click — the server restarts on that setup, including the default.
-
-<p align="center">
-  <img src="docs/assets/version.jpg" alt="Setups and version on the Powered Rail dashboard" width="920">
-</p>
+Saved setups remember the version, world, and mods. Switch is one click.
 
 Friends join with the official Minecraft launcher and the same version shown at the top of the dashboard.
 
 ## Something wrong?
 
-[Open an issue](https://github.com/rndaom/powered-rail/issues/new/choose).
+[Open an issue](https://github.com/rndaom/Rail-Powered/issues/new/choose).
 
 ## License
 
