@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://railway.com/new/template/vXRCrs?utm_medium=integration&utm_source=button&utm_campaign=railpowered">
+  <a href="https://railway.com/new/template/iWeeYu?utm_medium=integration&utm_source=button&utm_campaign=railpowered">
     <img src="https://railway.com/button.svg" alt="Deploy on Railway">
   </a>
 </p>

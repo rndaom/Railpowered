@@ -2,7 +2,7 @@
 
 The Deploy button uses this published-ready template:
 
-`https://railway.com/new/template/vXRCrs`
+`https://railway.com/new/template/iWeeYu`
 
 A GitHub URL is not a one-click deploy. `railway.com/new?template=https://github.com/...`
 opens the New project chooser.

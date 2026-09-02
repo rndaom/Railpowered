@@ -605,6 +605,14 @@ class RailwayRuntimeConfigTests(unittest.TestCase):
             "host.proxy.rlwy.net:2000",
         )
 
+    def test_web_port_ignores_minecraft_port_collision(self):
+        from mc_host.config import resolve_web_port
+
+        self.assertEqual(resolve_web_port({}), 8080)
+        self.assertEqual(resolve_web_port({"PORT": "3000"}), 3000)
+        self.assertEqual(resolve_web_port({"PORT": "25565"}), 8080)
+        self.assertEqual(resolve_web_port({"WEB_PORT": "9090", "PORT": "25565"}), 9090)
+
     def test_admin_key_persists_on_volume(self):
         from mc_host.config import resolve_admin_key
 

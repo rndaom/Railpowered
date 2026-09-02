@@ -56,9 +56,24 @@ def _unevaluated_template(value: str) -> bool:
     return value.startswith("${{") and "}}" in value
 
 
+def resolve_web_port(
+    env: Mapping[str, str] | None = None, minecraft_port: int = 25565
+) -> int:
+    """Dashboard port. Ignore Railway PORT when it collides with Minecraft."""
+    environ = os.environ if env is None else env
+    for key in ("WEB_PORT", "PORT"):
+        raw = str(environ.get(key, "")).strip()
+        if not raw.isdigit():
+            continue
+        port = int(raw)
+        if 1 <= port <= 65535 and port != minecraft_port:
+            return port
+    return 8080
+
+
 MC_DIR = installer.DATA_DIR
 MC_PORT = 25565
-WEB_PORT = int(os.environ.get("PORT", 8080))
+WEB_PORT = resolve_web_port()
 MAX_MEMORY = os.environ.get("MC_MAX_MEMORY", "1G")
 MIN_MEMORY = os.environ.get("MC_MIN_MEMORY", "512M")
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "600"))
