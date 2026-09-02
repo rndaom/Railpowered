@@ -119,7 +119,7 @@ LOGIN_HTML = """\
       <input type="password" name="key" placeholder="Admin key" autofocus>
       <button type="submit">Open dashboard</button>
     </form>
-    <p class="hint">On Railway this is the ADMIN_KEY variable.</p>
+    <p class="hint">On Railway this is the ADMIN_KEY you set when you deployed.</p>
   </div>
 </body>
 </html>"""

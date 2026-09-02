@@ -10,13 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://railway.com/new/template/TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=railpowered">
+  <a href="https://railway.com/new/template/vXRCrs?utm_medium=integration&utm_source=button&utm_campaign=railpowered">
     <img src="https://railway.com/button.svg" alt="Deploy on Railway">
   </a>
-</p>
-
-<p align="center">
-  <sub>The button must be a Railway template (<code>/new/template/…</code>), not a GitHub URL. Publish it once — <a href=".railway/README.md">how</a>.</sub>
 </p>
 
 ## Preview
@@ -29,7 +25,7 @@ Login, the gold dashboard, one-click setup switch, and the dashboard after deplo
 
 ## After you deploy
 
-Open the Railway web URL. Log in with `ADMIN_KEY` from the Minecraft service Variables. Press Start when friends are ready.
+On Deploy, set `ADMIN_KEY` to a password you will remember. That is the dashboard login. Open the Railway web URL, sign in with it, and press Start when friends are ready.
 
 The join address fills itself from Railway’s TCP proxy. Latest vanilla is already selected. The server sleeps after ten minutes empty.
 

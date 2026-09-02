@@ -1,24 +1,28 @@
 # Railway one-click
 
+The Deploy button uses this published-ready template:
+
+`https://railway.com/new/template/vXRCrs`
+
 A GitHub URL is not a one-click deploy. `railway.com/new?template=https://github.com/...`
-opens the New project chooser. The working button is a **published Railway template**:
+opens the New project chooser.
 
-`https://railway.com/new/template/<code>`
+The template attaches the volume at `/server/data`, a TCP proxy on `25565`, and a
+public HTTP domain. `ADMIN_KEY` is required on the Deploy form so the owner
+chooses the dashboard password. Railway does not generate it.
 
-That template is what attaches the volume, TCP 25565, HTTP URL, and a generated
-`ADMIN_KEY`. End users then click Deploy once.
+The repo is still private. Deployers need Railway’s GitHub access to
+`rndaom/Rail-Powered`. The template tracks the repository default branch, so
+merge this branch before strangers click Deploy.
 
-## Publish the template once
+## Recreate the template
 
-You need a Railway account that can see this GitHub repo (public, or private with
-Railway’s GitHub access).
+You need a Railway account that can see this GitHub repo.
 
-1. In Railway, create a project from this repo (or `railway link` and
-   `railway config apply`).
+1. Create or link a seed project (`railway init` / `railway link`).
 2. Confirm the Minecraft service has a volume on `/server/data`, a TCP proxy on
-   `25565`, and a public HTTP domain. Generate the domain if it is missing.
-3. Project settings → **Generate Template from Project** → Create Template.
-4. Copy the template URL and put it on the Deploy button in `README.md`.
-
-Do not point the button at a GitHub URL. Railway will not read this folder from
-that link.
+   `25565`, and a public HTTP domain.
+3. Project settings → **Generate Template from Project**.
+4. In the template editor, set `ADMIN_KEY` as required with an empty default and
+   a short description. Do not use `${{secret()}}`.
+5. Put the new `/new/template/<code>` URL on the Deploy button in `README.md`.

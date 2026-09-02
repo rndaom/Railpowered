@@ -20,11 +20,6 @@ export default defineRailway(() => {
       "/server/data": world,
     },
     env: {
-      ADMIN_KEY: {
-        generator: "secret",
-        isSealed: true,
-        description: "Dashboard login. Copy this from Variables after deploy.",
-      },
       MINECRAFT_VERSION: "latest",
       SERVER_TYPE: "vanilla",
       AUTO_START: "false",
