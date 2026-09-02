@@ -9,8 +9,9 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 echo "[install] Java version:" && java -version
 echo "[install] Python version:" && python3 --version
 
-# Fail fast if manager or installer has a syntax error.
+# Fail fast if manager, installer, or mc_host has a syntax error.
 python3 -m py_compile "$REPO_DIR/manager.py" "$REPO_DIR/installer.py"
+python3 -m compileall -q "$REPO_DIR/mc_host"
 
 # Place current sources into /server so the app is ready to launch.
 bash "$REPO_DIR/.cursor/sync-server.sh"

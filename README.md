@@ -78,7 +78,8 @@ Do not reuse a 1.2.5 world on a modern version (or the other way around) unless 
 ```text
 |-- Dockerfile          Java 8/21/25 image, pinned 1.2.5 jar
 |-- start.sh            Volume reset/archive, then manager
-|-- manager.py          Sleep proxy, process control, admin API
+|-- manager.py          Entry point (`python3 /server/manager.py`)
+|-- mc_host/            Sleep proxy, process control, admin API
 |-- installer.py        Jars, loaders, worlds, backups
 |-- manager.json        Default runtime config
 |-- server.properties   1.2.5 defaults

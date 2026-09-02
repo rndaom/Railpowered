@@ -42,6 +42,7 @@ RUN mkdir -p /server/jars && \
     echo "${MC_125_SHA}  /server/jars/minecraft_server.1.2.5.jar" | sha1sum -c -
 
 COPY manager.py installer.py manager.json server.properties start.sh ./
+COPY mc_host/ mc_host/
 COPY templates/ templates/
 
 RUN chmod +x start.sh

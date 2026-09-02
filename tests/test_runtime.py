@@ -299,6 +299,69 @@ class HttpServerTests(unittest.TestCase):
 
         self.assertIs(imported, ThreadingHTTPServer)
 
+    def test_manager_reexports_split_modules(self):
+        from mc_host.panel import PanelHandler
+        from mc_host.process import sleep_proxy, start_server
+        from manager import SleepProxy as exported
+        from mc_host.proxy import SleepProxy as packaged
+
+        self.assertIs(exported, packaged)
+        self.assertTrue(hasattr(PanelHandler, "do_GET"))
+        self.assertTrue(callable(start_server))
+        self.assertFalse(sleep_proxy.active)
+
+    def test_health_login_and_status(self):
+        import http.cookiejar
+        import threading
+        import urllib.error
+        import urllib.parse
+        import urllib.request
+
+        from mc_host.config import ADMIN_KEY
+        from mc_host.panel import PanelHandler
+
+        old_data = installer.DATA_DIR
+        tmp = tempfile.TemporaryDirectory()
+        installer.DATA_DIR = tmp.name
+        installer.ensure_layout()
+        installer.save_config(installer.default_config())
+        server = ThreadingHTTPServer(("127.0.0.1", 0), PanelHandler)
+        worker = threading.Thread(target=server.serve_forever, daemon=True)
+        worker.start()
+        try:
+            port = server.server_address[1]
+            base = f"http://127.0.0.1:{port}"
+            with urllib.request.urlopen(f"{base}/health") as resp:
+                self.assertEqual(json.loads(resp.read()), {"status": "ok"})
+            try:
+                urllib.request.urlopen(f"{base}/api/status")
+                self.fail("expected unauthorized status")
+            except urllib.error.HTTPError as exc:
+                self.assertEqual(exc.code, 401)
+                exc.read()
+                exc.close()
+
+            jar = http.cookiejar.CookieJar()
+            opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+            login = urllib.request.Request(
+                f"{base}/api/login",
+                data=urllib.parse.urlencode({"key": ADMIN_KEY}).encode(),
+                method="POST",
+            )
+            with opener.open(login) as resp:
+                self.assertEqual(resp.status, 200)
+            with opener.open(f"{base}/api/status") as resp:
+                payload = json.loads(resp.read())
+            self.assertIn("running", payload)
+            self.assertIn("installing", payload)
+            self.assertEqual(payload["minecraft_version"], "1.2.5")
+            self.assertFalse(payload["running"])
+        finally:
+            server.shutdown()
+            server.server_close()
+            installer.DATA_DIR = old_data
+            tmp.cleanup()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,6 +11,8 @@ mkdir -p "$SERVER_DIR/jars"
 
 cp -f "$REPO_DIR/manager.py" "$SERVER_DIR/manager.py"
 cp -f "$REPO_DIR/installer.py" "$SERVER_DIR/installer.py"
+rm -rf "$SERVER_DIR/mc_host"
+cp -R "$REPO_DIR/mc_host" "$SERVER_DIR/mc_host"
 cp -f "$REPO_DIR/manager.json" "$SERVER_DIR/manager.json"
 cp -f "$REPO_DIR/server.properties" "$SERVER_DIR/server.properties"
 cp -f "$REPO_DIR/start.sh" "$SERVER_DIR/start.sh"
