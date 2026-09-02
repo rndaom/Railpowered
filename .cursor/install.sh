@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent dependency/setup refresh for the Cloud Agent environment.
+# Idempotent dependency/setup refresh for the development environment.
 # The app uses the Python standard library plus Java 8 and the pinned 1.2.5
 # jar baked into the image. This validates sources and syncs them into /server.
 set -euo pipefail

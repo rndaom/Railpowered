@@ -1,4 +1,4 @@
-# Cloud Agent development image.
+# Development image.
 #
 # Matches production runtime pins: Java 8/21/25 and the official 1.2.5 jar.
 # Dev-only extras: git and a non-root ubuntu user. Does NOT copy repo sources;
@@ -31,7 +31,7 @@ RUN mkdir -p /opt/java/8 /opt/java/21 /opt/java/25 && \
     /opt/java/21/bin/java -version && \
     /opt/java/25/bin/java -version
 
-# Ensure a non-root "ubuntu" user (uid 1000) exists for the Cloud Agent.
+# Ensure a non-root "ubuntu" user (uid 1000) exists.
 RUN if ! id ubuntu >/dev/null 2>&1; then useradd -m -u 1000 -s /bin/bash ubuntu; fi
 
 ENV JAVA_8_HOME=/opt/java/8 \

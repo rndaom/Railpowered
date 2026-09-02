@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Launch the vanilla 1.2.5 server manager (admin panel + sleep proxy).
-# Runs as a long-lived foreground process in a Cloud Agent terminal.
+# Runs as a long-lived foreground process in a development terminal.
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
