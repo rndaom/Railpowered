@@ -22,8 +22,10 @@ from urllib.parse import urlparse
 DATA_DIR = os.environ.get("MC_DIR", "/server/data")
 IMAGE_JAR_DIR = "/server/jars"
 MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
-FABRIC_INSTALLER_VERSION = os.environ.get("FABRIC_INSTALLER_VERSION", "1.1.1")
-FABRIC_LOADER_VERSION = os.environ.get("FABRIC_LOADER_VERSION", "0.16.14")
+FABRIC_META_URL = "https://meta.fabricmc.net/v2"
+MOJANG_PROFILE_URL = "https://api.mojang.com/users/profiles/minecraft/{name}"
+FABRIC_INSTALLER_PIN = os.environ.get("FABRIC_INSTALLER_VERSION", "").strip()
+FABRIC_LOADER_PIN = os.environ.get("FABRIC_LOADER_VERSION", "").strip()
 
 VANILLA_125_SHA1 = "d8321edc9470e56b8ad5c67bbd16beba25843336"
 VANILLA_125_URL = (
@@ -141,6 +143,73 @@ def java_bin(major: int | None = None, version: str | None = None) -> str:
     if fallback:
         return fallback
     raise InstallError(f"Java {major} is not installed")
+
+
+def fabric_installer_version() -> str:
+    if FABRIC_INSTALLER_PIN:
+        return FABRIC_INSTALLER_PIN
+    try:
+        data = _http_json(f"{FABRIC_META_URL}/versions/installer")
+        if isinstance(data, list):
+            for item in data:
+                if item.get("stable") and item.get("version"):
+                    return str(item["version"])
+            if data and data[0].get("version"):
+                return str(data[0]["version"])
+    except InstallError:
+        pass
+    return "1.1.2"
+
+
+def fabric_loader_for(mc_version: str) -> str:
+    if FABRIC_LOADER_PIN:
+        return FABRIC_LOADER_PIN
+    try:
+        data = _http_json(f"{FABRIC_META_URL}/versions/loader/{mc_version}")
+        if isinstance(data, list):
+            for item in data:
+                loader = item.get("loader") or {}
+                if loader.get("stable") and loader.get("version"):
+                    return str(loader["version"])
+            if data:
+                loader = data[0].get("loader") or {}
+                if loader.get("version"):
+                    return str(loader["version"])
+    except InstallError:
+        pass
+    if is_year_version(mc_version) or parse_version(mc_version) >= (1, 21, 0):
+        return "0.19.3"
+    return "0.16.14"
+
+
+def offline_uuid(name: str) -> str:
+    digest = bytearray(hashlib.md5(f"OfflinePlayer:{name}".encode("utf-8")).digest())
+    digest[6] = (digest[6] & 0x0F) | 0x30
+    digest[8] = (digest[8] & 0x3F) | 0x80
+    hexed = bytes(digest).hex()
+    return f"{hexed[0:8]}-{hexed[8:12]}-{hexed[12:16]}-{hexed[16:20]}-{hexed[20:32]}"
+
+
+def dashed_uuid(raw: str) -> str:
+    compact = re.sub(r"[^0-9a-fA-F]", "", raw)
+    if len(compact) != 32:
+        raise InstallError("Invalid UUID")
+    compact = compact.lower()
+    return (
+        f"{compact[0:8]}-{compact[8:12]}-{compact[12:16]}-"
+        f"{compact[16:20]}-{compact[20:32]}"
+    )
+
+
+def player_uuid(name: str, online: bool = False) -> str:
+    if online:
+        try:
+            data = _http_json(MOJANG_PROFILE_URL.format(name=name))
+            if isinstance(data, dict) and data.get("id"):
+                return dashed_uuid(str(data["id"]))
+        except (InstallError, ValueError):
+            pass
+    return offline_uuid(name)
 
 
 def paths() -> dict[str, str]:
@@ -294,20 +363,24 @@ def instance_dir(server_type: str, version: str, name: str | None = None) -> str
     return os.path.join(paths()["instances"], slug)
 
 
-def install_fabric(version: str) -> str:
-    dest = instance_dir("fabric", version)
+def install_fabric(
+    version: str, dest: str | None = None, loader: str | None = None
+) -> str:
+    dest = dest or instance_dir("fabric", version)
     os.makedirs(dest, exist_ok=True)
+    loader = loader or fabric_loader_for(version)
     marker = os.path.join(dest, ".fabric-ready")
     launch = os.path.join(dest, "fabric-server-launch.jar")
-    if os.path.isfile(marker) and os.path.isfile(launch):
+    if os.path.isfile(launch):
         return dest
+    installer_ver = fabric_installer_version()
     installer = download_file(
         (
             "https://maven.fabricmc.net/net/fabricmc/fabric-installer/"
-            f"{FABRIC_INSTALLER_VERSION}/"
-            f"fabric-installer-{FABRIC_INSTALLER_VERSION}.jar"
+            f"{installer_ver}/"
+            f"fabric-installer-{installer_ver}.jar"
         ),
-        os.path.join(paths()["jars"], f"fabric-installer-{FABRIC_INSTALLER_VERSION}.jar"),
+        os.path.join(paths()["jars"], f"fabric-installer-{installer_ver}.jar"),
     )
     java = java_bin(version=version)
     try:
@@ -320,7 +393,7 @@ def install_fabric(version: str) -> str:
                 "-mcversion",
                 version,
                 "-loader",
-                FABRIC_LOADER_VERSION,
+                loader,
                 "-downloadMinecraft",
                 "-dir",
                 dest,
@@ -339,22 +412,34 @@ def install_fabric(version: str) -> str:
     if not os.path.isfile(launch):
         raise InstallError("Fabric installer did not produce fabric-server-launch.jar")
     with open(marker, "w", encoding="utf-8") as handle:
-        handle.write(f"{version}\n{FABRIC_LOADER_VERSION}\n")
+        handle.write(f"{version}\n{loader}\n")
     return dest
 
 
-def install_forge(version: str) -> str:
-    if version not in FORGE_BUILDS:
+def _forge_installer_url(mc_version: str, forge_version: str | None = None) -> str:
+    if mc_version in FORGE_BUILDS:
+        return FORGE_BUILDS[mc_version]["installer"]
+    if not forge_version:
         raise InstallError(
-            f"Forge {version} is not in the curated list "
+            f"Forge {mc_version} is not in the curated list "
             f"({', '.join(FORGE_BUILDS)})"
         )
-    dest = instance_dir("forge", version)
+    rev = f"{mc_version}-{forge_version}"
+    return (
+        "https://maven.minecraftforge.net/net/minecraftforge/forge/"
+        f"{rev}/forge-{rev}-installer.jar"
+    )
+
+
+def install_forge(
+    version: str, dest: str | None = None, forge_version: str | None = None
+) -> str:
+    dest = dest or instance_dir("forge", version)
     os.makedirs(dest, exist_ok=True)
     marker = os.path.join(dest, ".forge-ready")
-    if os.path.isfile(marker) and _find_forge_launch(dest):
+    if _find_forge_launch(dest):
         return dest
-    installer_url = FORGE_BUILDS[version]["installer"]
+    installer_url = _forge_installer_url(version, forge_version)
     installer = download_file(
         installer_url,
         os.path.join(paths()["jars"], os.path.basename(urlparse(installer_url).path)),
@@ -487,6 +572,45 @@ def _install_mrpack(archive_path: str, dest: str) -> None:
                 handle,
                 indent=2,
             )
+        _install_modpack_loader(dest, deps if isinstance(deps, dict) else {})
+
+
+def _has_mod_jars(directory: str) -> bool:
+    mods = os.path.join(directory, "mods")
+    if not os.path.isdir(mods):
+        return False
+    return any(name.endswith(".jar") for name in os.listdir(mods))
+
+
+def _install_modpack_loader(dest: str, deps: dict[str, Any]) -> None:
+    mc_version = str(deps.get("minecraft") or "").strip()
+    if not mc_version:
+        detected = _detect_instance_version(dest)
+        if detected and detected != "1.2.5":
+            mc_version = detected
+    if not mc_version:
+        if _find_modpack_jar(dest) or _find_forge_launch(dest):
+            return
+        raise InstallError("Modpack does not declare a Minecraft version")
+    if deps.get("quilt-loader"):
+        raise InstallError("Quilt modpacks are not supported")
+    if deps.get("neoforge"):
+        raise InstallError("NeoForge modpacks are not supported")
+    if deps.get("fabric-loader"):
+        install_fabric(mc_version, dest=dest, loader=str(deps["fabric-loader"]))
+        return
+    if deps.get("forge"):
+        install_forge(mc_version, dest=dest, forge_version=str(deps["forge"]))
+        return
+    if _find_modpack_jar(dest) or _find_forge_launch(dest):
+        return
+    if _has_mod_jars(dest):
+        install_fabric(mc_version, dest=dest)
+        return
+    raise InstallError(
+        "Modpack has no Fabric/Forge loader. Use a Modrinth .mrpack "
+        "or a zip that already includes the server jar."
+    )
 
 
 def _detect_instance_version(directory: str) -> str:
@@ -591,7 +715,16 @@ def properties_for(cfg: dict[str, Any]) -> dict[str, str]:
 
 
 def apply_properties(cfg: dict[str, Any]) -> None:
-    write_properties(properties_for(cfg))
+    props = properties_for(cfg)
+    write_properties(props)
+    try:
+        run_dir = runtime_cwd(cfg)
+    except InstallError:
+        return
+    if run_dir != DATA_DIR:
+        write_properties(props, os.path.join(run_dir, "server.properties"))
+        _relink_instance_world(cfg)
+        sync_access_lists(cfg)
 
 
 def world_path(name: str) -> str:
@@ -661,7 +794,6 @@ def select_world(name: str) -> dict[str, Any]:
     cfg["level_name"] = name
     save_config(cfg)
     apply_properties(cfg)
-    _relink_instance_world(cfg)
     return cfg
 
 
@@ -669,15 +801,32 @@ def _relink_instance_world(cfg: dict[str, Any]) -> None:
     run_dir = runtime_cwd(cfg)
     if run_dir == DATA_DIR:
         return
-    link = os.path.join(run_dir, "world")
-    target = world_path(str(cfg.get("level_name") or "world"))
-    os.makedirs(target, exist_ok=True)
-    if os.path.islink(link) or os.path.isfile(link):
+    os.makedirs(run_dir, exist_ok=True)
+    os.makedirs(world_path(str(cfg.get("level_name") or "world")), exist_ok=True)
+    target = paths()["worlds"]
+    link = os.path.join(run_dir, "worlds")
+    if os.path.islink(link):
+        if os.path.realpath(link) != os.path.realpath(target):
+            os.remove(link)
+            os.symlink(os.path.relpath(target, run_dir), link)
+    elif os.path.isdir(link):
+        for name in os.listdir(link):
+            src = os.path.join(link, name)
+            dest = os.path.join(target, name)
+            if os.path.exists(dest):
+                continue
+            shutil.move(src, dest)
+        shutil.rmtree(link)
+        os.symlink(os.path.relpath(target, run_dir), link)
+    elif os.path.exists(link):
         os.remove(link)
-    elif os.path.isdir(link) and not os.path.islink(link):
-        # Keep an unexpected real folder; point properties at worlds/ instead.
-        return
-    os.symlink(os.path.relpath(target, run_dir), link)
+        os.symlink(os.path.relpath(target, run_dir), link)
+    else:
+        os.symlink(os.path.relpath(target, run_dir), link)
+
+    leftover = os.path.join(run_dir, "world")
+    if os.path.islink(leftover):
+        os.remove(leftover)
 
 
 def runtime_cwd(cfg: dict[str, Any]) -> str:
@@ -705,7 +854,6 @@ def prepare_runtime(cfg: dict[str, Any] | None = None) -> RuntimeSpec:
     version = str(cfg.get("minecraft_version") or "1.2.5")
     level = str(cfg.get("level_name") or "world")
     os.makedirs(world_path(level), exist_ok=True)
-    apply_properties(cfg)
     major = java_major_for_version(version)
     java = java_bin(major=major)
     jvm = [
@@ -716,6 +864,7 @@ def prepare_runtime(cfg: dict[str, Any] | None = None) -> RuntimeSpec:
     if server_type == "vanilla":
         jar = install_vanilla(version)
         _write_eula(DATA_DIR)
+        apply_properties(cfg)
         return RuntimeSpec(
             java_bin=java,
             cwd=DATA_DIR,
@@ -731,8 +880,7 @@ def prepare_runtime(cfg: dict[str, Any] | None = None) -> RuntimeSpec:
     if server_type == "fabric":
         dest = install_fabric(version)
         _write_eula(dest)
-        write_properties(properties_for(cfg), os.path.join(dest, "server.properties"))
-        _relink_instance_world(cfg)
+        apply_properties(cfg)
         return RuntimeSpec(
             java_bin=java,
             cwd=dest,
@@ -748,8 +896,7 @@ def prepare_runtime(cfg: dict[str, Any] | None = None) -> RuntimeSpec:
     if server_type == "forge":
         dest = install_forge(version)
         _write_eula(dest)
-        write_properties(properties_for(cfg), os.path.join(dest, "server.properties"))
-        _relink_instance_world(cfg)
+        apply_properties(cfg)
         launch = _find_forge_launch(dest)
         if not launch:
             raise InstallError("Forge launch files are missing")
@@ -783,8 +930,21 @@ def prepare_runtime(cfg: dict[str, Any] | None = None) -> RuntimeSpec:
         if not os.path.isdir(dest):
             raise InstallError("Modpack instance is not installed")
         _write_eula(dest)
-        write_properties(properties_for(cfg), os.path.join(dest, "server.properties"))
-        _relink_instance_world(cfg)
+        apply_properties(cfg)
+        launch = _find_forge_launch(dest)
+        if launch and launch.endswith("unix_args.txt"):
+            return RuntimeSpec(
+                java_bin=java,
+                cwd=dest,
+                jar="",
+                extra_args=["nogui"],
+                jvm_args=jvm,
+                prefix_args=[f"@{launch}"],
+                version=version,
+                type="modpack",
+                level_name=level,
+                java_major=major,
+            )
         jar = _find_modpack_jar(dest)
         if not jar:
             raise InstallError("Could not find a server jar in the modpack instance")
@@ -964,14 +1124,21 @@ def read_name_file(path: str) -> list[str]:
     return names
 
 
-def write_name_file(path: str, names: list[str], json_mode: bool) -> None:
+def write_name_file(
+    path: str, names: list[str], json_mode: bool, online: bool = False
+) -> None:
     unique = []
     for name in names:
         clean = name.strip()
         if clean and clean not in unique:
             unique.append(clean)
     if json_mode:
-        payload = [{"name": name, "uuid": "00000000-0000-0000-0000-000000000000"} for name in unique]
+        payload = [
+            {"name": name, "uuid": player_uuid(name, online=online), "level": 4}
+            if path.endswith("ops.json")
+            else {"name": name, "uuid": player_uuid(name, online=online)}
+            for name in unique
+        ]
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
             handle.write("\n")
@@ -981,25 +1148,51 @@ def write_name_file(path: str, names: list[str], json_mode: bool) -> None:
             handle.write(name + "\n")
 
 
+def _online_mode(cfg: dict[str, Any] | None = None) -> bool:
+    cfg = cfg or load_config()
+    return properties_for(cfg).get("online-mode") == "true"
+
+
 def list_file_names(kind: str) -> tuple[str, list[str]]:
     cfg = load_config()
     version = str(cfg.get("minecraft_version") or "1.2.5")
     if kind == "ops":
         json_path = os.path.join(DATA_DIR, "ops.json")
         txt_path = os.path.join(DATA_DIR, "ops.txt")
-        if uses_legacy_files(version) or os.path.isfile(txt_path):
+        if uses_legacy_files(version):
             return txt_path, read_name_file(txt_path)
-        return json_path, read_name_file(json_path)
+        names = read_name_file(json_path) or read_name_file(txt_path)
+        return json_path, names
     json_path = os.path.join(DATA_DIR, "whitelist.json")
     txt_legacy = os.path.join(DATA_DIR, "white-list.txt")
     txt_alt = os.path.join(DATA_DIR, "whitelist.txt")
     if uses_legacy_files(version):
         names = read_name_file(txt_legacy) or read_name_file(txt_alt)
         return txt_legacy, names
-    if os.path.isfile(json_path):
-        return json_path, read_name_file(json_path)
-    names = read_name_file(txt_legacy) or read_name_file(txt_alt)
-    return txt_legacy, names
+    names = read_name_file(json_path) or read_name_file(txt_legacy) or read_name_file(txt_alt)
+    return json_path, names
+
+
+def sync_access_lists(cfg: dict[str, Any] | None = None) -> None:
+    cfg = cfg or load_config()
+    try:
+        run_dir = runtime_cwd(cfg)
+    except InstallError:
+        return
+    version = str(cfg.get("minecraft_version") or "1.2.5")
+    online = _online_mode(cfg)
+    for kind in ("ops", "whitelist"):
+        _path, names = list_file_names(kind)
+        if uses_legacy_files(version):
+            dest = os.path.join(
+                run_dir, "ops.txt" if kind == "ops" else "white-list.txt"
+            )
+            write_name_file(dest, names, False)
+            if kind != "ops":
+                write_name_file(os.path.join(run_dir, "whitelist.txt"), names, False)
+            continue
+        dest = os.path.join(run_dir, "ops.json" if kind == "ops" else "whitelist.json")
+        write_name_file(dest, names, True, online=online)
 
 
 def update_name_list(kind: str, name: str, add: bool) -> list[str]:
@@ -1010,8 +1203,13 @@ def update_name_list(kind: str, name: str, add: bool) -> list[str]:
         names.append(name)
     if not add:
         names = [item for item in names if item.lower() != name.lower()]
-    write_name_file(path, names, path.endswith(".json"))
+    online = _online_mode()
+    write_name_file(path, names, path.endswith(".json"), online=online)
     if kind != "ops" and path.endswith("white-list.txt"):
         alt = os.path.join(DATA_DIR, "whitelist.txt")
         write_name_file(alt, names, False)
+    try:
+        sync_access_lists()
+    except InstallError:
+        pass
     return names

@@ -163,7 +163,7 @@
 
     <div class="card">
       <h3>Version and type</h3>
-      <p class="note">Stop the server before switching. A version change creates or uses a matching world so old worlds are not overwritten.</p>
+      <p class="note">Stop the server before switching. Worlds live in a shared folder, so Fabric/Forge use the same world you pick here. A version change creates or uses a matching world so old worlds are not overwritten.</p>
       <div class="row">
         <label>Type
           <select id="typeSelect" onchange="onTypeChange()">
@@ -264,7 +264,7 @@
         <ul>
           <li>Use this panel. You do not need to change Railway variables for a version switch.</li>
           <li>Vanilla, Fabric, curated Forge (1.7.10 / 1.12.2 / 1.16.5), and uploaded modpacks are supported.</li>
-          <li>Worlds from other versions are not reused automatically. Pick or create a world for the new version.</li>
+          <li>Worlds from other versions are not reused automatically. Pick or create a world for the new version. Shared world folders work for Fabric and Forge, including nether/end.</li>
         </ul>
       </details>
       <details class="guide-section">
@@ -351,7 +351,12 @@
         const btnStop = document.getElementById("btnStop");
         document.getElementById("headerVersion").textContent = s.minecraft_version || "1.2.5";
 
-        if (s.starting) {
+        if (s.installing) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Installing...";
+          meta.textContent = "Preparing the selected version. Status and logs stay available.";
+          btnStart.disabled = true; btnStop.disabled = true;
+        } else if (s.starting) {
           dot.className = "status-indicator loading";
           text.textContent = "Starting...";
           meta.textContent = `${s.type || "vanilla"} ${s.minecraft_version || ""} is booting.`;

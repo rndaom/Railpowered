@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -91,6 +91,7 @@ class ServerState:
         self._running = False
         self._starting = False
         self._stopping = False
+        self._installing = False
         self.players: set[str] = set()
         self.last_activity: float = time.time()
         self.start_time: float | None = None
@@ -121,6 +122,14 @@ class ServerState:
     @stopping.setter
     def stopping(self, v):
         self._stopping = v
+
+    @property
+    def installing(self):
+        return self._installing
+
+    @installing.setter
+    def installing(self, v):
+        self._installing = v
 
     @property
     def player_count(self):
@@ -426,7 +435,7 @@ DONE_PATTERN = re.compile(r"Done \(")
 
 def start_server():
     with state.lock:
-        if state.running or state.starting:
+        if state.running or state.starting or state.installing:
             return False
         state.starting = True
 
@@ -526,9 +535,17 @@ def send_command(cmd):
     return False
 
 
-def _require_stopped():
-    if state.running or state.starting or state.stopping:
-        raise installer.InstallError("Stop the server before changing this setting")
+def _require_stopped(lock_install: bool = False) -> None:
+    with state.lock:
+        if state.running or state.starting or state.stopping or state.installing:
+            raise installer.InstallError("Stop the server before changing this setting")
+        if lock_install:
+            state.installing = True
+
+
+def _clear_installing() -> None:
+    with state.lock:
+        state.installing = False
 
 
 def _monitor_logs():
@@ -730,31 +747,38 @@ class PanelHandler(BaseHTTPRequestHandler):
             self._send_json({"success": ok})
             return
         if path == "/api/version":
-            _require_stopped()
-            data = self._read_json()
-            cfg = installer.load_config()
-            server_type = str(data.get("type") or cfg.get("type") or "vanilla")
-            version = str(data.get("minecraft_version") or cfg.get("minecraft_version") or "1.2.5")
-            level = str(data.get("level_name") or "").strip()
-            if level:
-                if not installer.WORLD_NAME_RE.match(level):
-                    raise installer.InstallError("Invalid world name")
-            else:
-                level = f"{server_type}-{version.replace('.', '_')}"
-                if not os.path.isdir(installer.world_path(level)):
-                    os.makedirs(installer.world_path(level), exist_ok=True)
-            cfg.update(
-                {
-                    "type": server_type,
-                    "minecraft_version": version,
-                    "level_name": level,
-                    "modpack": data.get("modpack", cfg.get("modpack")),
-                    "instance": data.get("instance", cfg.get("instance")),
-                }
-            )
-            spec = installer.apply_server(cfg)
-            state.add_log(f"Configured {spec.type} {spec.version} on world {spec.level_name}")
-            self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+            _require_stopped(lock_install=True)
+            try:
+                data = self._read_json()
+                cfg = installer.load_config()
+                server_type = str(data.get("type") or cfg.get("type") or "vanilla")
+                version = str(
+                    data.get("minecraft_version") or cfg.get("minecraft_version") or "1.2.5"
+                )
+                level = str(data.get("level_name") or "").strip()
+                if level:
+                    if not installer.WORLD_NAME_RE.match(level):
+                        raise installer.InstallError("Invalid world name")
+                else:
+                    level = f"{server_type}-{version.replace('.', '_')}"
+                    if not os.path.isdir(installer.world_path(level)):
+                        os.makedirs(installer.world_path(level), exist_ok=True)
+                cfg.update(
+                    {
+                        "type": server_type,
+                        "minecraft_version": version,
+                        "level_name": level,
+                        "modpack": data.get("modpack", cfg.get("modpack")),
+                        "instance": data.get("instance", cfg.get("instance")),
+                    }
+                )
+                spec = installer.apply_server(cfg)
+                state.add_log(
+                    f"Configured {spec.type} {spec.version} on world {spec.level_name}"
+                )
+                self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+            finally:
+                _clear_installing()
             return
         if path == "/api/worlds":
             _require_stopped()
@@ -787,30 +811,40 @@ class PanelHandler(BaseHTTPRequestHandler):
             self._send_json({"success": True, "restored": restored, "worlds": installer.list_worlds()})
             return
         if path == "/api/modpack":
-            _require_stopped()
-            data = self._read_json()
-            name = str(data.get("name") or "").strip()
-            url = str(data.get("url") or "").strip()
-            if not url:
-                raise installer.InstallError("Modpack URL is required")
-            cfg = installer.install_modpack_from_url(url, name or "modpack")
-            spec = installer.apply_server(cfg)
-            self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+            _require_stopped(lock_install=True)
+            try:
+                data = self._read_json()
+                name = str(data.get("name") or "").strip()
+                url = str(data.get("url") or "").strip()
+                if not url:
+                    raise installer.InstallError("Modpack URL is required")
+                cfg = installer.install_modpack_from_url(url, name or "modpack")
+                spec = installer.apply_server(cfg)
+                self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+            finally:
+                _clear_installing()
             return
         if path == "/api/modpack/upload":
-            _require_stopped()
-            filename = self.headers.get("X-Filename", "pack.mrpack")
-            name = self.headers.get("X-Instance-Name") or os.path.splitext(os.path.basename(filename))[0]
-            if not installer.WORLD_NAME_RE.match(name):
-                name = "modpack"
-            raw = self._read_raw()
-            dest = os.path.join(installer.paths()["modpacks"], os.path.basename(filename))
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with open(dest, "wb") as handle:
-                handle.write(raw)
-            cfg = installer.install_modpack_archive(dest, name)
-            spec = installer.apply_server(cfg)
-            self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+            _require_stopped(lock_install=True)
+            try:
+                filename = self.headers.get("X-Filename", "pack.mrpack")
+                name = self.headers.get("X-Instance-Name") or os.path.splitext(
+                    os.path.basename(filename)
+                )[0]
+                if not installer.WORLD_NAME_RE.match(name):
+                    name = "modpack"
+                raw = self._read_raw()
+                dest = os.path.join(
+                    installer.paths()["modpacks"], os.path.basename(filename)
+                )
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                with open(dest, "wb") as handle:
+                    handle.write(raw)
+                cfg = installer.install_modpack_archive(dest, name)
+                spec = installer.apply_server(cfg)
+                self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+            finally:
+                _clear_installing()
             return
         if path in ("/api/ops", "/api/whitelist"):
             data = self._read_json()
@@ -893,6 +927,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 "running": state.running,
                 "starting": state.starting,
                 "stopping": state.stopping,
+                "installing": state.installing,
                 "players": sorted(state.players),
                 "player_count": state.player_count,
                 "uptime": uptime,
@@ -976,8 +1011,8 @@ def main():
     else:
         sleep_proxy.start()
 
-    HTTPServer.allow_reuse_address = True
-    http = HTTPServer(("0.0.0.0", WEB_PORT), PanelHandler)
+    ThreadingHTTPServer.allow_reuse_address = True
+    http = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), PanelHandler)
     if _ADMIN_KEY_FROM_ENV:
         state.add_log("Admin panel protected (using ADMIN_KEY env var)")
     else:
