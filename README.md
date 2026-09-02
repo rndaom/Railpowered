@@ -69,7 +69,7 @@ Changing version later is done in the **admin panel**. That writes `/server/data
 - Backup, download, and restore worlds
 - Edit whitelist and ops
 
-Forge is a curated list: `1.7.10`, `1.12.2`, `1.16.5`. Fabric covers current-ish versions. Modpacks accept a `.mrpack` / zip URL or an upload.
+Forge is a curated list: `1.7.10`, `1.12.2`, `1.16.5`. Fabric picks a loader from Fabric meta for that Minecraft version. Modrinth `.mrpack` files install the Fabric or Forge loader from pack dependencies. Worlds stay in `/server/data/worlds` and are reused across loaders.
 
 Do not reuse a 1.2.5 world on a modern version (or the other way around) unless you know it is compatible. The panel asks for a world name when you switch.
 
