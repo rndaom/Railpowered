@@ -83,5 +83,5 @@ Do not reuse a 1.2.5 world on a modern version (or the other way around) unless 
 |-- manager.json        Default runtime config
 |-- server.properties   1.2.5 defaults
 |-- templates/          Admin UI
-`-- archive/            Retired beta 1.7.3 sources (not used)
+`-- archive/            Retired beta 1.7.3 and Fabric 26.2 files (not used)
 ```
