@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Roundhouse</title>
+  <title>Campfire</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
@@ -119,6 +119,18 @@
     .guide-section ol, .guide-section ul { padding-left: 20px; margin-top: 8px; }
     .guide-section li { margin-bottom: 6px; }
     .guide-section code { background: var(--card); padding: 2px 6px; border-radius: 3px; }
+    .steps { display: grid; gap: 10px; margin-top: 10px; }
+    .step {
+      display: flex; gap: 12px; align-items: flex-start;
+      background: var(--card); border-radius: 10px; padding: 12px 14px;
+    }
+    .step .num {
+      flex: 0 0 28px; height: 28px; border-radius: 50%;
+      background: var(--green); color: #052e16; font-weight: 800;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .step strong { display: block; }
+    .step p { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
     .note { color: var(--muted); font-size: 0.85rem; margin-top: 8px; }
     .error { color: var(--accent); font-size: 0.9rem; margin-top: 8px; }
     @media (max-width: 600px) {
@@ -132,11 +144,12 @@
     <header>
       <div class="brand">
         <svg viewBox="0 0 64 64" aria-hidden="true">
-          <circle cx="32" cy="32" r="28" fill="#121a2b" stroke="#4ade80" stroke-width="3"/>
-          <circle cx="32" cy="32" r="16" fill="none" stroke="#f5c16c" stroke-width="3"/>
-          <rect x="28" y="12" width="8" height="8" rx="1" fill="#4ade80"/>
+          <path d="M32 6c-4 14 10 16 6 30-1 6-6 10-6 10s-5-4-6-10C22 22 36 20 32 6z" fill="#f5c16c"/>
+          <path d="M32 20c-2 7 5 8 3 14-3-1-6-6-3-14z" fill="#fb7185"/>
+          <rect x="10" y="40" width="44" height="8" rx="4" transform="rotate(-22 32 44)" fill="#8b5a2b"/>
+          <rect x="10" y="46" width="44" height="8" rx="4" transform="rotate(22 32 50)" fill="#6b4220"/>
         </svg>
-        <h1>Roundhouse <span id="headerVersion"></span></h1>
+        <h1>Campfire <span id="headerVersion"></span></h1>
       </div>
       <p>Your Minecraft dashboard &middot; <a href="/api/logout">Logout</a></p>
     </header>
@@ -249,18 +262,28 @@
 
     <div class="tabs">
       <button class="tab active" onclick="switchTab('logs', this)">Logs</button>
-      <button class="tab" onclick="switchTab('guide', this)">How this works</button>
+      <button class="tab" onclick="switchTab('guide', this)">After deploy</button>
     </div>
     <div id="tab-logs" class="card tabbed-card tab-content active">
       <div id="logViewer" class="log-viewer">Waiting for logs...</div>
     </div>
     <div id="tab-guide" class="card tabbed-card tab-content">
       <details class="guide-section" open>
-        <summary>Join the server</summary>
+        <summary>Do this once in Railway</summary>
+        <div class="steps">
+          <div class="step"><span class="num">1</span><div><strong>Save the world</strong><p>Add a volume and mount it at <code>/server/data</code>.</p></div></div>
+          <div class="step"><span class="num">2</span><div><strong>Open the game port</strong><p>Add a TCP proxy on port <code>25565</code>. Copy the host:port Railway gives you.</p></div></div>
+          <div class="step"><span class="num">3</span><div><strong>Set a dashboard password</strong><p>Add variable <code>ADMIN_KEY</code> and pick a password you will remember.</p></div></div>
+          <div class="step"><span class="num">4</span><div><strong>Show the join address</strong><p>Add variable <code>MC_PUBLIC_ADDRESS</code> and paste the TCP host:port from step 2.</p></div></div>
+          <div class="step"><span class="num">5</span><div><strong>Open this dashboard</strong><p>Click the Railway web URL, log in with <code>ADMIN_KEY</code>, then press Start when friends are ready.</p></div></div>
+        </div>
+      </details>
+      <details class="guide-section">
+        <summary>Join from Minecraft</summary>
         <ol>
-          <li>Use the official Minecraft Launcher and the same version shown at the top of this page</li>
-          <li>Go to Multiplayer and paste the join address</li>
-          <li>If the world is sleeping, wait about 30 seconds and connect again</li>
+          <li>Use the official launcher and the same version shown at the top of this page</li>
+          <li>Multiplayer → paste the join address</li>
+          <li>If it is sleeping, wait about 30 seconds and connect again</li>
         </ol>
       </details>
       <details class="guide-section">
@@ -269,14 +292,6 @@
           <li>Stop the server, pick vanilla, Fabric, Forge, or a modpack, then Apply</li>
           <li>Give the new version its own world name</li>
           <li>You do not need to redeploy Railway to switch</li>
-        </ul>
-      </details>
-      <details class="guide-section">
-        <summary>Everyday use</summary>
-        <ul>
-          <li>The server sleeps after 10 minutes with nobody online</li>
-          <li>Back up a world before you experiment</li>
-          <li>Keep your dashboard key private</li>
         </ul>
       </details>
     </div>

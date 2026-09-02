@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Roundhouse entry point.
+Campfire entry point.
 
 Sleep proxy, process control, and the dashboard live in `mc_host`.
 Production launches this file: `python3 /server/manager.py`.

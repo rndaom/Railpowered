@@ -1,6 +1,6 @@
 # Railway
 
-This file describes the Roundhouse project: one Minecraft service and a volume at `/server/data`.
+This file describes the Campfire project: one Minecraft service and a volume at `/server/data`.
 
 If you already have a Railway project linked:
 

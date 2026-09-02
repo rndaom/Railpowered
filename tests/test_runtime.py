@@ -396,7 +396,7 @@ class HttpServerTests(unittest.TestCase):
             self.assertIn("running", payload)
             self.assertIn("installing", payload)
             self.assertEqual(payload["minecraft_version"], "26.2")
-            self.assertEqual(payload["product"], "Roundhouse")
+            self.assertEqual(payload["product"], "Campfire")
             self.assertFalse(payload["legacy"])
             self.assertFalse(payload["running"])
         finally:

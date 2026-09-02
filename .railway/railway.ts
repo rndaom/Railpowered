@@ -6,7 +6,7 @@ export default defineRailway(() => {
   });
 
   const minecraft = service("Minecraft", {
-    source: github("rndaom/roundhouse"),
+    source: github("rndaom/campfire"),
     start: "./start.sh",
     healthcheck: "/health",
     healthcheckTimeout: 300,
@@ -23,7 +23,7 @@ export default defineRailway(() => {
     },
   });
 
-  return project("Roundhouse", {
+  return project("Campfire", {
     resources: [minecraft, world],
   });
 });

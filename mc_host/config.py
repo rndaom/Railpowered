@@ -35,13 +35,13 @@ LOGIN_HTML = """\
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Roundhouse</title>
+  <title>Campfire</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0b1220;color:#e7edf5;
          display:flex;align-items:center;justify-content:center;min-height:100vh}
     .card{background:#121a2b;border:1px solid #22304a;border-radius:16px;padding:36px;width:360px}
-    .mark{width:48px;height:48px;margin:0 auto 16px;display:block}
+    .mark{width:56px;height:56px;margin:0 auto 16px;display:block}
     h2{color:#4ade80;margin-bottom:6px;text-align:center;letter-spacing:.04em}
     p{color:#8b9bb4;text-align:center;font-size:.92rem;margin-bottom:18px}
     input{width:100%;padding:12px;border-radius:10px;border:1px solid #2a3a55;
@@ -56,11 +56,12 @@ LOGIN_HTML = """\
 <body>
   <div class="card">
     <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
-      <circle cx="32" cy="32" r="28" fill="#121a2b" stroke="#4ade80" stroke-width="3"/>
-      <circle cx="32" cy="32" r="16" fill="none" stroke="#f5c16c" stroke-width="3"/>
-      <rect x="28" y="12" width="8" height="8" rx="1" fill="#4ade80"/>
+      <path d="M32 6c-4 14 10 16 6 30-1 6-6 10-6 10s-5-4-6-10C22 22 36 20 32 6z" fill="#f5c16c"/>
+      <path d="M32 20c-2 7 5 8 3 14-3-1-6-6-3-14z" fill="#fb7185"/>
+      <rect x="10" y="40" width="44" height="8" rx="4" transform="rotate(-22 32 44)" fill="#8b5a2b"/>
+      <rect x="10" y="46" width="44" height="8" rx="4" transform="rotate(22 32 50)" fill="#6b4220"/>
     </svg>
-    <h2>Roundhouse</h2>
+    <h2>Campfire</h2>
     <p>Dashboard login</p>
     {error}
     <form method="POST" action="/api/login">

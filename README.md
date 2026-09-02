@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" width="88" alt="Roundhouse">
+  <img src="docs/assets/logo.svg" width="72" alt="Campfire">
 </p>
 
-<h1 align="center">Roundhouse</h1>
+<h1 align="center">Campfire</h1>
 
 <p align="center">
   A Minecraft server that starts when your friends join.<br>
@@ -10,59 +10,48 @@
 </p>
 
 <p align="center">
-  <a href="https://railway.com/new?template=https://github.com/rndaom/roundhouse">
+  <a href="https://railway.com/new?template=https://github.com/rndaom/campfire">
     <img src="https://railway.com/button.svg" alt="Deploy on Railway">
   </a>
 </p>
 
-<p align="center">
-  <img src="docs/assets/hero.jpg" alt="Roundhouse dashboard and a Minecraft world" width="920">
-</p>
+## After you deploy
 
-## How it works
-
-1. Click deploy
-2. Share the join address
-3. The world wakes when someone connects, and sleeps when they leave
-
-That last part keeps the bill low. You are not paying for an empty server all day.
+Do these five things once in Railway, then open the web URL. That URL is this dashboard.
 
 <p align="center">
-  <img src="docs/assets/how-it-works.jpg" alt="Deploy, play, sleep" width="920">
+  <img src="docs/assets/login.jpg" alt="Campfire dashboard login" width="920">
 </p>
 
-## After you click deploy
+<p align="center">
+  <img src="docs/assets/after-deploy.jpg" alt="After deploy steps in the Campfire dashboard" width="920">
+</p>
 
-Do these once in Railway:
-
-1. Add a volume at `/server/data` so the world is saved
-2. Add a TCP proxy on port `25565` and copy that address
+1. Add a volume at `/server/data`
+2. Add a TCP proxy on port `25565` and copy that host:port
 3. Set `ADMIN_KEY` to a password you will remember
-4. Set `MC_PUBLIC_ADDRESS` to the TCP address so the dashboard can show it
+4. Set `MC_PUBLIC_ADDRESS` to the TCP address
+5. Open the Railway web URL and log in with `ADMIN_KEY`
 
-Then open the Railway web URL. That is your dashboard.
+## The dashboard
+
+Latest vanilla is already selected. Press Start when someone wants to play. The server sleeps after ten minutes empty.
 
 <p align="center">
-  <img src="docs/assets/dashboard.jpg" alt="Roundhouse dashboard" width="920">
+  <img src="docs/assets/dashboard.jpg" alt="Campfire dashboard" width="920">
 </p>
 
-## What you can do later
+From here you can change version, add Fabric or Forge, keep worlds, and make backups.
 
-The first boot is **latest vanilla Minecraft**. No mods.
+<p align="center">
+  <img src="docs/assets/version.jpg" alt="Version and worlds on the Campfire dashboard" width="920">
+</p>
 
-From the dashboard you can:
-
-- Start and stop the world
-- Switch vanilla, Fabric, Forge, or a modpack
-- Keep more than one world
-- Make backups
-- Add ops and a whitelist
-
-Friends join with the official Minecraft launcher and the same version shown in the dashboard.
+Friends join with the official Minecraft launcher and the same version shown at the top of the dashboard.
 
 ## Something wrong?
 
-[Open an issue](https://github.com/rndaom/roundhouse/issues/new/choose). That is the right place for deploy problems, dashboard bugs, and ideas.
+[Open an issue](https://github.com/rndaom/campfire/issues/new/choose).
 
 ## License
 

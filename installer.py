@@ -27,8 +27,8 @@ MOJANG_PROFILE_URL = "https://api.mojang.com/users/profiles/minecraft/{name}"
 FABRIC_INSTALLER_PIN = os.environ.get("FABRIC_INSTALLER_VERSION", "").strip()
 FABRIC_LOADER_PIN = os.environ.get("FABRIC_LOADER_VERSION", "").strip()
 
-APP_NAME = "Roundhouse"
-APP_USER_AGENT = "Roundhouse/1.0"
+APP_NAME = "Campfire"
+APP_USER_AGENT = "Campfire/1.0"
 VERSION_LATEST = "latest"
 FALLBACK_RELEASE = "26.2"
 _latest_cache: str | None = None

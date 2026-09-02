@@ -2,8 +2,12 @@
 set -euo pipefail
 
 DATA_DIR="/server/data"
-RESET_MARKER="$DATA_DIR/.roundhouse-v1"
-ARCHIVE_ROOT="$DATA_DIR/archive/pre-roundhouse"
+RESET_MARKER="$DATA_DIR/.campfire-v1"
+ARCHIVE_ROOT="$DATA_DIR/archive/pre-campfire"
+
+if [ -f "$DATA_DIR/.roundhouse-v1" ] && [ ! -f "$RESET_MARKER" ]; then
+  cp "$DATA_DIR/.roundhouse-v1" "$RESET_MARKER"
+fi
 
 mkdir -p "$DATA_DIR" "$DATA_DIR/worlds" "$DATA_DIR/jars" "$DATA_DIR/backups" \
   "$DATA_DIR/instances" "$DATA_DIR/modpacks"
@@ -56,7 +60,7 @@ if [ ! -f "$RESET_MARKER" ]; then
   printf '%s\n' '[]' > "$DATA_DIR/ops.json"
   printf '%s\n' '[]' > "$DATA_DIR/whitelist.json"
   {
-    echo "product=roundhouse"
+    echo "product=campfire"
     echo "default=latest-vanilla"
     echo "reset_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$RESET_MARKER"
@@ -73,5 +77,5 @@ fi
 mkdir -p "$DATA_DIR/worlds/world"
 printf "eula=true\n" > "$DATA_DIR/eula.txt"
 
-echo "[start.sh] Starting Roundhouse..."
+echo "[start.sh] Starting Campfire..."
 exec python3 /server/manager.py
