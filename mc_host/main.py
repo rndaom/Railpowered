@@ -56,11 +56,11 @@ def main():
     ThreadingHTTPServer.allow_reuse_address = True
     http = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), PanelHandler)
     if ADMIN_KEY_FROM_ENV:
-        state.add_log("Admin panel protected (using ADMIN_KEY env var)")
+        state.add_log("Dashboard is using the ADMIN_KEY you set")
     else:
-        state.add_log(f"Admin panel key (auto-generated): {ADMIN_KEY}")
-        state.add_log("Tip: Set ADMIN_KEY env var in Railway for a persistent key")
-    state.add_log(f"Admin panel on port {WEB_PORT}")
+        state.add_log(f"Dashboard key (auto-generated): {ADMIN_KEY}")
+        state.add_log("Set ADMIN_KEY in Railway if you want the same password after restarts")
+    state.add_log(f"Dashboard on port {WEB_PORT}")
 
     try:
         http.serve_forever()

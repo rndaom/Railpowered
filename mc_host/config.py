@@ -35,29 +35,37 @@ LOGIN_HTML = """\
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Admin Login</title>
+  <title>Roundhouse</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:'Segoe UI',system-ui,sans-serif;background:#1a1a2e;color:#eee;
+    body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0b1220;color:#e7edf5;
          display:flex;align-items:center;justify-content:center;min-height:100vh}
-    .card{background:#16213e;border-radius:8px;padding:32px;width:340px}
-    h2{color:#4ecca3;margin-bottom:16px;text-align:center}
-    input{width:100%;padding:10px;border-radius:6px;border:1px solid #333;
-          background:#0f3460;color:#eee;font-size:1rem;margin-bottom:14px}
-    input:focus{outline:none;border-color:#4ecca3}
-    button{width:100%;padding:10px;border-radius:6px;border:none;
-           background:#4ecca3;color:#111;font-weight:600;font-size:1rem;cursor:pointer}
-    button:hover{opacity:.9}
-    .error{color:#e94560;font-size:.9rem;margin-bottom:12px;text-align:center}
+    .card{background:#121a2b;border:1px solid #22304a;border-radius:16px;padding:36px;width:360px}
+    .mark{width:48px;height:48px;margin:0 auto 16px;display:block}
+    h2{color:#4ade80;margin-bottom:6px;text-align:center;letter-spacing:.04em}
+    p{color:#8b9bb4;text-align:center;font-size:.92rem;margin-bottom:18px}
+    input{width:100%;padding:12px;border-radius:10px;border:1px solid #2a3a55;
+          background:#0b1220;color:#e7edf5;font-size:1rem;margin-bottom:14px}
+    input:focus{outline:none;border-color:#4ade80}
+    button{width:100%;padding:12px;border-radius:10px;border:none;
+           background:#4ade80;color:#052e16;font-weight:700;font-size:1rem;cursor:pointer}
+    button:hover{opacity:.92}
+    .error{color:#fb7185;font-size:.9rem;margin-bottom:12px;text-align:center}
   </style>
 </head>
 <body>
   <div class="card">
-    <h2>Admin Login</h2>
+    <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
+      <circle cx="32" cy="32" r="28" fill="#121a2b" stroke="#4ade80" stroke-width="3"/>
+      <circle cx="32" cy="32" r="16" fill="none" stroke="#f5c16c" stroke-width="3"/>
+      <rect x="28" y="12" width="8" height="8" rx="1" fill="#4ade80"/>
+    </svg>
+    <h2>Roundhouse</h2>
+    <p>Dashboard login</p>
     {error}
     <form method="POST" action="/api/login">
       <input type="password" name="key" placeholder="Admin key" autofocus>
-      <button type="submit">Login</button>
+      <button type="submit">Open dashboard</button>
     </form>
   </div>
 </body>

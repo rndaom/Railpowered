@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Minecraft server manager for Railway.
+Roundhouse entry point.
 
-Thin entry point. Sleep proxy, process control, and the admin panel live in
-`mc_host`. Production still launches this file: `python3 /server/manager.py`.
+Sleep proxy, process control, and the dashboard live in `mc_host`.
+Production launches this file: `python3 /server/manager.py`.
 """
 
 from __future__ import annotations

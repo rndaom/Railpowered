@@ -169,8 +169,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 data = self._read_json()
                 cfg = installer.load_config()
                 server_type = str(data.get("type") or cfg.get("type") or "vanilla")
-                version = str(
-                    data.get("minecraft_version") or cfg.get("minecraft_version") or "1.2.5"
+                version = installer.resolve_minecraft_version(
+                    str(data.get("minecraft_version") or cfg.get("minecraft_version") or "")
                 )
                 level = str(data.get("level_name") or "").strip()
                 if level:
@@ -339,6 +339,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             idle_secs = int(time.time() - state.last_activity)
         cfg = installer.load_config()
         spec = state.runtime
+        version = installer.configured_version(cfg)
         self._send_json(
             {
                 "running": state.running,
@@ -352,12 +353,13 @@ class PanelHandler(BaseHTTPRequestHandler):
                 "idle_seconds": idle_secs,
                 "proxy_active": sleep_proxy.active,
                 "type": cfg.get("type"),
-                "minecraft_version": cfg.get("minecraft_version"),
+                "minecraft_version": version,
                 "level_name": cfg.get("level_name"),
                 "modpack": cfg.get("modpack"),
-                "java": spec.java_major if spec else installer.java_major_for_version(
-                    str(cfg.get("minecraft_version") or "1.2.5")
-                ),
+                "java": spec.java_major if spec else installer.java_major_for_version(version),
+                "legacy": installer.uses_legacy_files(version),
+                "online_mode": installer.properties_for(cfg).get("online-mode") == "true",
+                "product": installer.APP_NAME,
             }
         )
 

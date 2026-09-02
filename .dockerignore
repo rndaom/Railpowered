@@ -2,8 +2,11 @@
 .gitignore
 .env
 README.md
-world/
-archive/
+docs/
+.github/
+.railway/
+tests/
+*.md
 *.log
 .idea/
 .vscode/

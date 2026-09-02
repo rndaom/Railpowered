@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Roundhouse">
+  <rect width="128" height="128" rx="28" fill="#0b1220"/>
+  <circle cx="64" cy="64" r="46" fill="none" stroke="#4ade80" stroke-width="6"/>
+  <circle cx="64" cy="64" r="26" fill="none" stroke="#f5c16c" stroke-width="6"/>
+  <rect x="56" y="22" width="16" height="16" rx="2" fill="#4ade80"/>
+  <circle cx="64" cy="64" r="6" fill="#f5c16c"/>
+</svg>

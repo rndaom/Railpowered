@@ -293,6 +293,41 @@ class AccessListTests(DataDirTest):
         self.assertTrue(os.path.isfile(copied))
 
 
+class LatestDefaultTests(DataDirTest):
+    def test_default_config_is_latest_vanilla(self):
+        cfg = installer.default_config()
+        self.assertEqual(cfg["type"], "vanilla")
+        self.assertEqual(cfg["minecraft_version"], "latest")
+        self.assertEqual(cfg["level_name"], "world")
+
+    def test_resolve_latest(self):
+        installer.clear_latest_cache()
+        with mock.patch.object(
+            installer,
+            "fetch_version_manifest",
+            return_value={"latest": {"release": "26.2"}, "versions": []},
+        ):
+            self.assertEqual(installer.resolve_minecraft_version("latest"), "26.2")
+            self.assertEqual(installer.resolve_minecraft_version(""), "26.2")
+            self.assertEqual(installer.resolve_minecraft_version("1.20.1"), "1.20.1")
+
+    def test_modern_property_defaults(self):
+        installer.ensure_layout()
+        installer.clear_latest_cache()
+        with mock.patch.object(installer, "latest_release", return_value="26.2"):
+            props = installer.properties_for(
+                {
+                    "type": "vanilla",
+                    "minecraft_version": "latest",
+                    "level_name": "world",
+                }
+            )
+        self.assertEqual(props["online-mode"], "true")
+        self.assertEqual(props["white-list"], "false")
+        self.assertEqual(props["level-name"], "worlds/world")
+        self.assertEqual(props["motd"], "A Minecraft Server")
+
+
 class HttpServerTests(unittest.TestCase):
     def test_panel_uses_threaded_server(self):
         from manager import ThreadingHTTPServer as imported
@@ -324,7 +359,13 @@ class HttpServerTests(unittest.TestCase):
         tmp = tempfile.TemporaryDirectory()
         installer.DATA_DIR = tmp.name
         installer.ensure_layout()
-        installer.save_config(installer.default_config())
+        installer.save_config(
+            {
+                "type": "vanilla",
+                "minecraft_version": "26.2",
+                "level_name": "world",
+            }
+        )
         server = ThreadingHTTPServer(("127.0.0.1", 0), PanelHandler)
         worker = threading.Thread(target=server.serve_forever, daemon=True)
         worker.start()
@@ -354,7 +395,9 @@ class HttpServerTests(unittest.TestCase):
                 payload = json.loads(resp.read())
             self.assertIn("running", payload)
             self.assertIn("installing", payload)
-            self.assertEqual(payload["minecraft_version"], "1.2.5")
+            self.assertEqual(payload["minecraft_version"], "26.2")
+            self.assertEqual(payload["product"], "Roundhouse")
+            self.assertFalse(payload["legacy"])
             self.assertFalse(payload["running"])
         finally:
             server.shutdown()

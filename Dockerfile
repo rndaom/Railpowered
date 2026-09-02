@@ -28,25 +28,19 @@ RUN mkdir -p /opt/java/8 /opt/java/21 /opt/java/25 && \
 ENV JAVA_8_HOME=/opt/java/8 \
     JAVA_21_HOME=/opt/java/21 \
     JAVA_25_HOME=/opt/java/25 \
-    JAVA_HOME=/opt/java/8 \
-    PATH="/opt/java/8/bin:${PATH}" \
-    MINECRAFT_VERSION=1.2.5 \
+    JAVA_HOME=/opt/java/25 \
+    PATH="/opt/java/25/bin:${PATH}" \
+    MINECRAFT_VERSION=latest \
     SERVER_TYPE=vanilla
 
 WORKDIR /server
-
-ARG MC_125_SHA=d8321edc9470e56b8ad5c67bbd16beba25843336
-RUN mkdir -p /server/jars && \
-    curl -fSL -o /server/jars/minecraft_server.1.2.5.jar \
-        "https://launcher.mojang.com/v1/objects/${MC_125_SHA}/server.jar" && \
-    echo "${MC_125_SHA}  /server/jars/minecraft_server.1.2.5.jar" | sha1sum -c -
 
 COPY manager.py installer.py manager.json server.properties start.sh ./
 COPY mc_host/ mc_host/
 COPY templates/ templates/
 
-RUN chmod +x start.sh
+RUN chmod +x start.sh && mkdir -p /server/jars
 
-EXPOSE 8080
+EXPOSE 8080 25565
 
 CMD ["./start.sh"]

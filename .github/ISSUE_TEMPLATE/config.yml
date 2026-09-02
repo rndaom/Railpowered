@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Railway help
+    url: https://docs.railway.com
+    about: Account, billing, and TCP proxy questions for Railway itself

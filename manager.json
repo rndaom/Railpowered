@@ -1,6 +1,6 @@
 {
   "type": "vanilla",
-  "minecraft_version": "1.2.5",
+  "minecraft_version": "latest",
   "level_name": "world",
   "modpack": null
 }
