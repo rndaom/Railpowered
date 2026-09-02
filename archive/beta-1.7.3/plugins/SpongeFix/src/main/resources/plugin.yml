@@ -1,6 +1,0 @@
-name: SpongeFix
-description: Makes sponge blocks absorb water like Minecraft Classic
-main: com.betaserver.spongefix.SpongeFixPlugin
-version: ${project.version}
-authors:
-  - BetaServer

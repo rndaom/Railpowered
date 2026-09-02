@@ -1,5 +1,0 @@
-world:
-    settings:
-        block-tree-growth:
-            enabled: true
-            list: 4,54,63,68
