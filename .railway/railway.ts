@@ -20,6 +20,7 @@ export default defineRailway(() => {
       "/server/data": world,
     },
     env: {
+      PORT: "8080",
       MINECRAFT_VERSION: "latest",
       SERVER_TYPE: "vanilla",
       AUTO_START: "false",
