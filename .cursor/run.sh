@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Launch the Campfire manager (dashboard + sleep proxy).
+# Launch the Powered Rail manager (dashboard + sleep proxy).
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

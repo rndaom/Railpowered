@@ -3,25 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Campfire</title>
+  <title>Powered Rail</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg: #0b1220;
-      --surface: #121a2b;
-      --card: #182338;
-      --line: #22304a;
-      --accent: #fb7185;
-      --green: #4ade80;
-      --yellow: #f5c16c;
-      --text: #e7edf5;
-      --muted: #8b9bb4;
+      --bg: #16110c;
+      --surface: #221910;
+      --card: #2c2116;
+      --line: #453526;
+      --accent: #e24a3c;
+      --green: #e4b23a;
+      --yellow: #f0c75a;
+      --text: #f4ead6;
+      --muted: #b09a7c;
+      --ink: #2a1c08;
       --radius: 12px;
     }
     body {
       font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
       background:
-        radial-gradient(1200px 500px at 50% -10%, #163024 0%, transparent 55%),
+        radial-gradient(1200px 520px at 50% -12%, #4a3214 0%, transparent 58%),
         var(--bg);
       color: var(--text);
       min-height: 100vh;
@@ -65,7 +66,7 @@
       border: none; border-radius: 10px;
       padding: 10px 18px; font-size: 0.92rem; font-weight: 700;
       cursor: pointer; transition: transform .1s, opacity .2s;
-      color: #052e16; background: var(--green);
+      color: var(--ink); background: var(--green);
     }
     button:active { transform: scale(.97); }
     button:disabled { opacity: .4; cursor: not-allowed; }
@@ -88,7 +89,7 @@
     }
     .no-players { color: var(--muted); font-style: italic; }
     .connect-box, .log-viewer {
-      background: #070d18; border-radius: 10px; padding: 14px;
+      background: #120e0a; border-radius: 10px; padding: 14px;
       font-family: ui-monospace, Consolas, 'Courier New', monospace;
     }
     .connect-box {
@@ -126,13 +127,25 @@
     }
     .step .num {
       flex: 0 0 28px; height: 28px; border-radius: 50%;
-      background: var(--green); color: #052e16; font-weight: 800;
+      background: var(--green); color: var(--ink); font-weight: 800;
       display: flex; align-items: center; justify-content: center;
     }
     .step strong { display: block; }
     .step p { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
     .note { color: var(--muted); font-size: 0.85rem; margin-top: 8px; }
     .error { color: var(--accent); font-size: 0.9rem; margin-top: 8px; }
+    .setup-list { display: grid; gap: 8px; }
+    .setup {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 10px; padding: 12px 14px;
+    }
+    .setup.on { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+    .setup-copy { flex: 1; min-width: 180px; }
+    .setup-copy strong { display: block; }
+    .setup-copy span { color: var(--muted); font-size: 0.85rem; }
+    .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .setup-on { color: var(--green); font-weight: 700; font-size: 0.85rem; }
     @media (max-width: 600px) {
       header h1 { font-size: 1.4rem; }
       .status-card { flex-direction: column; align-items: stretch; }
@@ -144,12 +157,16 @@
     <header>
       <div class="brand">
         <svg viewBox="0 0 64 64" aria-hidden="true">
-          <path d="M32 6c-4 14 10 16 6 30-1 6-6 10-6 10s-5-4-6-10C22 22 36 20 32 6z" fill="#f5c16c"/>
-          <path d="M32 20c-2 7 5 8 3 14-3-1-6-6-3-14z" fill="#fb7185"/>
-          <rect x="10" y="40" width="44" height="8" rx="4" transform="rotate(-22 32 44)" fill="#8b5a2b"/>
-          <rect x="10" y="46" width="44" height="8" rx="4" transform="rotate(22 32 50)" fill="#6b4220"/>
+          <rect x="8" y="14" width="48" height="7" rx="1.5" fill="#6b4423"/>
+          <rect x="8" y="28.5" width="48" height="7" rx="1.5" fill="#5a381c"/>
+          <rect x="8" y="43" width="48" height="7" rx="1.5" fill="#6b4423"/>
+          <rect x="18" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
+          <rect x="40" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
+          <rect x="29" y="26" width="6" height="16" rx="1" fill="#3d2a1a"/>
+          <circle cx="32" cy="24" r="6" fill="#e24a3c"/>
+          <circle cx="32" cy="24" r="3" fill="#ffd27a"/>
         </svg>
-        <h1>Campfire <span id="headerVersion"></span></h1>
+        <h1>Powered Rail <span id="headerVersion"></span></h1>
       </div>
       <p>Your Minecraft dashboard &middot; <a href="/api/logout">Logout</a></p>
     </header>
@@ -188,8 +205,14 @@
     </div>
 
     <div class="card">
-      <h3>Version</h3>
-      <p class="note">Stop the server first. Changing versions creates or uses a matching world so the current one is not overwritten.</p>
+      <h3>Setups</h3>
+      <p class="note">Each setup remembers the version, world, and mods. Switch is one click — the server restarts on that setup.</p>
+      <div id="setupList" class="setup-list"></div>
+    </div>
+
+    <div class="card">
+      <h3>New setup</h3>
+      <p class="note">Apply saves a setup and leaves the others on the list so you can switch back.</p>
       <div class="row">
         <label>Type
           <select id="typeSelect" onchange="onTypeChange()">
@@ -289,8 +312,9 @@
       <details class="guide-section">
         <summary>Change the version later</summary>
         <ul>
-          <li>Stop the server, pick vanilla, Fabric, Forge, or a modpack, then Apply</li>
-          <li>Give the new version its own world name</li>
+          <li>Stop is not needed for Switch. One click restores that version, world, and mods, then starts the server</li>
+          <li>To add a setup, pick vanilla, Fabric, Forge, or a modpack and Apply</li>
+          <li>Give a new version its own world name so the old world stays put</li>
           <li>You do not need to redeploy Railway to switch</li>
         </ul>
       </details>
@@ -397,13 +421,13 @@
           dot.className = "status-indicator online";
           text.textContent = "Online";
           const uptimeStr = s.uptime ? formatDuration(s.uptime) : "";
-          meta.textContent = `${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · Java ${s.java || "?"} · ${s.player_count} player${s.player_count !== 1 ? "s" : ""}` + (uptimeStr ? ` · ${uptimeStr}` : "");
+          meta.textContent = `${s.profile_name ? s.profile_name + " · " : ""}${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · Java ${s.java || "?"} · ${s.player_count} player${s.player_count !== 1 ? "s" : ""}` + (uptimeStr ? ` · ${uptimeStr}` : "");
           btnStart.disabled = true; btnStop.disabled = false;
         } else {
           dot.className = "status-indicator offline";
           text.textContent = "Sleeping";
           meta.textContent = s.proxy_active
-            ? `${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · waiting for a player`
+            ? `${s.profile_name ? s.profile_name + " · " : ""}${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · waiting for a player`
             : "Server is offline.";
           btnStart.disabled = false; btnStop.disabled = true;
         }
@@ -424,7 +448,8 @@
         if (s.type) document.getElementById("typeSelect").value = s.type;
         onTypeChange();
         if (s.minecraft_version) document.getElementById("versionSelect").value = s.minecraft_version;
-        if (s.level_name) document.getElementById("worldForVersion").placeholder = s.level_name;
+        const worldInput = document.getElementById("worldForVersion");
+        if (s.level_name && document.activeElement !== worldInput) worldInput.value = s.level_name;
       } catch (e) {}
     }
 
@@ -476,8 +501,56 @@
       if (out.error) err.textContent = out.error;
       else {
         await loadWorlds();
+        await loadSetups();
         await refreshStatus();
       }
+    }
+
+    async function loadSetups() {
+      const data = await api("GET", "/api/profiles");
+      const list = document.getElementById("setupList");
+      const profiles = data.profiles || [];
+      if (!profiles.length) {
+        list.innerHTML = `<p class="note">The first setup is created when you Apply a version.</p>`;
+        return;
+      }
+      list.innerHTML = profiles.map(p => {
+        const id = escHtml(p.id);
+        const actions = p.active
+          ? `<span class="setup-on">On</span>`
+          : `<button onclick="useSetup('${id}')">Switch</button>
+             <button class="btn-quiet" onclick="renameSetup('${id}')">Rename</button>
+             <button class="btn-danger" onclick="deleteSetup('${id}')">Delete</button>`;
+        return `<div class="setup${p.active ? " on" : ""}">
+          <div class="setup-copy">
+            <strong>${escHtml(p.name)}</strong>
+            <span>${escHtml(p.summary || "")}</span>
+          </div>
+          <div class="setup-actions">${actions}</div>
+        </div>`;
+      }).join("");
+    }
+    async function useSetup(id) {
+      const err = document.getElementById("versionError");
+      err.textContent = "Switching setup…";
+      const out = await api("POST", "/api/profiles/" + encodeURIComponent(id) + "/use");
+      err.textContent = out.error || "";
+      await loadSetups();
+      await loadWorlds();
+      await refreshStatus();
+    }
+    async function renameSetup(id) {
+      const name = prompt("Name this setup");
+      if (!name) return;
+      const out = await api("POST", "/api/profiles/" + encodeURIComponent(id), { name });
+      if (out.error) alert(out.error);
+      loadSetups();
+    }
+    async function deleteSetup(id) {
+      if (!confirm("Remove this setup? The world and mods stay on disk.")) return;
+      const out = await api("DELETE", "/api/profiles/" + encodeURIComponent(id));
+      if (out.error) alert(out.error);
+      loadSetups();
     }
 
     async function installModpackUrl() {
@@ -486,6 +559,7 @@
         name: document.getElementById("modpackName").value.trim()
       });
       document.getElementById("versionError").textContent = out.error || (out.success ? "Modpack installed." : "");
+      loadSetups();
       refreshStatus();
     }
     async function uploadModpack() {
@@ -497,6 +571,7 @@
         "X-Instance-Name": name
       }, file);
       document.getElementById("versionError").textContent = out.error || (out.success ? "Modpack uploaded." : "");
+      loadSetups();
       refreshStatus();
     }
 
@@ -524,7 +599,7 @@
       if (!confirm("Switch to world " + name + "? The server must be stopped.")) return;
       const out = await api("POST", "/api/worlds/select", { name });
       if (out.error) alert(out.error);
-      loadWorlds(); refreshStatus();
+      loadWorlds(); loadSetups(); refreshStatus();
     }
     async function deleteWorld(name) {
       if (!confirm("Delete world " + name + "?")) return;
@@ -616,6 +691,7 @@
     loadVersions();
     refreshStatus();
     refreshLogs();
+    loadSetups();
     loadWorlds();
     loadBackups();
     loadPlayers();

@@ -1,7 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Campfire">
-  <rect width="128" height="128" rx="28" fill="#0b1220"/>
-  <path d="M64 18c-7 22 16 26 10 48-3 10-10 16-10 16s-7-6-10-16c-6-22 17-26 10-48z" fill="#f5c16c"/>
-  <path d="M64 40c-4 12 8 14 5 24-6-2-11-10-5-24z" fill="#fb7185"/>
-  <rect x="24" y="78" width="80" height="16" rx="8" transform="rotate(-20 64 86)" fill="#8b5a2b"/>
-  <rect x="24" y="88" width="80" height="16" rx="8" transform="rotate(20 64 96)" fill="#6b4220"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Powered Rail">
+  <rect width="128" height="128" rx="28" fill="#16110c"/>
+  <rect x="18" y="30" width="92" height="14" rx="3" fill="#6b4423"/>
+  <rect x="18" y="57" width="92" height="14" rx="3" fill="#5a381c"/>
+  <rect x="18" y="84" width="92" height="14" rx="3" fill="#6b4423"/>
+  <rect x="36" y="22" width="12" height="84" rx="3" fill="#e4b23a"/>
+  <rect x="80" y="22" width="12" height="84" rx="3" fill="#e4b23a"/>
+  <rect x="58" y="54" width="12" height="30" rx="2" fill="#3d2a1a"/>
+  <circle cx="64" cy="50" r="12" fill="#e24a3c"/>
+  <circle cx="64" cy="50" r="6" fill="#ffd27a"/>
 </svg>

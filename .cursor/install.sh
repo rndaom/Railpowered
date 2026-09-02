@@ -17,4 +17,4 @@ python3 -m unittest "$REPO_DIR/tests/test_runtime.py"
 
 bash "$REPO_DIR/.cursor/sync-server.sh"
 
-echo "[install] Campfire development environment ready."
+echo "[install] Powered Rail development environment ready."

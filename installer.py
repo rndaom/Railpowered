@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -27,8 +28,8 @@ MOJANG_PROFILE_URL = "https://api.mojang.com/users/profiles/minecraft/{name}"
 FABRIC_INSTALLER_PIN = os.environ.get("FABRIC_INSTALLER_VERSION", "").strip()
 FABRIC_LOADER_PIN = os.environ.get("FABRIC_LOADER_VERSION", "").strip()
 
-APP_NAME = "Campfire"
-APP_USER_AGENT = "Campfire/1.0"
+APP_NAME = "Powered Rail"
+APP_USER_AGENT = "PoweredRail/1.0"
 VERSION_LATEST = "latest"
 FALLBACK_RELEASE = "26.2"
 _latest_cache: str | None = None
@@ -276,6 +277,8 @@ def default_config() -> dict[str, Any]:
         "level_name": "world",
         "modpack": None,
         "instance": None,
+        "active_profile": "default",
+        "profiles": [],
     }
 
 
@@ -301,17 +304,232 @@ def load_config() -> dict[str, Any]:
         cfg["type"] = "vanilla"
     if not WORLD_NAME_RE.match(str(cfg.get("level_name") or "")):
         cfg["level_name"] = "world"
+    seeded = not isinstance(cfg.get("profiles"), list) or not cfg.get("profiles")
+    ensure_profiles(cfg)
+    if seeded:
+        save_config(cfg)
     return cfg
+
+
+def _read_config_file() -> dict[str, Any]:
+    cfg_path = paths()["config"]
+    if not os.path.isfile(cfg_path):
+        return {}
+    try:
+        with open(cfg_path, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def save_config(cfg: dict[str, Any]) -> dict[str, Any]:
     ensure_layout()
     merged = default_config()
     merged.update(cfg)
+    ensure_profiles(merged)
     with open(paths()["config"], "w", encoding="utf-8") as handle:
         json.dump(merged, handle, indent=2)
         handle.write("\n")
     return merged
+
+
+def runtime_fields(src: dict[str, Any]) -> dict[str, Any]:
+    server_type = str(src.get("type") or "vanilla")
+    instance = src.get("instance") or src.get("modpack")
+    return {
+        "type": server_type,
+        "minecraft_version": src.get("minecraft_version") or VERSION_LATEST,
+        "level_name": src.get("level_name") or "world",
+        "modpack": src.get("modpack") if server_type == "modpack" else None,
+        "instance": instance if server_type == "modpack" else None,
+    }
+
+
+def profile_fingerprint(src: dict[str, Any]) -> tuple[str, str, str, str]:
+    fields = runtime_fields(src)
+    return (
+        str(fields["type"]),
+        resolve_minecraft_version(str(fields["minecraft_version"])),
+        str(fields["level_name"]),
+        str(fields.get("instance") or ""),
+    )
+
+
+def is_default_setup(src: dict[str, Any]) -> bool:
+    fields = runtime_fields(src)
+    return (
+        fields["type"] == "vanilla"
+        and str(fields["level_name"]) == "world"
+        and resolve_minecraft_version(str(fields["minecraft_version"])) == latest_release()
+    )
+
+
+def profile_name_for(src: dict[str, Any]) -> str:
+    if is_default_setup(src):
+        return "Latest vanilla"
+    fields = runtime_fields(src)
+    labels = {
+        "vanilla": "Vanilla",
+        "fabric": "Fabric",
+        "forge": "Forge",
+        "modpack": str(fields.get("instance") or fields.get("modpack") or "Modpack"),
+    }
+    label = labels.get(str(fields["type"]), str(fields["type"]).title())
+    version = str(fields["minecraft_version"])
+    if version == VERSION_LATEST:
+        version = "latest"
+    return f"{label} {version} · {fields['level_name']}"
+
+
+def profile_summary(src: dict[str, Any]) -> str:
+    fields = runtime_fields(src)
+    version = str(fields["minecraft_version"])
+    if version == VERSION_LATEST:
+        version = f"latest ({latest_release()})"
+    parts = [str(fields["type"]), version, f"world {fields['level_name']}"]
+    if fields["type"] == "modpack" and fields.get("instance"):
+        parts.insert(1, str(fields["instance"]))
+    return " · ".join(parts)
+
+
+def _sanitize_profile(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    profile_id = str(raw.get("id") or "").strip()
+    if not re.match(r"^[A-Za-z0-9._-]{1,40}$", profile_id):
+        return None
+    fields = runtime_fields(raw)
+    if fields["type"] not in {"vanilla", "fabric", "forge", "modpack"}:
+        fields["type"] = "vanilla"
+    if not WORLD_NAME_RE.match(str(fields["level_name"])):
+        fields["level_name"] = "world"
+    name = str(raw.get("name") or "").strip() or profile_name_for(fields)
+    return {"id": profile_id, "name": name[:48], **fields}
+
+
+def ensure_profiles(cfg: dict[str, Any]) -> dict[str, Any]:
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in cfg.get("profiles") or []:
+        profile = _sanitize_profile(item)
+        if not profile or profile["id"] in seen:
+            continue
+        seen.add(profile["id"])
+        cleaned.append(profile)
+    if not cleaned:
+        fields = runtime_fields(cfg)
+        cleaned.append(
+            {
+                "id": "default",
+                "name": profile_name_for(fields),
+                **fields,
+            }
+        )
+    cfg["profiles"] = cleaned
+    active = str(cfg.get("active_profile") or "")
+    if not any(item["id"] == active for item in cleaned):
+        match = next(
+            (item for item in cleaned if profile_fingerprint(item) == profile_fingerprint(cfg)),
+            cleaned[0],
+        )
+        cfg["active_profile"] = match["id"]
+    return cfg
+
+
+def get_profile(cfg: dict[str, Any], profile_id: str) -> dict[str, Any] | None:
+    ensure_profiles(cfg)
+    for profile in cfg["profiles"]:
+        if profile["id"] == profile_id:
+            return profile
+    return None
+
+
+def list_profiles(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    cfg = cfg or load_config()
+    ensure_profiles(cfg)
+    active = cfg.get("active_profile")
+    result = []
+    for profile in cfg["profiles"]:
+        item = dict(profile)
+        item["active"] = profile["id"] == active
+        item["summary"] = profile_summary(profile)
+        result.append(item)
+    return result
+
+
+def upsert_profile(cfg: dict[str, Any], name: str | None = None) -> dict[str, Any]:
+    if not isinstance(cfg.get("profiles"), list) or not cfg.get("profiles"):
+        disk = _read_config_file()
+        if disk.get("profiles"):
+            cfg["profiles"] = disk["profiles"]
+            if not cfg.get("active_profile"):
+                cfg["active_profile"] = disk.get("active_profile")
+    ensure_profiles(cfg)
+    fields = runtime_fields(cfg)
+    fingerprint = profile_fingerprint(fields)
+    for profile in cfg["profiles"]:
+        if profile_fingerprint(profile) != fingerprint:
+            continue
+        keep_latest = (
+            str(profile.get("minecraft_version") or "") == VERSION_LATEST
+            and resolve_minecraft_version(fields["minecraft_version"]) == latest_release()
+        )
+        profile.update(fields)
+        if keep_latest:
+            profile["minecraft_version"] = VERSION_LATEST
+        if name:
+            profile["name"] = name[:48]
+        cfg["active_profile"] = profile["id"]
+        return cfg
+    profile_id = "default" if is_default_setup(fields) and not any(
+        item["id"] == "default" for item in cfg["profiles"]
+    ) else f"s{secrets.token_hex(4)}"
+    cfg["profiles"].append(
+        {
+            "id": profile_id,
+            "name": (name or profile_name_for(fields))[:48],
+            **fields,
+        }
+    )
+    cfg["active_profile"] = profile_id
+    return cfg
+
+
+def activate_profile(profile_id: str) -> dict[str, Any]:
+    cfg = load_config()
+    profile = get_profile(cfg, profile_id)
+    if not profile:
+        raise InstallError("Setup not found")
+    cfg.update(runtime_fields(profile))
+    cfg["active_profile"] = profile["id"]
+    return save_config(cfg)
+
+
+def rename_profile(profile_id: str, name: str) -> dict[str, Any]:
+    name = (name or "").strip()
+    if not name or len(name) > 48:
+        raise InstallError("Setup name must be 1 to 48 characters")
+    cfg = load_config()
+    profile = get_profile(cfg, profile_id)
+    if not profile:
+        raise InstallError("Setup not found")
+    profile["name"] = name
+    return save_config(cfg)
+
+
+def delete_profile(profile_id: str) -> dict[str, Any]:
+    cfg = load_config()
+    ensure_profiles(cfg)
+    if len(cfg["profiles"]) <= 1:
+        raise InstallError("Keep at least one setup")
+    if profile_id == cfg.get("active_profile"):
+        raise InstallError("Switch to another setup before deleting this one")
+    next_profiles = [item for item in cfg["profiles"] if item["id"] != profile_id]
+    if len(next_profiles) == len(cfg["profiles"]):
+        raise InstallError("Setup not found")
+    cfg["profiles"] = next_profiles
+    return save_config(cfg)
 
 
 def sha1_file(path: str) -> str:
@@ -822,6 +1040,10 @@ def delete_world(name: str) -> None:
     if not os.path.isdir(dest):
         raise InstallError("World not found")
     shutil.rmtree(dest)
+    cfg["profiles"] = [
+        item for item in (cfg.get("profiles") or []) if item.get("level_name") != name
+    ]
+    save_config(cfg)
 
 
 def select_world(name: str) -> dict[str, Any]:
@@ -830,6 +1052,7 @@ def select_world(name: str) -> dict[str, Any]:
         os.makedirs(dest, exist_ok=True)
     cfg = load_config()
     cfg["level_name"] = name
+    upsert_profile(cfg)
     save_config(cfg)
     apply_properties(cfg)
     return cfg
@@ -1027,7 +1250,11 @@ def _find_modpack_jar(directory: str) -> str | None:
 
 def apply_server(cfg: dict[str, Any]) -> RuntimeSpec:
     cfg = dict(cfg)
+    if str(cfg.get("type") or "vanilla") != "modpack":
+        cfg["modpack"] = None
+        cfg["instance"] = None
     cfg["minecraft_version"] = configured_version(cfg)
+    upsert_profile(cfg)
     saved = save_config(cfg)
     return prepare_runtime(saved)
 

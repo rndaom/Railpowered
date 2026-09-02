@@ -35,33 +35,38 @@ LOGIN_HTML = """\
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Campfire</title>
+  <title>Powered Rail</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:ui-sans-serif,system-ui,sans-serif;background:#0b1220;color:#e7edf5;
-         display:flex;align-items:center;justify-content:center;min-height:100vh}
-    .card{background:#121a2b;border:1px solid #22304a;border-radius:16px;padding:36px;width:360px}
+    body{font-family:ui-sans-serif,system-ui,sans-serif;background:#16110c;color:#f4ead6;
+         display:flex;align-items:center;justify-content:center;min-height:100vh;
+         background-image:radial-gradient(900px 420px at 50% -10%, #4a3214 0%, transparent 58%)}
+    .card{background:#221910;border:1px solid #453526;border-radius:16px;padding:36px;width:360px}
     .mark{width:56px;height:56px;margin:0 auto 16px;display:block}
-    h2{color:#4ade80;margin-bottom:6px;text-align:center;letter-spacing:.04em}
-    p{color:#8b9bb4;text-align:center;font-size:.92rem;margin-bottom:18px}
-    input{width:100%;padding:12px;border-radius:10px;border:1px solid #2a3a55;
-          background:#0b1220;color:#e7edf5;font-size:1rem;margin-bottom:14px}
-    input:focus{outline:none;border-color:#4ade80}
+    h2{color:#e4b23a;margin-bottom:6px;text-align:center;letter-spacing:.04em}
+    p{color:#b09a7c;text-align:center;font-size:.92rem;margin-bottom:18px}
+    input{width:100%;padding:12px;border-radius:10px;border:1px solid #453526;
+          background:#16110c;color:#f4ead6;font-size:1rem;margin-bottom:14px}
+    input:focus{outline:none;border-color:#e4b23a}
     button{width:100%;padding:12px;border-radius:10px;border:none;
-           background:#4ade80;color:#052e16;font-weight:700;font-size:1rem;cursor:pointer}
+           background:#e4b23a;color:#2a1c08;font-weight:700;font-size:1rem;cursor:pointer}
     button:hover{opacity:.92}
-    .error{color:#fb7185;font-size:.9rem;margin-bottom:12px;text-align:center}
+    .error{color:#e24a3c;font-size:.9rem;margin-bottom:12px;text-align:center}
   </style>
 </head>
 <body>
   <div class="card">
     <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
-      <path d="M32 6c-4 14 10 16 6 30-1 6-6 10-6 10s-5-4-6-10C22 22 36 20 32 6z" fill="#f5c16c"/>
-      <path d="M32 20c-2 7 5 8 3 14-3-1-6-6-3-14z" fill="#fb7185"/>
-      <rect x="10" y="40" width="44" height="8" rx="4" transform="rotate(-22 32 44)" fill="#8b5a2b"/>
-      <rect x="10" y="46" width="44" height="8" rx="4" transform="rotate(22 32 50)" fill="#6b4220"/>
+      <rect x="8" y="14" width="48" height="7" rx="1.5" fill="#6b4423"/>
+      <rect x="8" y="28.5" width="48" height="7" rx="1.5" fill="#5a381c"/>
+      <rect x="8" y="43" width="48" height="7" rx="1.5" fill="#6b4423"/>
+      <rect x="18" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
+      <rect x="40" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
+      <rect x="29" y="26" width="6" height="16" rx="1" fill="#3d2a1a"/>
+      <circle cx="32" cy="24" r="6" fill="#e24a3c"/>
+      <circle cx="32" cy="24" r="3" fill="#ffd27a"/>
     </svg>
-    <h2>Campfire</h2>
+    <h2>Powered Rail</h2>
     <p>Dashboard login</p>
     {error}
     <form method="POST" action="/api/login">

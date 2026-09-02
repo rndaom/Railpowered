@@ -293,6 +293,120 @@ class AccessListTests(DataDirTest):
         self.assertTrue(os.path.isfile(copied))
 
 
+class ProfileTests(DataDirTest):
+    def test_seeds_default_setup(self):
+        installer.ensure_layout()
+        cfg = installer.load_config()
+        self.assertEqual(cfg["active_profile"], "default")
+        self.assertEqual(len(cfg["profiles"]), 1)
+        self.assertEqual(cfg["profiles"][0]["name"], "Latest vanilla")
+        self.assertEqual(cfg["profiles"][0]["type"], "vanilla")
+        self.assertEqual(cfg["profiles"][0]["level_name"], "world")
+
+    def test_apply_creates_second_setup_and_switch_restores_default(self):
+        installer.ensure_layout()
+        fabric = installer.load_config()
+        fabric.update(
+            {
+                "type": "fabric",
+                "minecraft_version": "1.20.1",
+                "level_name": "sky",
+            }
+        )
+        installer.upsert_profile(fabric)
+        installer.save_config(fabric)
+        profiles = installer.list_profiles()
+        self.assertEqual(len(profiles), 2)
+        fabric_id = next(item["id"] for item in profiles if item["type"] == "fabric")
+        default_id = next(item["id"] for item in profiles if item["id"] == "default")
+        installer.activate_profile(fabric_id)
+        cfg = installer.load_config()
+        self.assertEqual(cfg["type"], "fabric")
+        self.assertEqual(cfg["level_name"], "sky")
+        installer.activate_profile(default_id)
+        cfg = installer.load_config()
+        self.assertEqual(cfg["type"], "vanilla")
+        self.assertEqual(cfg["level_name"], "world")
+        self.assertEqual(cfg["active_profile"], "default")
+
+    def test_same_fingerprint_reuses_setup(self):
+        installer.ensure_layout()
+        cfg = installer.load_config()
+        first_id = cfg["active_profile"]
+        installer.upsert_profile(cfg)
+        installer.save_config(cfg)
+        self.assertEqual(len(installer.list_profiles()), 1)
+        self.assertEqual(installer.load_config()["active_profile"], first_id)
+
+    def test_cannot_delete_active_or_last_setup(self):
+        installer.ensure_layout()
+        installer.load_config()
+        with self.assertRaises(installer.InstallError):
+            installer.delete_profile("default")
+        fabric = installer.load_config()
+        fabric.update(
+            {"type": "fabric", "minecraft_version": "1.20.1", "level_name": "sky"}
+        )
+        installer.upsert_profile(fabric)
+        installer.save_config(fabric)
+        fabric_id = next(
+            item["id"] for item in installer.list_profiles() if item["type"] == "fabric"
+        )
+        with self.assertRaises(installer.InstallError):
+            installer.delete_profile(fabric_id)
+        installer.activate_profile("default")
+        installer.delete_profile(fabric_id)
+        self.assertEqual(len(installer.list_profiles()), 1)
+
+    def test_apply_server_keeps_previous_setup(self):
+        installer.ensure_layout()
+        installer.load_config()
+        cfg = installer.load_config()
+        cfg.update(
+            {
+                "type": "fabric",
+                "minecraft_version": "1.20.1",
+                "level_name": "sky",
+            }
+        )
+        fake = installer.RuntimeSpec(
+            java_bin="/bin/true",
+            cwd=installer.DATA_DIR,
+            jar="server.jar",
+            version="1.20.1",
+            type="fabric",
+            level_name="sky",
+            java_major=21,
+        )
+        with mock.patch.object(installer, "prepare_runtime", return_value=fake):
+            installer.apply_server(cfg)
+        types = {item["type"] for item in installer.list_profiles()}
+        self.assertEqual(types, {"vanilla", "fabric"})
+        self.assertEqual(installer.load_config()["active_profile"] != "default", True)
+        installer.activate_profile("default")
+        self.assertEqual(installer.load_config()["type"], "vanilla")
+        self.assertEqual(installer.load_config()["level_name"], "world")
+
+    def test_rename_and_delete_world_drops_setup(self):
+        installer.ensure_layout()
+        installer.load_config()
+        installer.create_world("creative")
+        installer.select_world("creative")
+        profiles = installer.list_profiles()
+        self.assertEqual(len(profiles), 2)
+        creative = next(item for item in profiles if item["level_name"] == "creative")
+        installer.rename_profile(creative["id"], "Creative world")
+        self.assertEqual(
+            installer.get_profile(installer.load_config(), creative["id"])["name"],
+            "Creative world",
+        )
+        installer.activate_profile("default")
+        installer.delete_world("creative")
+        self.assertFalse(
+            any(item["level_name"] == "creative" for item in installer.list_profiles())
+        )
+
+
 class LatestDefaultTests(DataDirTest):
     def test_default_config_is_latest_vanilla(self):
         cfg = installer.default_config()
@@ -396,9 +510,52 @@ class HttpServerTests(unittest.TestCase):
             self.assertIn("running", payload)
             self.assertIn("installing", payload)
             self.assertEqual(payload["minecraft_version"], "26.2")
-            self.assertEqual(payload["product"], "Campfire")
+            self.assertEqual(payload["product"], "Powered Rail")
             self.assertFalse(payload["legacy"])
             self.assertFalse(payload["running"])
+            with opener.open(f"{base}/api/profiles") as resp:
+                profiles = json.loads(resp.read())
+            self.assertTrue(profiles["profiles"])
+            self.assertEqual(profiles["profiles"][0]["id"], "default")
+
+            fabric = installer.load_config()
+            fabric.update(
+                {
+                    "type": "fabric",
+                    "minecraft_version": "1.20.1",
+                    "level_name": "sky",
+                }
+            )
+            installer.upsert_profile(fabric)
+            installer.save_config(fabric)
+            fabric_id = next(
+                item["id"]
+                for item in installer.list_profiles()
+                if item["type"] == "fabric"
+            )
+            fake = installer.RuntimeSpec(
+                java_bin="/bin/true",
+                cwd=installer.DATA_DIR,
+                jar="server.jar",
+                version="26.2",
+                type="vanilla",
+                level_name="world",
+                java_major=25,
+            )
+            with mock.patch.object(installer, "prepare_runtime", return_value=fake):
+                with mock.patch("mc_host.panel.start_server", return_value=True):
+                    use = urllib.request.Request(
+                        f"{base}/api/profiles/default/use",
+                        data=b"{}",
+                        method="POST",
+                    )
+                    with opener.open(use) as resp:
+                        switched = json.loads(resp.read())
+            self.assertTrue(switched["success"])
+            self.assertTrue(switched["started"])
+            self.assertEqual(installer.load_config()["type"], "vanilla")
+            self.assertEqual(installer.load_config()["level_name"], "world")
+            self.assertTrue(any(item["id"] == fabric_id for item in installer.list_profiles()))
         finally:
             server.shutdown()
             server.server_close()
