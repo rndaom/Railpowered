@@ -132,7 +132,7 @@ class SleepProxy:
     @staticmethod
     def _legacy_motd() -> str:
         cfg = installer.load_config()
-        version = cfg.get("minecraft_version") or "1.2.5"
+        version = installer.configured_version(cfg)
         return f"{version} sleeping - join to wake§0§20"
 
     @classmethod
@@ -162,7 +162,7 @@ class SleepProxy:
         cls, sock: socket.socket, protocol_version: int | None
     ) -> None:
         cfg = installer.load_config()
-        version = str(cfg.get("minecraft_version") or "1.2.5")
+        version = installer.configured_version(cfg)
         status = {
             "version": {
                 "name": version,

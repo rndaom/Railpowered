@@ -93,7 +93,17 @@ class PanelHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/worlds/"):
                 require_stopped()
                 installer.delete_world(unquote(path.split("/", 3)[-1]))
-                self._send_json({"success": True, "worlds": installer.list_worlds()})
+                self._send_json(
+                    {
+                        "success": True,
+                        "worlds": installer.list_worlds(),
+                        "profiles": installer.list_profiles(),
+                    }
+                )
+                return
+            if path.startswith("/api/profiles/"):
+                installer.delete_profile(unquote(path.split("/", 3)[-1]))
+                self._send_json({"success": True, "profiles": installer.list_profiles()})
                 return
         except installer.InstallError as exc:
             self._send_json({"error": str(exc)}, 400)
@@ -113,8 +123,12 @@ class PanelHandler(BaseHTTPRequestHandler):
                 "minecraft_version": cfg.get("minecraft_version"),
                 "level_name": cfg.get("level_name"),
                 "modpack": cfg.get("modpack"),
+                "active_profile": cfg.get("active_profile"),
             }
+            payload["profiles"] = installer.list_profiles(cfg)
             self._send_json(payload)
+        elif path == "/api/profiles":
+            self._send_json({"profiles": installer.list_profiles()})
         elif path == "/api/worlds":
             self._send_json({"worlds": installer.list_worlds()})
         elif path == "/api/backups":
@@ -169,8 +183,8 @@ class PanelHandler(BaseHTTPRequestHandler):
                 data = self._read_json()
                 cfg = installer.load_config()
                 server_type = str(data.get("type") or cfg.get("type") or "vanilla")
-                version = str(
-                    data.get("minecraft_version") or cfg.get("minecraft_version") or "1.2.5"
+                version = installer.resolve_minecraft_version(
+                    str(data.get("minecraft_version") or cfg.get("minecraft_version") or "")
                 )
                 level = str(data.get("level_name") or "").strip()
                 if level:
@@ -180,20 +194,31 @@ class PanelHandler(BaseHTTPRequestHandler):
                     level = f"{server_type}-{version.replace('.', '_')}"
                     if not os.path.isdir(installer.world_path(level)):
                         os.makedirs(installer.world_path(level), exist_ok=True)
+                if server_type != "modpack":
+                    cfg["modpack"] = None
+                    cfg["instance"] = None
+                else:
+                    cfg["modpack"] = data.get("modpack", cfg.get("modpack"))
+                    cfg["instance"] = data.get("instance", cfg.get("instance"))
                 cfg.update(
                     {
                         "type": server_type,
                         "minecraft_version": version,
                         "level_name": level,
-                        "modpack": data.get("modpack", cfg.get("modpack")),
-                        "instance": data.get("instance", cfg.get("instance")),
                     }
                 )
                 spec = installer.apply_server(cfg)
                 state.add_log(
                     f"Configured {spec.type} {spec.version} on world {spec.level_name}"
                 )
-                self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+                self._send_json(
+                    {
+                        "success": True,
+                        "current": installer.load_config(),
+                        "profiles": installer.list_profiles(),
+                        "java": spec.java_major,
+                    }
+                )
             finally:
                 clear_installing()
             return
@@ -208,7 +233,17 @@ class PanelHandler(BaseHTTPRequestHandler):
             require_stopped()
             data = self._read_json()
             cfg = installer.select_world(str(data.get("name") or "").strip())
-            self._send_json({"success": True, "current": cfg, "worlds": installer.list_worlds()})
+            self._send_json(
+                {
+                    "success": True,
+                    "current": cfg,
+                    "worlds": installer.list_worlds(),
+                    "profiles": installer.list_profiles(),
+                }
+            )
+            return
+        if path.startswith("/api/profiles/"):
+            self._api_profile_post(path)
             return
         if path == "/api/backups":
             cfg = installer.load_config()
@@ -237,7 +272,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                     raise installer.InstallError("Modpack URL is required")
                 cfg = installer.install_modpack_from_url(url, name or "modpack")
                 spec = installer.apply_server(cfg)
-                self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+                self._send_json(
+                    {
+                        "success": True,
+                        "current": installer.load_config(),
+                        "profiles": installer.list_profiles(),
+                        "java": spec.java_major,
+                    }
+                )
             finally:
                 clear_installing()
             return
@@ -259,7 +301,14 @@ class PanelHandler(BaseHTTPRequestHandler):
                     handle.write(raw)
                 cfg = installer.install_modpack_archive(dest, name)
                 spec = installer.apply_server(cfg)
-                self._send_json({"success": True, "current": cfg, "java": spec.java_major})
+                self._send_json(
+                    {
+                        "success": True,
+                        "current": installer.load_config(),
+                        "profiles": installer.list_profiles(),
+                        "java": spec.java_major,
+                    }
+                )
             finally:
                 clear_installing()
             return
@@ -339,6 +388,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             idle_secs = int(time.time() - state.last_activity)
         cfg = installer.load_config()
         spec = state.runtime
+        version = installer.configured_version(cfg)
         self._send_json(
             {
                 "running": state.running,
@@ -352,14 +402,72 @@ class PanelHandler(BaseHTTPRequestHandler):
                 "idle_seconds": idle_secs,
                 "proxy_active": sleep_proxy.active,
                 "type": cfg.get("type"),
-                "minecraft_version": cfg.get("minecraft_version"),
+                "minecraft_version": version,
                 "level_name": cfg.get("level_name"),
                 "modpack": cfg.get("modpack"),
-                "java": spec.java_major if spec else installer.java_major_for_version(
-                    str(cfg.get("minecraft_version") or "1.2.5")
+                "java": spec.java_major if spec else installer.java_major_for_version(version),
+                "legacy": installer.uses_legacy_files(version),
+                "online_mode": installer.properties_for(cfg).get("online-mode") == "true",
+                "product": installer.APP_NAME,
+                "active_profile": cfg.get("active_profile"),
+                "profile_name": next(
+                    (
+                        item["name"]
+                        for item in cfg.get("profiles") or []
+                        if item.get("id") == cfg.get("active_profile")
+                    ),
+                    "",
                 ),
             }
         )
+
+    def _api_profile_post(self, path: str) -> None:
+        rest = unquote(path[len("/api/profiles/") :]).strip("/")
+        if rest.endswith("/use"):
+            profile_id = rest[: -len("/use")].strip("/")
+            self._use_profile(profile_id)
+            return
+        data = self._read_json()
+        cfg = installer.rename_profile(rest, str(data.get("name") or ""))
+        self._send_json({"success": True, "current": cfg, "profiles": installer.list_profiles()})
+
+    def _use_profile(self, profile_id: str) -> None:
+        cfg = installer.load_config()
+        if cfg.get("active_profile") == profile_id and state.running:
+            self._send_json(
+                {
+                    "success": True,
+                    "already_active": True,
+                    "started": True,
+                    "current": cfg,
+                    "profiles": installer.list_profiles(),
+                }
+            )
+            return
+        if state.running or state.starting or state.stopping:
+            stop_server()
+        require_stopped(lock_install=True)
+        try:
+            cfg = installer.activate_profile(profile_id)
+            spec = installer.apply_server(cfg)
+            if sleep_proxy.active:
+                sleep_proxy.stop()
+                time.sleep(0.5)
+            started = start_server()
+            state.add_log(
+                f"Switched to {spec.type} {spec.version} on world {spec.level_name}"
+            )
+            self._send_json(
+                {
+                    "success": True,
+                    "started": started,
+                    "current": installer.load_config(),
+                    "profiles": installer.list_profiles(),
+                    "java": spec.java_major,
+                }
+            )
+        finally:
+            clear_installing()
 
     def _read_raw(self) -> bytes:
         length = int(self.headers.get("Content-Length", 0))

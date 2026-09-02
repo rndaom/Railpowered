@@ -10,7 +10,7 @@ from http.server import ThreadingHTTPServer
 
 import installer
 
-from .config import ADMIN_KEY, ADMIN_KEY_FROM_ENV, AUTO_START, WEB_PORT
+from .config import ADMIN_KEY, ADMIN_KEY_FROM_ENV, AUTO_START, MC_PUBLIC_ADDRESS, WEB_PORT
 from .panel import PanelHandler
 from .process import idle_checker, send_command, sleep_proxy, start_server
 from .state import state
@@ -56,11 +56,14 @@ def main():
     ThreadingHTTPServer.allow_reuse_address = True
     http = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), PanelHandler)
     if ADMIN_KEY_FROM_ENV:
-        state.add_log("Admin panel protected (using ADMIN_KEY env var)")
+        state.add_log("Log in with ADMIN_KEY from Railway Variables")
     else:
-        state.add_log(f"Admin panel key (auto-generated): {ADMIN_KEY}")
-        state.add_log("Tip: Set ADMIN_KEY env var in Railway for a persistent key")
-    state.add_log(f"Admin panel on port {WEB_PORT}")
+        state.add_log(f"Dashboard key (saved on the volume): {ADMIN_KEY}")
+    if MC_PUBLIC_ADDRESS:
+        state.add_log(f"Join address: {MC_PUBLIC_ADDRESS}")
+    else:
+        state.add_log("Join address appears when Railway TCP proxy 25565 is attached")
+    state.add_log(f"Dashboard on port {WEB_PORT}")
 
     try:
         http.serve_forever()

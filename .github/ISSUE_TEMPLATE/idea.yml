@@ -1,0 +1,17 @@
+name: Idea
+description: A change that would make Railpowered better
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      placeholder: What should be easier, clearer, or possible that is not today?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it helps
+      placeholder: First-time deploy, everyday hosting, or both?

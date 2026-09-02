@@ -1,6 +1,0 @@
-name: WebMap
-description: Browser-based 3D map viewer for Beta 1.7.3
-main: com.betaserver.webmap.WebMapPlugin
-version: ${project.version}
-authors:
-  - BetaServer

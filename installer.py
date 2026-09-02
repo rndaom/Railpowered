@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tarfile
@@ -26,6 +27,12 @@ FABRIC_META_URL = "https://meta.fabricmc.net/v2"
 MOJANG_PROFILE_URL = "https://api.mojang.com/users/profiles/minecraft/{name}"
 FABRIC_INSTALLER_PIN = os.environ.get("FABRIC_INSTALLER_VERSION", "").strip()
 FABRIC_LOADER_PIN = os.environ.get("FABRIC_LOADER_VERSION", "").strip()
+
+APP_NAME = "Railpowered"
+APP_USER_AGENT = "Railpowered/1.0"
+VERSION_LATEST = "latest"
+FALLBACK_RELEASE = "26.2"
+_latest_cache: str | None = None
 
 VANILLA_125_SHA1 = "d8321edc9470e56b8ad5c67bbd16beba25843336"
 VANILLA_125_URL = (
@@ -55,18 +62,17 @@ FORGE_BUILDS = {
 }
 
 CURATED_VANILLA = [
-    "1.2.5",
-    "1.5.2",
-    "1.6.4",
-    "1.7.10",
-    "1.8.9",
-    "1.12.2",
-    "1.16.5",
-    "1.20.1",
-    "1.21.1",
     "26.2",
+    "1.21.11",
+    "1.21.1",
+    "1.20.1",
+    "1.16.5",
+    "1.12.2",
+    "1.8.9",
+    "1.7.10",
+    "1.2.5",
 ]
-CURATED_FABRIC = ["1.20.1", "1.21.1", "26.2"]
+CURATED_FABRIC = ["26.2", "1.21.1", "1.20.1"]
 WORLD_NAME_RE = re.compile(r"^[A-Za-z0-9._-]{1,32}$")
 
 JAVA_HOMES = {
@@ -88,10 +94,42 @@ class RuntimeSpec:
     extra_args: list[str] = field(default_factory=lambda: ["nogui"])
     jvm_args: list[str] = field(default_factory=list)
     prefix_args: list[str] = field(default_factory=list)
-    version: str = "1.2.5"
+    version: str = FALLBACK_RELEASE
     type: str = "vanilla"
     level_name: str = "world"
     java_major: int = 8
+
+
+def clear_latest_cache() -> None:
+    global _latest_cache
+    _latest_cache = None
+
+
+def latest_release() -> str:
+    global _latest_cache
+    if _latest_cache:
+        return _latest_cache
+    try:
+        manifest = fetch_version_manifest()
+        release = (manifest.get("latest") or {}).get("release")
+        if release:
+            _latest_cache = str(release)
+            return _latest_cache
+    except InstallError:
+        pass
+    return FALLBACK_RELEASE
+
+
+def resolve_minecraft_version(version: str | None) -> str:
+    raw = (version or "").strip()
+    if not raw or raw.lower() == VERSION_LATEST:
+        return latest_release()
+    return raw
+
+
+def configured_version(cfg: dict[str, Any] | None = None) -> str:
+    cfg = cfg or {}
+    return resolve_minecraft_version(str(cfg.get("minecraft_version") or ""))
 
 
 def parse_version(version: str) -> tuple[int, ...]:
@@ -123,6 +161,7 @@ def uses_legacy_files(version: str) -> bool:
 
 
 def java_major_for_version(version: str) -> int:
+    version = resolve_minecraft_version(version)
     if is_year_version(version) or parse_version(version) >= (1, 21, 11):
         return 25 if os.path.isdir(JAVA_HOMES[25]) else 21
     if parse_version(version) >= (1, 17, 0):
@@ -234,10 +273,12 @@ def ensure_layout() -> None:
 def default_config() -> dict[str, Any]:
     return {
         "type": "vanilla",
-        "minecraft_version": "1.2.5",
+        "minecraft_version": VERSION_LATEST,
         "level_name": "world",
         "modpack": None,
         "instance": None,
+        "active_profile": "default",
+        "profiles": [],
     }
 
 
@@ -263,17 +304,232 @@ def load_config() -> dict[str, Any]:
         cfg["type"] = "vanilla"
     if not WORLD_NAME_RE.match(str(cfg.get("level_name") or "")):
         cfg["level_name"] = "world"
+    seeded = not isinstance(cfg.get("profiles"), list) or not cfg.get("profiles")
+    ensure_profiles(cfg)
+    if seeded:
+        save_config(cfg)
     return cfg
+
+
+def _read_config_file() -> dict[str, Any]:
+    cfg_path = paths()["config"]
+    if not os.path.isfile(cfg_path):
+        return {}
+    try:
+        with open(cfg_path, encoding="utf-8") as handle:
+            loaded = json.load(handle)
+        return loaded if isinstance(loaded, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def save_config(cfg: dict[str, Any]) -> dict[str, Any]:
     ensure_layout()
     merged = default_config()
     merged.update(cfg)
+    ensure_profiles(merged)
     with open(paths()["config"], "w", encoding="utf-8") as handle:
         json.dump(merged, handle, indent=2)
         handle.write("\n")
     return merged
+
+
+def runtime_fields(src: dict[str, Any]) -> dict[str, Any]:
+    server_type = str(src.get("type") or "vanilla")
+    instance = src.get("instance") or src.get("modpack")
+    return {
+        "type": server_type,
+        "minecraft_version": src.get("minecraft_version") or VERSION_LATEST,
+        "level_name": src.get("level_name") or "world",
+        "modpack": src.get("modpack") if server_type == "modpack" else None,
+        "instance": instance if server_type == "modpack" else None,
+    }
+
+
+def profile_fingerprint(src: dict[str, Any]) -> tuple[str, str, str, str]:
+    fields = runtime_fields(src)
+    return (
+        str(fields["type"]),
+        resolve_minecraft_version(str(fields["minecraft_version"])),
+        str(fields["level_name"]),
+        str(fields.get("instance") or ""),
+    )
+
+
+def is_default_setup(src: dict[str, Any]) -> bool:
+    fields = runtime_fields(src)
+    return (
+        fields["type"] == "vanilla"
+        and str(fields["level_name"]) == "world"
+        and resolve_minecraft_version(str(fields["minecraft_version"])) == latest_release()
+    )
+
+
+def profile_name_for(src: dict[str, Any]) -> str:
+    if is_default_setup(src):
+        return "Latest vanilla"
+    fields = runtime_fields(src)
+    labels = {
+        "vanilla": "Vanilla",
+        "fabric": "Fabric",
+        "forge": "Forge",
+        "modpack": str(fields.get("instance") or fields.get("modpack") or "Modpack"),
+    }
+    label = labels.get(str(fields["type"]), str(fields["type"]).title())
+    version = str(fields["minecraft_version"])
+    if version == VERSION_LATEST:
+        version = "latest"
+    return f"{label} {version} · {fields['level_name']}"
+
+
+def profile_summary(src: dict[str, Any]) -> str:
+    fields = runtime_fields(src)
+    version = str(fields["minecraft_version"])
+    if version == VERSION_LATEST:
+        version = f"latest ({latest_release()})"
+    parts = [str(fields["type"]), version, f"world {fields['level_name']}"]
+    if fields["type"] == "modpack" and fields.get("instance"):
+        parts.insert(1, str(fields["instance"]))
+    return " · ".join(parts)
+
+
+def _sanitize_profile(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    profile_id = str(raw.get("id") or "").strip()
+    if not re.match(r"^[A-Za-z0-9._-]{1,40}$", profile_id):
+        return None
+    fields = runtime_fields(raw)
+    if fields["type"] not in {"vanilla", "fabric", "forge", "modpack"}:
+        fields["type"] = "vanilla"
+    if not WORLD_NAME_RE.match(str(fields["level_name"])):
+        fields["level_name"] = "world"
+    name = str(raw.get("name") or "").strip() or profile_name_for(fields)
+    return {"id": profile_id, "name": name[:48], **fields}
+
+
+def ensure_profiles(cfg: dict[str, Any]) -> dict[str, Any]:
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in cfg.get("profiles") or []:
+        profile = _sanitize_profile(item)
+        if not profile or profile["id"] in seen:
+            continue
+        seen.add(profile["id"])
+        cleaned.append(profile)
+    if not cleaned:
+        fields = runtime_fields(cfg)
+        cleaned.append(
+            {
+                "id": "default",
+                "name": profile_name_for(fields),
+                **fields,
+            }
+        )
+    cfg["profiles"] = cleaned
+    active = str(cfg.get("active_profile") or "")
+    if not any(item["id"] == active for item in cleaned):
+        match = next(
+            (item for item in cleaned if profile_fingerprint(item) == profile_fingerprint(cfg)),
+            cleaned[0],
+        )
+        cfg["active_profile"] = match["id"]
+    return cfg
+
+
+def get_profile(cfg: dict[str, Any], profile_id: str) -> dict[str, Any] | None:
+    ensure_profiles(cfg)
+    for profile in cfg["profiles"]:
+        if profile["id"] == profile_id:
+            return profile
+    return None
+
+
+def list_profiles(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    cfg = cfg or load_config()
+    ensure_profiles(cfg)
+    active = cfg.get("active_profile")
+    result = []
+    for profile in cfg["profiles"]:
+        item = dict(profile)
+        item["active"] = profile["id"] == active
+        item["summary"] = profile_summary(profile)
+        result.append(item)
+    return result
+
+
+def upsert_profile(cfg: dict[str, Any], name: str | None = None) -> dict[str, Any]:
+    if not isinstance(cfg.get("profiles"), list) or not cfg.get("profiles"):
+        disk = _read_config_file()
+        if disk.get("profiles"):
+            cfg["profiles"] = disk["profiles"]
+            if not cfg.get("active_profile"):
+                cfg["active_profile"] = disk.get("active_profile")
+    ensure_profiles(cfg)
+    fields = runtime_fields(cfg)
+    fingerprint = profile_fingerprint(fields)
+    for profile in cfg["profiles"]:
+        if profile_fingerprint(profile) != fingerprint:
+            continue
+        keep_latest = (
+            str(profile.get("minecraft_version") or "") == VERSION_LATEST
+            and resolve_minecraft_version(fields["minecraft_version"]) == latest_release()
+        )
+        profile.update(fields)
+        if keep_latest:
+            profile["minecraft_version"] = VERSION_LATEST
+        if name:
+            profile["name"] = name[:48]
+        cfg["active_profile"] = profile["id"]
+        return cfg
+    profile_id = "default" if is_default_setup(fields) and not any(
+        item["id"] == "default" for item in cfg["profiles"]
+    ) else f"s{secrets.token_hex(4)}"
+    cfg["profiles"].append(
+        {
+            "id": profile_id,
+            "name": (name or profile_name_for(fields))[:48],
+            **fields,
+        }
+    )
+    cfg["active_profile"] = profile_id
+    return cfg
+
+
+def activate_profile(profile_id: str) -> dict[str, Any]:
+    cfg = load_config()
+    profile = get_profile(cfg, profile_id)
+    if not profile:
+        raise InstallError("Setup not found")
+    cfg.update(runtime_fields(profile))
+    cfg["active_profile"] = profile["id"]
+    return save_config(cfg)
+
+
+def rename_profile(profile_id: str, name: str) -> dict[str, Any]:
+    name = (name or "").strip()
+    if not name or len(name) > 48:
+        raise InstallError("Setup name must be 1 to 48 characters")
+    cfg = load_config()
+    profile = get_profile(cfg, profile_id)
+    if not profile:
+        raise InstallError("Setup not found")
+    profile["name"] = name
+    return save_config(cfg)
+
+
+def delete_profile(profile_id: str) -> dict[str, Any]:
+    cfg = load_config()
+    ensure_profiles(cfg)
+    if len(cfg["profiles"]) <= 1:
+        raise InstallError("Keep at least one setup")
+    if profile_id == cfg.get("active_profile"):
+        raise InstallError("Switch to another setup before deleting this one")
+    next_profiles = [item for item in cfg["profiles"] if item["id"] != profile_id]
+    if len(next_profiles) == len(cfg["profiles"]):
+        raise InstallError("Setup not found")
+    cfg["profiles"] = next_profiles
+    return save_config(cfg)
 
 
 def sha1_file(path: str) -> str:
@@ -293,7 +549,7 @@ def download_file(url: str, dest: str, expected_sha1: str | None = None) -> str:
     tmp = dest + ".tmp"
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "BetaServer-manager/1.2.5"},
+        headers={"User-Agent": APP_USER_AGENT},
     )
     try:
         with urllib.request.urlopen(request, timeout=120) as response, open(
@@ -312,7 +568,7 @@ def download_file(url: str, dest: str, expected_sha1: str | None = None) -> str:
 def _http_json(url: str) -> Any:
     request = urllib.request.Request(
         url,
-        headers={"User-Agent": "BetaServer-manager/1.2.5"},
+        headers={"User-Agent": APP_USER_AGENT},
     )
     try:
         with urllib.request.urlopen(request, timeout=60) as response:
@@ -586,7 +842,7 @@ def _install_modpack_loader(dest: str, deps: dict[str, Any]) -> None:
     mc_version = str(deps.get("minecraft") or "").strip()
     if not mc_version:
         detected = _detect_instance_version(dest)
-        if detected and detected != "1.2.5":
+        if detected:
             mc_version = detected
     if not mc_version:
         if _find_modpack_jar(dest) or _find_forge_launch(dest):
@@ -623,7 +879,7 @@ def _detect_instance_version(directory: str) -> str:
                 return str(deps["minecraft"])
         except (OSError, json.JSONDecodeError):
             pass
-    return "1.2.5"
+    return ""
 
 
 def read_properties(path: str | None = None) -> dict[str, str]:
@@ -645,13 +901,13 @@ def write_properties(values: dict[str, str], path: str | None = None) -> None:
     target = path or paths()["properties"]
     os.makedirs(os.path.dirname(target), exist_ok=True)
     with open(target, "w", encoding="utf-8") as handle:
-        handle.write("# Generated by BetaServer manager\n")
+        handle.write(f"# Generated by {APP_NAME}\n")
         for key, value in values.items():
             handle.write(f"{key}={value}\n")
 
 
 def properties_for(cfg: dict[str, Any]) -> dict[str, str]:
-    version = str(cfg.get("minecraft_version") or "1.2.5")
+    version = configured_version(cfg)
     level = str(cfg.get("level_name") or "world")
     existing = read_properties()
     if uses_legacy_files(version):
@@ -682,7 +938,7 @@ def properties_for(cfg: dict[str, Any]) -> dict[str, str]:
             "generate-structures": "true",
             "view-distance": existing.get("view-distance", "8"),
             "spawn-protection": existing.get("spawn-protection", "0"),
-            "motd": existing.get("motd", f"{version} friends server"),
+            "motd": existing.get("motd", "A Minecraft Server"),
         }
         if is_legacy_protocol(version):
             props["online-mode"] = existing.get("online-mode", "false")
@@ -692,7 +948,7 @@ def properties_for(cfg: dict[str, Any]) -> dict[str, str]:
     props = {
         "level-name": f"worlds/{level}",
         "server-port": "25565",
-        "motd": existing.get("motd", f"{version} friends server"),
+        "motd": existing.get("motd", "A Minecraft Server"),
         "max-players": existing.get("max-players", "20"),
         "view-distance": existing.get("view-distance", "10"),
         "simulation-distance": existing.get("simulation-distance", "10"),
@@ -784,6 +1040,10 @@ def delete_world(name: str) -> None:
     if not os.path.isdir(dest):
         raise InstallError("World not found")
     shutil.rmtree(dest)
+    cfg["profiles"] = [
+        item for item in (cfg.get("profiles") or []) if item.get("level_name") != name
+    ]
+    save_config(cfg)
 
 
 def select_world(name: str) -> dict[str, Any]:
@@ -792,6 +1052,7 @@ def select_world(name: str) -> dict[str, Any]:
         os.makedirs(dest, exist_ok=True)
     cfg = load_config()
     cfg["level_name"] = name
+    upsert_profile(cfg)
     save_config(cfg)
     apply_properties(cfg)
     return cfg
@@ -831,7 +1092,7 @@ def _relink_instance_world(cfg: dict[str, Any]) -> None:
 
 def runtime_cwd(cfg: dict[str, Any]) -> str:
     server_type = cfg.get("type") or "vanilla"
-    version = str(cfg.get("minecraft_version") or "1.2.5")
+    version = configured_version(cfg)
     if server_type == "vanilla":
         return DATA_DIR
     if server_type == "modpack":
@@ -851,7 +1112,10 @@ def prepare_runtime(cfg: dict[str, Any] | None = None) -> RuntimeSpec:
     cfg = cfg or load_config()
     ensure_layout()
     server_type = str(cfg.get("type") or "vanilla")
-    version = str(cfg.get("minecraft_version") or "1.2.5")
+    version = configured_version(cfg)
+    if str(cfg.get("minecraft_version") or "") != version:
+        cfg["minecraft_version"] = version
+        save_config(cfg)
     level = str(cfg.get("level_name") or "world")
     os.makedirs(world_path(level), exist_ok=True)
     major = java_major_for_version(version)
@@ -985,30 +1249,62 @@ def _find_modpack_jar(directory: str) -> str | None:
 
 
 def apply_server(cfg: dict[str, Any]) -> RuntimeSpec:
+    cfg = dict(cfg)
+    if str(cfg.get("type") or "vanilla") != "modpack":
+        cfg["modpack"] = None
+        cfg["instance"] = None
+    cfg["minecraft_version"] = configured_version(cfg)
+    upsert_profile(cfg)
     saved = save_config(cfg)
     return prepare_runtime(saved)
 
 
 def list_available_versions() -> dict[str, Any]:
-    vanilla = list(CURATED_VANILLA)
+    global _latest_cache
+    latest = None
+    releases: list[str] = []
     try:
         manifest = fetch_version_manifest()
+        latest = (manifest.get("latest") or {}).get("release")
+        if latest:
+            _latest_cache = str(latest)
         releases = [
             item["id"]
             for item in manifest.get("versions", [])
-            if item.get("type") == "release"
+            if item.get("type") == "release" and item.get("id")
         ]
-        for version in releases:
-            if version not in vanilla:
-                vanilla.append(version)
+    except InstallError:
+        latest = FALLBACK_RELEASE
+
+    vanilla: list[str] = []
+    if latest:
+        vanilla.append(str(latest))
+    for version in CURATED_VANILLA:
+        if version not in vanilla:
+            vanilla.append(version)
+    for version in releases:
+        if version not in vanilla:
+            vanilla.append(version)
+
+    fabric = list(CURATED_FABRIC)
+    try:
+        games = _http_json(f"{FABRIC_META_URL}/versions/game")
+        if isinstance(games, list):
+            fabric = [
+                str(item["version"])
+                for item in games
+                if item.get("stable") and item.get("version")
+            ]
     except InstallError:
         pass
+
     return {
         "types": ["vanilla", "fabric", "forge", "modpack"],
         "vanilla": vanilla,
-        "fabric": list(CURATED_FABRIC),
+        "fabric": fabric,
         "forge": list(FORGE_BUILDS.keys()),
         "curated_vanilla": list(CURATED_VANILLA),
+        "latest": latest or FALLBACK_RELEASE,
     }
 
 
@@ -1155,7 +1451,7 @@ def _online_mode(cfg: dict[str, Any] | None = None) -> bool:
 
 def list_file_names(kind: str) -> tuple[str, list[str]]:
     cfg = load_config()
-    version = str(cfg.get("minecraft_version") or "1.2.5")
+    version = configured_version(cfg)
     if kind == "ops":
         json_path = os.path.join(DATA_DIR, "ops.json")
         txt_path = os.path.join(DATA_DIR, "ops.txt")
@@ -1179,7 +1475,7 @@ def sync_access_lists(cfg: dict[str, Any] | None = None) -> None:
         run_dir = runtime_cwd(cfg)
     except InstallError:
         return
-    version = str(cfg.get("minecraft_version") or "1.2.5")
+    version = configured_version(cfg)
     online = _online_mode(cfg)
     for kind in ("ops", "whitelist"):
         _path, names = list_file_names(kind)

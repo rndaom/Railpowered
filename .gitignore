@@ -1,7 +1,9 @@
-# Server runtime files
+# Server runtime
 world/
-server.log
+data/
 *.log
+*.jar
+*.mrpack
 
 # Python
 __pycache__/
@@ -23,3 +25,4 @@ Thumbs.db
 
 # Environment
 .env
+.env.*

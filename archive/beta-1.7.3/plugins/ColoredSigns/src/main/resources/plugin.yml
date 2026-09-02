@@ -1,6 +1,0 @@
-name: ColoredSigns
-description: Use & color codes on signs
-main: com.betaserver.coloredsigns.ColoredSignsPlugin
-version: ${project.version}
-authors:
-  - BetaServer

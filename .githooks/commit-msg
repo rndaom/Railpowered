@@ -1,0 +1,5 @@
+#!/bin/sh
+# Strip Cursor / Co-authored-by trailers. See AGENTS.md.
+sed -i '/^Co-authored-by:/d' "$1"
+sed -i '/^[[:space:]]*$/{ N; /^[[:space:]]*\n[[:space:]]*$/d; }' "$1"
+exit 0
