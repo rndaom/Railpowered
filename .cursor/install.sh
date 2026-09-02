@@ -10,7 +10,8 @@ echo "[install] Java version:" && java -version
 echo "[install] Python version:" && python3 --version
 
 # Fail fast if the manager has a syntax error.
-python3 -m py_compile "$REPO_DIR/manager.py"
+python3 -m py_compile "$REPO_DIR/manager.py" "$REPO_DIR/installer.py"
+python3 -m compileall -q "$REPO_DIR/mc_host"
 
 # Place current sources into /server so the app is ready to launch.
 bash "$REPO_DIR/.cursor/sync-server.sh"
