@@ -28,8 +28,8 @@ MOJANG_PROFILE_URL = "https://api.mojang.com/users/profiles/minecraft/{name}"
 FABRIC_INSTALLER_PIN = os.environ.get("FABRIC_INSTALLER_VERSION", "").strip()
 FABRIC_LOADER_PIN = os.environ.get("FABRIC_LOADER_VERSION", "").strip()
 
-APP_NAME = "Powered Rail"
-APP_USER_AGENT = "PoweredRail/1.0"
+APP_NAME = "Railpowered"
+APP_USER_AGENT = "Railpowered/1.0"
 VERSION_LATEST = "latest"
 FALLBACK_RELEASE = "26.2"
 _latest_cache: str | None = None

@@ -80,7 +80,7 @@ LOGIN_HTML = """\
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Powered Rail</title>
+  <title>Railpowered</title>
   <style>
     *{margin:0;padding:0;box-sizing:border-box}
     body{font-family:ui-sans-serif,system-ui,sans-serif;background:#16110c;color:#f4ead6;
@@ -112,7 +112,7 @@ LOGIN_HTML = """\
       <circle cx="32" cy="24" r="6" fill="#e24a3c"/>
       <circle cx="32" cy="24" r="3" fill="#ffd27a"/>
     </svg>
-    <h2>Powered Rail</h2>
+    <h2>Railpowered</h2>
     <p>Dashboard login</p>
     {error}
     <form method="POST" action="/api/login">

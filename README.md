@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/logo.svg" width="72" alt="Powered Rail">
+  <img src="docs/assets/logo.svg" width="72" alt="Railpowered">
 </p>
 
-<h1 align="center">Powered Rail</h1>
+<h1 align="center">Railpowered</h1>
 
 <p align="center">
   A Minecraft server that starts when your friends join.<br>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://railway.com/new/template/TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=powered-rail">
+  <a href="https://railway.com/new/template/TEMPLATE_CODE?utm_medium=integration&utm_source=button&utm_campaign=railpowered">
     <img src="https://railway.com/button.svg" alt="Deploy on Railway">
   </a>
 </p>
@@ -24,7 +24,7 @@
 Login, the gold dashboard, one-click setup switch, and the dashboard after deploy.
 
 <p align="center">
-  <img src="docs/assets/preview.gif" alt="Powered Rail dashboard preview" width="920">
+  <img src="docs/assets/preview.gif" alt="Railpowered dashboard preview" width="920">
 </p>
 
 ## After you deploy

@@ -510,7 +510,7 @@ class HttpServerTests(unittest.TestCase):
             self.assertIn("running", payload)
             self.assertIn("installing", payload)
             self.assertEqual(payload["minecraft_version"], "26.2")
-            self.assertEqual(payload["product"], "Powered Rail")
+            self.assertEqual(payload["product"], "Railpowered")
             self.assertFalse(payload["legacy"])
             self.assertFalse(payload["running"])
             with opener.open(f"{base}/api/profiles") as resp:

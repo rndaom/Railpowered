@@ -2,10 +2,10 @@
 set -euo pipefail
 
 DATA_DIR="/server/data"
-RESET_MARKER="$DATA_DIR/.powered-rail-v1"
-ARCHIVE_ROOT="$DATA_DIR/archive/pre-powered-rail"
+RESET_MARKER="$DATA_DIR/.railpowered-v1"
+ARCHIVE_ROOT="$DATA_DIR/archive/pre-railpowered"
 
-for old_marker in .campfire-v1 .roundhouse-v1; do
+for old_marker in .powered-rail-v1 .campfire-v1 .roundhouse-v1; do
   if [ -f "$DATA_DIR/$old_marker" ] && [ ! -f "$RESET_MARKER" ]; then
     cp "$DATA_DIR/$old_marker" "$RESET_MARKER"
   fi
@@ -62,7 +62,7 @@ if [ ! -f "$RESET_MARKER" ]; then
   printf '%s\n' '[]' > "$DATA_DIR/ops.json"
   printf '%s\n' '[]' > "$DATA_DIR/whitelist.json"
   {
-    echo "product=powered-rail"
+    echo "product=railpowered"
     echo "default=latest-vanilla"
     echo "reset_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   } > "$RESET_MARKER"
@@ -79,5 +79,5 @@ fi
 mkdir -p "$DATA_DIR/worlds/world"
 printf "eula=true\n" > "$DATA_DIR/eula.txt"
 
-echo "[start.sh] Starting Powered Rail..."
+echo "[start.sh] Starting Railpowered..."
 exec python3 /server/manager.py

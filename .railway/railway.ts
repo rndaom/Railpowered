@@ -34,7 +34,7 @@ export default defineRailway(() => {
     },
   });
 
-  return project("Powered Rail", {
+  return project("Railpowered", {
     resources: [minecraft, world],
   });
 });
