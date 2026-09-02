@@ -15,6 +15,20 @@
   </a>
 </p>
 
+## Preview
+
+Login, the gold dashboard, one-click setup switch, and the After deploy steps.
+
+<p align="center">
+  <video src="docs/assets/preview.mp4" poster="docs/assets/dashboard.jpg" width="920" controls playsinline>
+    <a href="docs/assets/preview.mp4">Watch how Powered Rail works</a>
+  </video>
+</p>
+
+<p align="center">
+  <a href="docs/assets/preview.mp4">Open the preview video</a>
+</p>
+
 ## After you deploy
 
 Do these five things once in Railway, then open the web URL. That URL is this dashboard.
