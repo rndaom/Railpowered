@@ -35,7 +35,7 @@ Friends join with the official Minecraft launcher and the same version shown at 
 
 ## Something wrong?
 
-[Open an issue](https://github.com/rndaom/Rail-Powered/issues/new/choose).
+[Open an issue](https://github.com/rndaom/Railpowered/issues/new/choose).
 
 ## License
 

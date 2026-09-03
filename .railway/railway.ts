@@ -6,7 +6,7 @@ export default defineRailway(() => {
   });
 
   const minecraft = service("Minecraft", {
-    source: github("rndaom/Rail-Powered"),
+    source: github("rndaom/Railpowered"),
     start: "./start.sh",
     healthcheck: "/health",
     healthcheckTimeout: 300,

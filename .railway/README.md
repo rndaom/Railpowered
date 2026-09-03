@@ -14,7 +14,7 @@ Deploy form so the owner chooses the dashboard password. Railway does not
 generate it.
 
 The repo is still private. Deployers need Railway’s GitHub access to
-`rndaom/Rail-Powered`. The template tracks the repository default branch.
+`rndaom/Railpowered`. The template tracks the repository default branch.
 
 ## Recreate the template
 
