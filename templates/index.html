@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Railpowered</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg: #16110c;
+      --surface: #221910;
+      --card: #2c2116;
+      --line: #453526;
+      --accent: #e24a3c;
+      --green: #e4b23a;
+      --yellow: #f0c75a;
+      --text: #f4ead6;
+      --muted: #b09a7c;
+      --ink: #2a1c08;
+      --radius: 12px;
+    }
+    body {
+      font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+      background:
+        radial-gradient(1200px 520px at 50% -12%, #4a3214 0%, transparent 58%),
+        var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .container { max-width: 960px; margin: 0 auto; padding: 28px 16px 48px; }
+    header { text-align: center; margin-bottom: 28px; }
+    .brand { display: flex; align-items: center; justify-content: center; gap: 10px; }
+    .brand svg { width: 36px; height: 36px; }
+    header h1 { font-size: 2rem; letter-spacing: .04em; }
+    header h1 span { color: var(--green); }
+    header p { color: var(--muted); margin-top: 6px; }
+    header a { color: var(--muted); font-size: .85rem; }
+    .status-card, .card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .status-card {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+      align-items: center;
+    }
+    .status-indicator {
+      width: 14px; height: 14px; border-radius: 50%;
+      display: inline-block; margin-right: 10px;
+      animation: pulse 2s infinite;
+    }
+    .status-indicator.online { background: var(--green); box-shadow: 0 0 12px var(--green); }
+    .status-indicator.offline { background: var(--accent); box-shadow: none; animation: none; }
+    .status-indicator.loading { background: var(--yellow); box-shadow: 0 0 12px var(--yellow); }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+    .status-left { flex: 1; min-width: 200px; }
+    .status-left h2 { font-size: 1.3rem; display: flex; align-items: center; }
+    .status-meta { color: var(--muted); font-size: 0.9rem; margin-top: 6px; }
+    .status-right { display: flex; gap: 10px; flex-wrap: wrap; }
+    button, .btn {
+      border: none; border-radius: 10px;
+      padding: 10px 18px; font-size: 0.92rem; font-weight: 700;
+      cursor: pointer; transition: transform .1s, opacity .2s;
+      color: var(--ink); background: var(--green);
+    }
+    button:active { transform: scale(.97); }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+    .btn-stop, .btn-danger { background: var(--accent); color: #fff; }
+    .btn-quiet { background: var(--card); color: var(--text); }
+    .card h3 { font-size: 1.05rem; margin-bottom: 12px; color: var(--green); }
+    .row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; align-items: center; }
+    input, select {
+      background: var(--card); color: var(--text); border: 1px solid var(--line);
+      border-radius: 8px; padding: 8px 10px; font-size: 0.95rem;
+    }
+    input { min-width: 160px; flex: 1; }
+    label { color: var(--muted); font-size: 0.85rem; }
+    .player-list, .chip-list { display: flex; flex-wrap: wrap; gap: 8px; }
+    .player-tag, .chip {
+      background: var(--card); padding: 6px 12px; border-radius: 20px; font-size: 0.9rem;
+    }
+    .chip button {
+      background: none; color: var(--accent); padding: 0 0 0 8px; font-size: 0.8rem;
+    }
+    .no-players { color: var(--muted); font-style: italic; }
+    .connect-box, .log-viewer {
+      background: #120e0a; border-radius: 10px; padding: 14px;
+      font-family: ui-monospace, Consolas, 'Courier New', monospace;
+    }
+    .connect-box {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px;
+      font-size: 1.05rem;
+    }
+    .log-viewer {
+      max-height: 260px; overflow-y: auto; font-size: 0.8rem; line-height: 1.6; color: #aab;
+    }
+    .idle-bar-label { font-size: 0.85rem; color: var(--muted); margin-bottom: 4px; }
+    .idle-bar-track { height: 6px; background: var(--card); border-radius: 3px; overflow: hidden; }
+    .idle-bar-fill { height: 100%; background: var(--yellow); border-radius: 3px; }
+    .tabs { display: flex; gap: 2px; }
+    .tab {
+      background: var(--card); padding: 8px 16px;
+      border-radius: var(--radius) var(--radius) 0 0;
+      color: var(--muted);
+    }
+    .tab.active { background: var(--surface); color: var(--text); border: 1px solid var(--line); border-bottom: 0; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .tabbed-card { border-radius: 0 var(--radius) var(--radius) var(--radius); }
+    table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+    th { color: var(--muted); font-weight: 600; }
+    .guide-section { margin-top: 8px; }
+    .guide-section summary { cursor: pointer; font-weight: 600; color: var(--green); padding: 6px 0; }
+    .guide-section ol, .guide-section ul { padding-left: 20px; margin-top: 8px; }
+    .guide-section li { margin-bottom: 6px; }
+    .guide-section code { background: var(--card); padding: 2px 6px; border-radius: 3px; }
+    .steps { display: grid; gap: 10px; margin-top: 10px; }
+    .step {
+      display: flex; gap: 12px; align-items: flex-start;
+      background: var(--card); border-radius: 10px; padding: 12px 14px;
+    }
+    .step .num {
+      flex: 0 0 28px; height: 28px; border-radius: 50%;
+      background: var(--green); color: var(--ink); font-weight: 800;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .step strong { display: block; }
+    .step p { color: var(--muted); font-size: 0.9rem; margin-top: 2px; }
+    .note { color: var(--muted); font-size: 0.85rem; margin-top: 8px; }
+    .error { color: var(--accent); font-size: 0.9rem; margin-top: 8px; }
+    .setup-list { display: grid; gap: 8px; }
+    .setup {
+      display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 10px; padding: 12px 14px;
+    }
+    .setup.on { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+    .setup-copy { flex: 1; min-width: 180px; }
+    .setup-copy strong { display: block; }
+    .setup-copy span { color: var(--muted); font-size: 0.85rem; }
+    .setup-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .setup-on { color: var(--green); font-weight: 700; font-size: 0.85rem; }
+    @media (max-width: 600px) {
+      header h1 { font-size: 1.4rem; }
+      .status-card { flex-direction: column; align-items: stretch; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div class="brand">
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <rect x="8" y="14" width="48" height="7" rx="1.5" fill="#6b4423"/>
+          <rect x="8" y="28.5" width="48" height="7" rx="1.5" fill="#5a381c"/>
+          <rect x="8" y="43" width="48" height="7" rx="1.5" fill="#6b4423"/>
+          <rect x="18" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
+          <rect x="40" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
+          <rect x="29" y="26" width="6" height="16" rx="1" fill="#3d2a1a"/>
+          <circle cx="32" cy="24" r="6" fill="#e24a3c"/>
+          <circle cx="32" cy="24" r="3" fill="#ffd27a"/>
+        </svg>
+        <h1>Railpowered <span id="headerVersion"></span></h1>
+      </div>
+      <p>Your Minecraft dashboard &middot; <a href="/api/logout">Logout</a></p>
+    </header>
+
+    <div class="status-card">
+      <div class="status-left">
+        <h2>
+          <span id="statusDot" class="status-indicator offline"></span>
+          <span id="statusText">Offline</span>
+        </h2>
+        <div id="statusMeta" class="status-meta"></div>
+        <div id="idleBar" class="idle-bar-container" style="display:none;">
+          <div class="idle-bar-label">Sleeps in <span id="idleCountdown">--</span></div>
+          <div class="idle-bar-track"><div id="idleBarFill" class="idle-bar-fill" style="width:0%"></div></div>
+        </div>
+      </div>
+      <div class="status-right">
+        <button id="btnStart" class="btn-start" onclick="doStart()">Start</button>
+        <button id="btnStop" class="btn-stop" onclick="doStop()" disabled>Stop</button>
+        <button class="btn-quiet" onclick="doSave()">Save world</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Players online (<span id="playerCount">0</span>)</h3>
+      <div id="playerList" class="player-list"><span class="no-players">Nobody is online</span></div>
+    </div>
+
+    <div class="card">
+      <h3>Join address</h3>
+      <p class="note">Friends use this in Multiplayer. They need the same Minecraft version as the server.</p>
+      <div class="connect-box">
+        <span id="serverAddr">Loading...</span>
+        <button class="copy-btn" onclick="copyAddress()">Copy</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Setups</h3>
+      <p class="note">Each setup remembers the version, world, and mods. Switch is one click — the server restarts on that setup.</p>
+      <div id="setupList" class="setup-list"></div>
+    </div>
+
+    <div class="card">
+      <h3>New setup</h3>
+      <p class="note">Apply saves a setup and leaves the others on the list so you can switch back.</p>
+      <div class="row">
+        <label>Type
+          <select id="typeSelect" onchange="onTypeChange()">
+            <option value="vanilla">Vanilla</option>
+            <option value="fabric">Fabric</option>
+            <option value="forge">Forge</option>
+            <option value="modpack">Modpack</option>
+          </select>
+        </label>
+        <label>Version
+          <select id="versionSelect"></select>
+        </label>
+        <input id="worldForVersion" placeholder="World name for this version">
+        <button onclick="applyVersion()">Apply</button>
+      </div>
+      <div id="modpackRow" class="row" style="display:none;">
+        <input id="modpackUrl" placeholder="Modrinth .mrpack or zip URL">
+        <input id="modpackName" placeholder="Instance name">
+        <button onclick="installModpackUrl()">Install URL</button>
+        <input id="modpackFile" type="file" accept=".mrpack,.zip">
+        <button onclick="uploadModpack()">Upload pack</button>
+      </div>
+      <div id="versionError" class="error"></div>
+    </div>
+
+    <div class="card">
+      <h3>Worlds</h3>
+      <div class="row">
+        <input id="newWorldName" placeholder="New world name">
+        <button onclick="createWorld()">Create</button>
+      </div>
+      <table>
+        <thead><tr><th>Name</th><th>Size</th><th></th></tr></thead>
+        <tbody id="worldRows"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Backups</h3>
+      <div class="row">
+        <button onclick="createBackup()">Backup current world</button>
+      </div>
+      <table>
+        <thead><tr><th>File</th><th>Size</th><th></th></tr></thead>
+        <tbody id="backupRows"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h3>Players</h3>
+      <p id="accessNote" class="note">Add operators here. Turn on a whitelist if you want a private world.</p>
+      <div class="row">
+        <input id="playerName" placeholder="Player name">
+        <button onclick="addList('whitelist')">Add to whitelist</button>
+        <button onclick="addList('ops')">Make op</button>
+      </div>
+      <p class="note">Whitelist</p>
+      <div id="whitelistChips" class="chip-list"></div>
+      <p class="note" style="margin-top:10px;">Ops</p>
+      <div id="opsChips" class="chip-list"></div>
+    </div>
+
+    <div class="card">
+      <h3>Console</h3>
+      <div class="row">
+        <input id="cmdInput" placeholder="save-all, op Steve, whitelist add Alex">
+        <button onclick="runCommand()">Run</button>
+      </div>
+    </div>
+
+    <div class="tabs">
+      <button class="tab active" onclick="switchTab('logs', this)">Logs</button>
+      <button class="tab" onclick="switchTab('guide', this)">After deploy</button>
+    </div>
+    <div id="tab-logs" class="card tabbed-card tab-content active">
+      <div id="logViewer" class="log-viewer">Waiting for logs...</div>
+    </div>
+    <div id="tab-guide" class="card tabbed-card tab-content">
+      <details class="guide-section" open>
+        <summary>You are done</summary>
+        <p class="note">The Railway template already attached the world volume, opened TCP 25565, and published this dashboard. You chose <code>ADMIN_KEY</code> on the Deploy form — that is this login.</p>
+        <p class="note">Friends join with the address above. Press Start when they are ready.</p>
+      </details>
+      <details class="guide-section">
+        <summary>If the join address is empty</summary>
+        <p class="note">The service is missing Railway’s TCP proxy on <code>25565</code>. That is included in the one-click template. If you deployed from GitHub by hand, add that proxy once.</p>
+      </details>
+      <details class="guide-section">
+        <summary>Join from Minecraft</summary>
+        <ol>
+          <li>Use the official launcher and the same version shown at the top of this page</li>
+          <li>Multiplayer → paste the join address</li>
+          <li>If it is sleeping, wait about 30 seconds and connect again</li>
+        </ol>
+      </details>
+      <details class="guide-section">
+        <summary>Change the version later</summary>
+        <ul>
+          <li>Stop is not needed for Switch. One click restores that version, world, and mods, then starts the server</li>
+          <li>To add a setup, pick vanilla, Fabric, Forge, or a modpack and Apply</li>
+          <li>Give a new version its own world name so the old world stays put</li>
+          <li>You do not need to redeploy Railway to switch</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+
+  <script>
+    const SERVER_ADDR_OVERRIDE = __MC_PUBLIC_ADDRESS_JSON__;
+    let versionCatalog = { vanilla: [], fabric: [], forge: [] };
+
+    async function api(method, path, body, raw) {
+      const opts = { method };
+      if (raw) {
+        opts.body = raw;
+        opts.headers = body || {};
+      } else if (body) {
+        opts.headers = { "Content-Type": "application/json" };
+        opts.body = JSON.stringify(body);
+      }
+      const res = await fetch(path, opts);
+      const text = await res.text();
+      try { return JSON.parse(text); } catch (e) { return { error: text || res.statusText }; }
+    }
+
+    async function doStart() {
+      document.getElementById("btnStart").disabled = true;
+      await api("POST", "/api/start");
+      setTimeout(refreshStatus, 500);
+    }
+    async function doStop() {
+      if (!confirm("Stop the Minecraft server?")) return;
+      document.getElementById("btnStop").disabled = true;
+      await api("POST", "/api/stop");
+      setTimeout(refreshStatus, 500);
+    }
+    async function doSave() {
+      const out = await api("POST", "/api/save");
+      alert(out.success ? "Save requested." : (out.error || "Server is not running."));
+    }
+    async function runCommand() {
+      const input = document.getElementById("cmdInput");
+      const command = input.value.trim();
+      if (!command) return;
+      const out = await api("POST", "/api/command", { command });
+      if (!out.success) alert(out.error || "Command failed. Is the server running?");
+      input.value = "";
+      setTimeout(refreshLogs, 400);
+    }
+
+    function formatBytes(n) {
+      if (n < 1024) return n + " B";
+      if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
+      return (n / 1048576).toFixed(1) + " MB";
+    }
+    function formatDuration(seconds) {
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = seconds % 60;
+      if (h > 0) return `${h}h ${m}m`;
+      if (m > 0) return `${m}m ${s}s`;
+      return `${s}s`;
+    }
+    function escHtml(str) {
+      const d = document.createElement("div");
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    async function refreshStatus() {
+      try {
+        const s = await api("GET", "/api/status");
+        const dot = document.getElementById("statusDot");
+        const text = document.getElementById("statusText");
+        const meta = document.getElementById("statusMeta");
+        const idle = document.getElementById("idleBar");
+        const btnStart = document.getElementById("btnStart");
+        const btnStop = document.getElementById("btnStop");
+        document.getElementById("headerVersion").textContent = s.minecraft_version || "";
+        const access = document.getElementById("accessNote");
+        if (s.legacy) {
+          access.textContent = "Older versions run offline. Keep a whitelist so strangers cannot spoof a name.";
+        } else if (s.online_mode === false) {
+          access.textContent = "Online mode is off. A whitelist is strongly recommended.";
+        } else {
+          access.textContent = "Players sign in with a Minecraft account. Add ops here, and use a whitelist if you want a private world.";
+        }
+
+        if (s.installing) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Preparing...";
+          meta.textContent = "Downloading the selected version. You can keep this page open.";
+          btnStart.disabled = true; btnStop.disabled = true;
+        } else if (s.starting) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Starting...";
+          meta.textContent = `${s.type || "vanilla"} ${s.minecraft_version || ""} is booting.`;
+          btnStart.disabled = true; btnStop.disabled = true;
+        } else if (s.stopping) {
+          dot.className = "status-indicator loading";
+          text.textContent = "Stopping...";
+          meta.textContent = "The server is shutting down.";
+          btnStart.disabled = true; btnStop.disabled = true;
+        } else if (s.running) {
+          dot.className = "status-indicator online";
+          text.textContent = "Online";
+          const uptimeStr = s.uptime ? formatDuration(s.uptime) : "";
+          meta.textContent = `${s.profile_name ? s.profile_name + " · " : ""}${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · Java ${s.java || "?"} · ${s.player_count} player${s.player_count !== 1 ? "s" : ""}` + (uptimeStr ? ` · ${uptimeStr}` : "");
+          btnStart.disabled = true; btnStop.disabled = false;
+        } else {
+          dot.className = "status-indicator offline";
+          text.textContent = "Sleeping";
+          meta.textContent = s.proxy_active
+            ? `${s.profile_name ? s.profile_name + " · " : ""}${s.type || "vanilla"} ${s.minecraft_version || ""} · world ${s.level_name || "world"} · waiting for a player`
+            : "Server is offline.";
+          btnStart.disabled = false; btnStop.disabled = true;
+        }
+
+        if (s.running && s.player_count === 0 && s.idle_seconds > 0) {
+          idle.style.display = "block";
+          const remaining = Math.max(0, s.idle_timeout - s.idle_seconds);
+          document.getElementById("idleCountdown").textContent = formatDuration(remaining);
+          document.getElementById("idleBarFill").style.width = Math.min(100, (s.idle_seconds / s.idle_timeout) * 100) + "%";
+        } else idle.style.display = "none";
+
+        const pl = document.getElementById("playerList");
+        document.getElementById("playerCount").textContent = s.player_count;
+        if (s.players && s.players.length) {
+          pl.innerHTML = s.players.map(p => `<span class="player-tag">${escHtml(p)}</span>`).join("");
+        } else pl.innerHTML = `<span class="no-players">Nobody is online</span>`;
+
+        if (s.type) document.getElementById("typeSelect").value = s.type;
+        onTypeChange();
+        if (s.minecraft_version) document.getElementById("versionSelect").value = s.minecraft_version;
+        const worldInput = document.getElementById("worldForVersion");
+        if (s.level_name && document.activeElement !== worldInput) worldInput.value = s.level_name;
+      } catch (e) {}
+    }
+
+    async function refreshLogs() {
+      try {
+        const data = await api("GET", "/api/logs");
+        const viewer = document.getElementById("logViewer");
+        if (data.logs && data.logs.length) {
+          viewer.textContent = data.logs.join("\n");
+          viewer.scrollTop = viewer.scrollHeight;
+        }
+      } catch (e) {}
+    }
+
+    function fillVersions() {
+      const type = document.getElementById("typeSelect").value;
+      const select = document.getElementById("versionSelect");
+      const list = versionCatalog[type] || versionCatalog.vanilla || [];
+      select.innerHTML = list.map(v => `<option value="${escHtml(v)}">${escHtml(v)}</option>`).join("");
+    }
+    function onTypeChange() {
+      const type = document.getElementById("typeSelect").value;
+      document.getElementById("modpackRow").style.display = type === "modpack" ? "flex" : "none";
+      fillVersions();
+    }
+
+    async function loadVersions() {
+      const data = await api("GET", "/api/versions");
+      versionCatalog = data;
+      if (data.current) {
+        document.getElementById("typeSelect").value = data.current.type || "vanilla";
+      }
+      onTypeChange();
+      if (data.current && data.current.minecraft_version) {
+        document.getElementById("versionSelect").value = data.current.minecraft_version;
+      }
+    }
+
+    async function applyVersion() {
+      if (!confirm("Stop is required. Switch version and use the chosen world?")) return;
+      const err = document.getElementById("versionError");
+      err.textContent = "";
+      const body = {
+        type: document.getElementById("typeSelect").value,
+        minecraft_version: document.getElementById("versionSelect").value,
+        level_name: document.getElementById("worldForVersion").value.trim()
+      };
+      const out = await api("POST", "/api/version", body);
+      if (out.error) err.textContent = out.error;
+      else {
+        await loadWorlds();
+        await loadSetups();
+        await refreshStatus();
+      }
+    }
+
+    async function loadSetups() {
+      const data = await api("GET", "/api/profiles");
+      const list = document.getElementById("setupList");
+      const profiles = data.profiles || [];
+      if (!profiles.length) {
+        list.innerHTML = `<p class="note">The first setup is created when you Apply a version.</p>`;
+        return;
+      }
+      list.innerHTML = profiles.map(p => {
+        const id = escHtml(p.id);
+        const actions = p.active
+          ? `<span class="setup-on">On</span>`
+          : `<button onclick="useSetup('${id}')">Switch</button>
+             <button class="btn-quiet" onclick="renameSetup('${id}')">Rename</button>
+             <button class="btn-danger" onclick="deleteSetup('${id}')">Delete</button>`;
+        return `<div class="setup${p.active ? " on" : ""}">
+          <div class="setup-copy">
+            <strong>${escHtml(p.name)}</strong>
+            <span>${escHtml(p.summary || "")}</span>
+          </div>
+          <div class="setup-actions">${actions}</div>
+        </div>`;
+      }).join("");
+    }
+    async function useSetup(id) {
+      const err = document.getElementById("versionError");
+      err.textContent = "Switching setup…";
+      const out = await api("POST", "/api/profiles/" + encodeURIComponent(id) + "/use");
+      err.textContent = out.error || "";
+      await loadSetups();
+      await loadWorlds();
+      await refreshStatus();
+    }
+    async function renameSetup(id) {
+      const name = prompt("Name this setup");
+      if (!name) return;
+      const out = await api("POST", "/api/profiles/" + encodeURIComponent(id), { name });
+      if (out.error) alert(out.error);
+      loadSetups();
+    }
+    async function deleteSetup(id) {
+      if (!confirm("Remove this setup? The world and mods stay on disk.")) return;
+      const out = await api("DELETE", "/api/profiles/" + encodeURIComponent(id));
+      if (out.error) alert(out.error);
+      loadSetups();
+    }
+
+    async function installModpackUrl() {
+      const out = await api("POST", "/api/modpack", {
+        url: document.getElementById("modpackUrl").value.trim(),
+        name: document.getElementById("modpackName").value.trim()
+      });
+      document.getElementById("versionError").textContent = out.error || (out.success ? "Modpack installed." : "");
+      loadSetups();
+      refreshStatus();
+    }
+    async function uploadModpack() {
+      const file = document.getElementById("modpackFile").files[0];
+      if (!file) { alert("Choose a .mrpack or .zip first"); return; }
+      const name = document.getElementById("modpackName").value.trim() || file.name.replace(/\.(mrpack|zip)$/i, "");
+      const out = await api("POST", "/api/modpack/upload", {
+        "X-Filename": file.name,
+        "X-Instance-Name": name
+      }, file);
+      document.getElementById("versionError").textContent = out.error || (out.success ? "Modpack uploaded." : "");
+      loadSetups();
+      refreshStatus();
+    }
+
+    async function loadWorlds() {
+      const data = await api("GET", "/api/worlds");
+      const rows = document.getElementById("worldRows");
+      rows.innerHTML = (data.worlds || []).map(w => `
+        <tr>
+          <td>${escHtml(w.name)}${w.active ? " (active)" : ""}${w.has_level ? "" : " · empty"}</td>
+          <td>${formatBytes(w.size || 0)}</td>
+          <td>
+            ${w.active ? "" : `<button onclick="selectWorld('${escHtml(w.name)}')">Use</button>`}
+            ${w.active ? "" : `<button class="btn-danger" onclick="deleteWorld('${escHtml(w.name)}')">Delete</button>`}
+          </td>
+        </tr>`).join("");
+    }
+    async function createWorld() {
+      const name = document.getElementById("newWorldName").value.trim();
+      const out = await api("POST", "/api/worlds", { name });
+      if (out.error) alert(out.error);
+      document.getElementById("newWorldName").value = "";
+      loadWorlds();
+    }
+    async function selectWorld(name) {
+      if (!confirm("Switch to world " + name + "? The server must be stopped.")) return;
+      const out = await api("POST", "/api/worlds/select", { name });
+      if (out.error) alert(out.error);
+      loadWorlds(); loadSetups(); refreshStatus();
+    }
+    async function deleteWorld(name) {
+      if (!confirm("Delete world " + name + "?")) return;
+      const out = await api("DELETE", "/api/worlds/" + encodeURIComponent(name));
+      if (out.error) alert(out.error);
+      loadWorlds();
+    }
+
+    async function loadBackups() {
+      const data = await api("GET", "/api/backups");
+      const rows = document.getElementById("backupRows");
+      rows.innerHTML = (data.backups || []).map(b => `
+        <tr>
+          <td>${escHtml(b.name)}</td>
+          <td>${formatBytes(b.size || 0)}</td>
+          <td>
+            <a href="/api/backups/${encodeURIComponent(b.name)}" style="color:var(--green);margin-right:8px;">Download</a>
+            <button onclick="restoreBackup('${escHtml(b.name)}')">Restore</button>
+            <button class="btn-danger" onclick="deleteBackup('${escHtml(b.name)}')">Delete</button>
+          </td>
+        </tr>`).join("") || `<tr><td colspan="3" class="no-players">No backups yet</td></tr>`;
+    }
+    async function createBackup() {
+      const out = await api("POST", "/api/backups", {});
+      if (out.error) alert(out.error);
+      loadBackups();
+    }
+    async function restoreBackup(name) {
+      if (!confirm("Restore " + name + "? This overwrites that world folder. Server must be stopped.")) return;
+      const out = await api("POST", "/api/backups/restore", { name });
+      if (out.error) alert(out.error);
+      loadWorlds(); loadBackups();
+    }
+    async function deleteBackup(name) {
+      if (!confirm("Delete backup " + name + "?")) return;
+      const out = await api("DELETE", "/api/backups/" + encodeURIComponent(name));
+      if (out.error) alert(out.error);
+      loadBackups();
+    }
+
+    function renderChips(id, names, kind) {
+      const el = document.getElementById(id);
+      if (!names || !names.length) {
+        el.innerHTML = `<span class="no-players">Empty</span>`;
+        return;
+      }
+      el.innerHTML = names.map(n =>
+        `<span class="chip">${escHtml(n)}<button onclick="removeList('${kind}','${escHtml(n)}')">x</button></span>`
+      ).join("");
+    }
+    async function loadPlayers() {
+      const data = await api("GET", "/api/players");
+      renderChips("whitelistChips", data.whitelist, "whitelist");
+      renderChips("opsChips", data.ops, "ops");
+    }
+    async function addList(kind) {
+      const name = document.getElementById("playerName").value.trim();
+      if (!name) return;
+      const out = await api("POST", "/api/" + kind, { name, action: "add" });
+      if (out.error) alert(out.error);
+      document.getElementById("playerName").value = "";
+      loadPlayers();
+    }
+    async function removeList(kind, name) {
+      const out = await api("POST", "/api/" + kind, { name, action: "remove" });
+      if (out.error) alert(out.error);
+      loadPlayers();
+    }
+
+    function updateAddress() {
+      const el = document.getElementById("serverAddr");
+      el.textContent = SERVER_ADDR_OVERRIDE || "Waiting for Railway TCP 25565";
+    }
+    function copyAddress() {
+      navigator.clipboard.writeText(document.getElementById("serverAddr").textContent).then(() => {
+        const btn = document.querySelector(".copy-btn");
+        btn.textContent = "Copied!";
+        setTimeout(() => btn.textContent = "Copy", 1500);
+      });
+    }
+    function switchTab(name, btn) {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".tab-content").forEach(t => t.classList.remove("active"));
+      btn.classList.add("active");
+      document.getElementById("tab-" + name).classList.add("active");
+    }
+
+    updateAddress();
+    loadVersions();
+    refreshStatus();
+    refreshLogs();
+    loadSetups();
+    loadWorlds();
+    loadBackups();
+    loadPlayers();
+    setInterval(refreshStatus, 3000);
+    setInterval(refreshLogs, 5000);
+  </script>
+</body>
+</html>

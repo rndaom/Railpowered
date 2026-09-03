@@ -1,0 +1,29 @@
+# Server runtime
+world/
+data/
+*.log
+*.jar
+*.mrpack
+
+# Python
+__pycache__/
+*.pyc
+
+# Java
+*.class
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+.claude/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.*
+.admin-key

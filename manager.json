@@ -1,0 +1,19 @@
+{
+  "type": "vanilla",
+  "minecraft_version": "latest",
+  "level_name": "world",
+  "modpack": null,
+  "instance": null,
+  "active_profile": "default",
+  "profiles": [
+    {
+      "id": "default",
+      "name": "Latest vanilla",
+      "type": "vanilla",
+      "minecraft_version": "latest",
+      "level_name": "world",
+      "modpack": null,
+      "instance": null
+    }
+  ]
+}

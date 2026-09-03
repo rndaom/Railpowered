@@ -1,0 +1,38 @@
+name: Something is broken
+description: The server, dashboard, or deploy did not work as expected
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting this. A few details go a long way.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      placeholder: What you expected, and what you got instead.
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - Deploy on Railway
+        - Dashboard
+        - Joining from Minecraft
+        - Version or modpack switch
+        - Worlds or backups
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Minecraft version
+      placeholder: "26.2 vanilla, Fabric 1.21.1, ..."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or screenshots
+      description: Paste dashboard logs if you have them. Remove any admin key.

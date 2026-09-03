@@ -1,0 +1,25 @@
+{
+  "name": "Railpowered",
+  "user": "ubuntu",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "mc-manager",
+      "command": "bash .cursor/run.sh",
+      "description": "Railpowered: dashboard on port 8080 and Minecraft sleep proxy on 25565. Log in with ADMIN_KEY (dev default: admin)."
+    }
+  ],
+  "ports": [
+    {
+      "name": "admin-panel",
+      "port": 8080
+    },
+    {
+      "name": "minecraft",
+      "port": 25565
+    }
+  ]
+}
