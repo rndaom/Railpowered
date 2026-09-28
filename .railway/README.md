@@ -13,8 +13,9 @@ check hits the dashboard instead of Minecraft. `ADMIN_KEY` is required on the
 Deploy form so the owner chooses the dashboard password. Railway does not
 generate it.
 
-The repo is still private. Deployers need Railway’s GitHub access to
-`rndaom/Railpowered`. The template tracks the repository default branch.
+The source repository is public. The published template tracks the repository
+default branch for application code. Template variable and service defaults may
+need to be updated separately in Railway after changing `.railway/railway.ts`.
 
 ## Recreate the template
 

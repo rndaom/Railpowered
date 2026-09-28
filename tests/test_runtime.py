@@ -414,6 +414,27 @@ class LatestDefaultTests(DataDirTest):
         self.assertEqual(cfg["minecraft_version"], "latest")
         self.assertEqual(cfg["level_name"], "world")
 
+    def test_first_deploy_env_sets_active_setup_but_not_existing_config(self):
+        # start.sh leaves manager.json absent on a fresh volume so these
+        # variables can seed both the runtime and its active setup.
+        with mock.patch.dict(
+            os.environ,
+            {"SERVER_TYPE": "fabric", "MINECRAFT_VERSION": "1.20.1"},
+        ), mock.patch.object(installer, "latest_release", return_value="26.3"):
+            cfg = installer.load_config()
+            self.assertEqual(cfg["type"], "fabric")
+            self.assertEqual(cfg["minecraft_version"], "1.20.1")
+            self.assertEqual(cfg["profiles"][0]["type"], "fabric")
+            self.assertEqual(cfg["profiles"][0]["minecraft_version"], "1.20.1")
+
+        with mock.patch.dict(
+            os.environ,
+            {"SERVER_TYPE": "vanilla", "MINECRAFT_VERSION": "26.3"},
+        ):
+            persisted = installer.load_config()
+        self.assertEqual(persisted["type"], "fabric")
+        self.assertEqual(persisted["minecraft_version"], "1.20.1")
+
     def test_resolve_latest(self):
         installer.clear_latest_cache()
         with mock.patch.object(
@@ -440,6 +461,23 @@ class LatestDefaultTests(DataDirTest):
         self.assertEqual(props["white-list"], "false")
         self.assertEqual(props["level-name"], "worlds/world")
         self.assertEqual(props["motd"], "A Minecraft Server")
+        self.assertEqual(props["view-distance"], "8")
+        self.assertEqual(props["simulation-distance"], "6")
+
+    def test_modern_property_settings_survive_runtime_prepare(self):
+        installer.ensure_layout()
+        installer.write_properties(
+            {"view-distance": "12", "simulation-distance": "7"}
+        )
+        cfg = {
+            "type": "vanilla",
+            "minecraft_version": "1.20.1",
+            "level_name": "world",
+        }
+        installer.apply_properties(cfg)
+        props = installer.read_properties()
+        self.assertEqual(props["view-distance"], "12")
+        self.assertEqual(props["simulation-distance"], "7")
 
 
 class HttpServerTests(unittest.TestCase):

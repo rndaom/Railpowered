@@ -85,7 +85,7 @@ class SleepProxy:
             ).start()
 
     def _handle_client(self, client, addr):
-        wake_server = True
+        wake_server = False
         try:
             client.settimeout(2.0)
             state.add_log(f"Connection from {addr[0]} — server is sleeping")
@@ -100,9 +100,9 @@ class SleepProxy:
             else:
                 protocol_version, next_state = self._read_handshake(client)
                 if next_state == 1:
-                    wake_server = False
                     self._send_status_response(client, protocol_version)
-                else:
+                elif next_state == 2:
+                    wake_server = True
                     self._send_login_disconnect(client, msg)
         except Exception:
             pass

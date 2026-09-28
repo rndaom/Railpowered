@@ -74,8 +74,48 @@ def resolve_web_port(
 MC_DIR = installer.DATA_DIR
 MC_PORT = 25565
 WEB_PORT = resolve_web_port()
-MAX_MEMORY = os.environ.get("MC_MAX_MEMORY", "1G")
-MIN_MEMORY = os.environ.get("MC_MIN_MEMORY", "512M")
+_MIB = 1024 * 1024
+_MEMORY_LIMIT_FILES = (
+    "/sys/fs/cgroup/memory.max",  # cgroup v2
+    "/sys/fs/cgroup/memory/memory.limit_in_bytes",  # cgroup v1
+)
+
+
+def container_memory_limit() -> int | None:
+    """Return the container limit in bytes, ignoring unlimited cgroup sentinels."""
+    for path in _MEMORY_LIMIT_FILES:
+        try:
+            with open(path, encoding="ascii") as handle:
+                raw = handle.read().strip()
+            limit = int(raw)
+        except (OSError, ValueError):
+            continue
+        if 256 * _MIB <= limit < 1024 * 1024 * _MIB:
+            return limit
+    return None
+
+
+def resolve_max_memory(
+    env: Mapping[str, str] | None = None, limit_bytes: int | None = None
+) -> str:
+    """Leave native-memory headroom while avoiding an oversized idle heap."""
+    environ = os.environ if env is None else env
+    configured = str(environ.get("MC_MAX_MEMORY", "auto")).strip()
+    if configured and configured.lower() != "auto":
+        return configured
+    if limit_bytes is None:
+        limit_bytes = container_memory_limit()
+    if limit_bytes is None:
+        return "2G"
+    # A 1 GiB trial container gets about 700 MiB, matching Railway's guidance.
+    # On smaller containers, cap the heap to leave native/JVM headroom.
+    limit_mib = limit_bytes // _MIB
+    heap_mib = min(2048, max(256, min(int(limit_mib * 0.68), limit_mib - 320)))
+    return f"{heap_mib}M"
+
+
+MAX_MEMORY = resolve_max_memory()
+MIN_MEMORY = os.environ.get("MC_MIN_MEMORY", "256M")
 IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "600"))
 AUTO_START = os.environ.get("AUTO_START", "false").lower() == "true"
 TEMPLATE_DIR = os.environ.get("TEMPLATE_DIR", "/server/templates")

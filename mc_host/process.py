@@ -70,7 +70,8 @@ def start_server():
         command.extend(spec.extra_args)
         state.add_log(
             f"Starting {spec.type} Minecraft {spec.version} "
-            f"(Java {spec.java_major}, world {spec.level_name})..."
+            f"(Java {spec.java_major}, world {spec.level_name}, "
+            f"heap {MIN_MEMORY}–{MAX_MEMORY})..."
         )
         state.process = subprocess.Popen(
             command,

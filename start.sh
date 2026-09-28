@@ -56,7 +56,6 @@ if [ ! -f "$RESET_MARKER" ]; then
   mkdir -p "$DATA_DIR/worlds/world" "$DATA_DIR/jars" "$DATA_DIR/backups" \
     "$DATA_DIR/instances" "$DATA_DIR/modpacks"
   cp -f /server/server.properties "$DATA_DIR/server.properties"
-  cp -f /server/manager.json "$DATA_DIR/manager.json"
   : > "$DATA_DIR/ops.txt"
   : > "$DATA_DIR/white-list.txt"
   printf '%s\n' '[]' > "$DATA_DIR/ops.json"
@@ -72,9 +71,8 @@ fi
 if [ ! -f "$DATA_DIR/server.properties" ]; then
   cp /server/server.properties "$DATA_DIR/server.properties"
 fi
-if [ ! -f "$DATA_DIR/manager.json" ]; then
-  cp /server/manager.json "$DATA_DIR/manager.json"
-fi
+# Let installer.load_config create manager.json so first-deploy environment
+# overrides apply. An existing volume config remains untouched.
 
 mkdir -p "$DATA_DIR/worlds/world"
 printf "eula=true\n" > "$DATA_DIR/eula.txt"

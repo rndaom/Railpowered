@@ -25,8 +25,8 @@ export default defineRailway(() => {
       SERVER_TYPE: "vanilla",
       AUTO_START: "false",
       IDLE_TIMEOUT: "600",
-      MC_MAX_MEMORY: "1G",
-      MC_MIN_MEMORY: "512M",
+      MC_MAX_MEMORY: "auto",
+      MC_MIN_MEMORY: "256M",
     },
   });
 
