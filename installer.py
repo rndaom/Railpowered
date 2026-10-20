@@ -128,6 +128,7 @@ OLDEST_SERVER_JAR = (1, 2, 5)  # 1.0-1.2.4 have no official server download
 
 JAVA_HOMES = {
     8: os.environ.get("JAVA_8_HOME", "/opt/java/8"),
+    17: os.environ.get("JAVA_17_HOME", "/opt/java/17"),
     21: os.environ.get("JAVA_21_HOME", "/opt/java/21"),
     25: os.environ.get("JAVA_25_HOME", "/opt/java/25"),
 }
