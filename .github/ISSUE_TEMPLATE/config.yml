@@ -1,5 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
-  - name: Railway help
-    url: https://docs.railway.com
-    about: Account, billing, and TCP proxy questions for Railway itself
+  - name: Report a security problem
+    url: https://github.com/rndaom/Railpowered/security/advisories/new
+    about: Please report vulnerabilities privately, not as a public issue.
+  - name: Setup help and troubleshooting
+    url: https://github.com/rndaom/Railpowered#readme
+    about: The README covers deploying, connecting, configuration and common problems.
+  - name: Railway account, billing or networking
+    url: https://station.railway.com
+    about: Questions about Railway itself are best asked on Railway's community forum.
