@@ -1983,7 +1983,8 @@
 
   function downgradeDialog(err, worldName) {
     var d = err.data || {};
-    var world = d.world || d.level_name || worldName || 'this world';
+    var named = d.world || d.level_name || worldName;
+    var world = named ? '“' + named + '”' : 'the old world';
     return openDialog({
       tone: 'warn', icon: 'i-alert',
       title: 'This world is newer than that version',
@@ -1992,7 +1993,7 @@
         el('p', null, err.message),
         el('p', null, 'Minecraft can upgrade a world, but it can\'t take one back to an older version. Trying can lose chunks or break the world.'),
         el('ul', null,
-          el('li', null, el('strong', null, 'Use a new world'), ': start fresh. ', world, ' stays exactly as it is.'),
+          el('li', null, el('strong', null, 'Use a new world'), ': start fresh, and ' + world + ' stays exactly as it is.'),
           el('li', null, el('strong', null, 'Back up and continue anyway'), ': Railpowered backs the world up first, then opens it with the older version.')),
       ],
       actions: [
