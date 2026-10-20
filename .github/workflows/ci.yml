@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.12 is the Python in the Docker image (Ubuntu 24.04).
+        os: [ubuntu-latest]
+        python: ["3.12", "3.13"]
+        include:
+          - os: windows-latest
+            python: "3.12"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Python compiles
+        run: python -m compileall -q .
+      - name: Shell scripts
+        run: |
+          bash -n start.sh
+          shellcheck --version
+          shellcheck start.sh .github/scripts/*.sh
+      - name: JavaScript syntax
+        run: |
+          if [ -d web ]; then
+            find web -name '*.js' -print0 | xargs -0 -r -n1 node --check
+          fi
+      - name: Dockerfile
+        run: docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile
+      - name: railway.toml parses
+        run: python -c "import tomllib; tomllib.load(open('railway.toml', 'rb'))"
+
+  docker:
+    name: Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - name: Build (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: railpowered:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test
+        run: .github/scripts/smoke_test.sh railpowered:ci

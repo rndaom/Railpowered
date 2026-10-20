@@ -1,13 +1,17 @@
-# Server runtime
-world/
-data/
+# Local server data (MC_DIR) and downloads
+/data/
+/world/
 *.log
 *.jar
 *.mrpack
+.admin-key
+.session-secret
 
 # Python
 __pycache__/
 *.pyc
+.venv/
+.ruff_cache/
 
 # Java
 *.class
@@ -16,14 +20,15 @@ __pycache__/
 .DS_Store
 Thumbs.db
 
-# IDE
+# Editors and local agent tooling
 .idea/
 .vscode/
 .claude/
+/.cursor/
+/AGENTS.md
 *.swp
 *.swo
 
 # Environment
 .env
 .env.*
-.admin-key

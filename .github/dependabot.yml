@@ -1,0 +1,8 @@
+version: 2
+updates:
+  # Workflow actions are pinned to major versions; this proposes new majors.
+  # The Temurin JREs have their own weekly check (workflows/jre-updates.yml).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

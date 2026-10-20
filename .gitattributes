@@ -1,2 +1,33 @@
-*.sh text eol=lf
-Dockerfile text eol=lf
+# Normalize text files to LF in the repository and in working copies, so
+# scripts and the Docker build behave the same on Windows checkouts.
+* text=auto eol=lf
+
+*.sh         text eol=lf
+*.py         text eol=lf
+Dockerfile   text eol=lf
+*.html       text eol=lf
+*.css        text eol=lf
+*.js         text eol=lf
+*.json       text eol=lf
+*.svg        text eol=lf
+*.md         text eol=lf
+*.yml        text eol=lf
+*.yaml       text eol=lf
+*.toml       text eol=lf
+*.ts         text eol=lf
+*.properties text eol=lf
+
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.webp   binary
+*.ico    binary
+*.mp4    binary
+*.webm   binary
+*.woff   binary
+*.woff2  binary
+*.jar    binary
+*.gz     binary
+*.zip    binary
+*.mrpack binary
