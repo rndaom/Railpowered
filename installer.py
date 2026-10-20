@@ -2306,10 +2306,10 @@ def recover_interrupted(now: float | None = None) -> dict[str, Any]:
                 if _TEMP_FILE_RE.match(inner):
                     drop(os.path.join(path, inner))
 
-    # backups/: an archive that was still being written.
+    # backups/: an archive that was still being written or uploaded.
     backups = where["backups"]
     for entry in entries(backups):
-        if entry.startswith(".") and entry.endswith(".tmp"):
+        if entry.startswith(".") and (entry.endswith(".tmp") or entry.startswith(".upload-")):
             drop(os.path.join(backups, entry))
 
     # modpacks/: downloads and uploads (held ones expire).
@@ -4325,6 +4325,11 @@ def _backup_meta(path: str) -> dict[str, Any]:
                 meta.setdefault("created_at", stamp.isoformat().replace("+00:00", "Z"))
             except ValueError:
                 pass
+    if not meta.get("world"):
+        # No metadata (e.g. an imported plain world archive): the name says.
+        match = re.fullmatch(r"(.+?)-(?:pre-[a-z]+-|auto-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz", os.path.basename(path))
+        if match and NAME_RE.match(match.group(1)):
+            meta["world"] = match.group(1)
     meta.setdefault("created_at", _iso(st.st_mtime))
     _BACKUP_META_CACHE[path] = (key, meta)
     return meta
@@ -4384,12 +4389,14 @@ def create_backup(
     before_tar: Callable[[], Any] | None = None,
     after_tar: Callable[[], Any] | None = None,
     kind: str = "manual",
+    protect: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Archive one world (plus railpowered-backup.json) as
     backups/<world>-<YYYYmmdd-HHMMSS>.tar.gz. Written to a hidden .tmp and
     renamed when complete; a failure leaves nothing behind. ``before_tar``
     (e.g. save-off + save-all flush) runs first and ``after_tar`` (save-on)
-    always runs afterwards."""
+    always runs afterwards. An automatic backup prunes older automatic ones
+    (BACKUP_KEEP), never the names in ``protect``."""
     ensure_layout()
     cfg = load_config()
     world = validate_name(world or _active_setup(cfg)["level_name"], "world")
@@ -4450,7 +4457,7 @@ def create_backup(
         raise
     st = os.stat(final)
     if kind != "manual":
-        _prune_automatic_backups(world, keep_name=name)
+        _prune_automatic_backups(world, keep_names={name, *protect})
     _say(f"Backed up world '{world}' as {name}.")
     return {
         "name": name,
@@ -4478,16 +4485,23 @@ def _auto_backup(world: str, kind: str) -> str | None:
     return create_backup(world, kind=kind)["name"]
 
 
-def _prune_automatic_backups(world: str, keep_name: str | None = None) -> None:
+def _prune_automatic_backups(world: str, keep_names: set[str] | None = None) -> None:
     """Keep the newest BACKUP_KEEP automatic backups of ``world`` (0 = all).
-    Manual backups are never pruned; ``keep_name`` (just written) always stays."""
+    Manual and imported backups are never pruned (only names that say their
+    kind, <world>-<kind>-<stamp>, are automatic); ``keep_names`` (the one just
+    written, a restore's source) always stay."""
     keep = _env_int("BACKUP_KEEP", 0, minimum=0)
     if keep <= 0:
         return
+    protected = {n for n in (keep_names or set()) if n}
     automatic = [
         b for b in list_backups()
-        if b["world"] == world and b["kind"] != "manual" and b["name"] != keep_name
+        if b["world"] == world and b["kind"] != "manual"
+        and b["name"].startswith(f"{world}-{b['kind']}-")
     ]
+    # Protected automatic backups use up slots; the rest compete for what's left.
+    slots = keep - sum(1 for b in automatic if b["name"] in protected)
+    automatic = [b for b in automatic if b["name"] not in protected]
 
     def age(item: dict[str, Any]) -> tuple[str, int]:
         try:
@@ -4497,11 +4511,65 @@ def _prune_automatic_backups(world: str, keep_name: str | None = None) -> None:
         return (str(item["created_at"] or ""), mtime)
 
     automatic.sort(key=age, reverse=True)
-    for item in automatic[max(0, keep - (1 if keep_name else 0)):]:
+    for item in automatic[max(0, slots):]:
         try:
             delete_backup(item["name"])
         except (InstallError, OSError):
             pass
+
+
+def import_backup(path: str) -> dict[str, Any]:
+    """Add an uploaded .tar.gz (a Railpowered backup, or any archive of one
+    world folder) to backups/ as <world>-<stamp>.tar.gz. It is checked the
+    way restore_backup reads it: safe member paths, one world with a
+    level.dat. ``path`` is moved into place (the caller deletes it on error)."""
+    ensure_layout()
+    try:
+        archive = tarfile.open(path, "r:gz")
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise InstallError(
+            "That file isn't a .tar.gz backup.", code="invalid_backup", detail=str(exc)
+        ) from exc
+    meta: dict[str, Any] = {}
+    try:
+        with archive:
+            members = []
+            for member in archive:
+                members.append(member)
+                if len(members) > MAX_ZIP_ENTRIES:
+                    raise InstallError("That backup has too many files.", code="too_large")
+                if member.name == BACKUP_META_FILE and member.isfile() and member.size <= 65536:
+                    handle = archive.extractfile(member)
+                    try:
+                        loaded = json.loads(handle.read().decode("utf-8")) if handle else None
+                    except (ValueError, UnicodeDecodeError):
+                        loaded = None
+                    if isinstance(loaded, dict):
+                        meta = loaded
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
+        raise InstallError("That backup file is damaged.", code="invalid_backup", detail=str(exc)) from exc
+    world, prefix = _backup_world_prefix(members, meta)
+    has_level = False
+    for member in members:
+        name = member.name.replace("\\", "/")
+        parts = [p for p in name.split("/") if p not in ("", ".")]
+        if name.startswith("/") or ".." in parts or (parts and ":" in parts[0]):
+            raise InstallError("This backup contains unsafe paths.", code="invalid_backup")
+        if member.isfile() and name == prefix + "level.dat":
+            has_level = True
+    if not has_level:
+        raise InstallError(
+            f"This archive doesn't contain a Minecraft world ({prefix}level.dat is missing).",
+            code="invalid_backup",
+        )
+    validate_name(world, "world")
+    with _BACKUP_LOCK:
+        name = _backup_name(world, "manual")
+        final = os.path.join(paths()["backups"], name)
+        os.replace(path, final)
+    _BACKUP_META_CACHE.pop(final, None)
+    _say(f"Added backup {name} of world '{world}'.")
+    return next((b for b in list_backups() if b["name"] == name), {"name": name, "world": world})
 
 
 def delete_backup(name: str) -> None:
@@ -4584,7 +4652,8 @@ def restore_backup(name: str, target: str | None = None) -> dict[str, Any]:
             dest = world_path(dest_name)
             pre = None
             if os.path.isdir(dest) and os.listdir(dest):
-                pre = create_backup(dest_name, kind="pre-restore")["name"]
+                # The archive being restored is never pruned to make room.
+                pre = create_backup(dest_name, kind="pre-restore", protect=(name,))["name"]
             old = None
             if os.path.lexists(dest):
                 old = os.path.join(staging, "old")

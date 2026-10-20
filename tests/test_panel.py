@@ -8,6 +8,7 @@ import io
 import json
 import os
 import socket
+import tarfile
 import threading
 import time
 import unittest
@@ -999,6 +1000,27 @@ class WorldBackupRouteTests(PanelTestCase):
         status, payload = self.api("DELETE", "/api/setups/pack")
         self.assertEqual(status, 200)
         self.assertEqual([(i["kind"], i["name"]) for i in payload["orphaned"]], [("instance", "mypack")])
+
+    def test_backup_upload(self):
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+            for arcname, body in (("survival/level.dat", b"L"), ("survival/region/r.mca", b"R")):
+                info = tarfile.TarInfo(arcname)
+                info.size = len(body)
+                archive.addfile(info, io.BytesIO(body))
+        status, payload = self.api("POST", "/api/backups/upload", body=buffer.getvalue())
+        self.assertEqual(status, 201, payload)
+        self.assertEqual(payload["backup"]["world"], "survival")
+        self.assertIn(payload["backup"]["name"], [b["name"] for b in payload["backups"]])
+        status, payload = self.api("POST", "/api/backups/upload", body=b"PK a zip")
+        self.assertEqual((status, payload["code"]), (400, "invalid_backup"))
+        empty = io.BytesIO()
+        with tarfile.open(fileobj=empty, mode="w:gz"):
+            pass
+        status, payload = self.api("POST", "/api/backups/upload", body=empty.getvalue())
+        self.assertEqual((status, payload["code"]), (400, "invalid_backup"))
+        hidden = [n for n in os.listdir(installer.paths()["backups"]) if n.startswith(".")]
+        self.assertEqual(hidden, [])
 
     def test_backup_list_download_and_delete(self):
         level = os.path.join(installer.world_path("world"), "level.dat")

@@ -102,6 +102,27 @@ class CreateBackupTests(BackupTestCase):
         self.assertEqual(kinds.count("auto"), 2)
         self.assertEqual(kinds.count("manual"), 1)
 
+    def test_restore_never_prunes_the_backup_it_restores(self):
+        os.environ["BACKUP_KEEP"] = "1"
+        source = installer.create_backup("world", kind="pre-downgrade")["name"]
+        self.write("worlds/world/data/a.txt", "v2")
+        result = installer.restore_backup(source)
+        names = self.backup_files()
+        self.assertIn(source, names)
+        self.assertIn(result["pre_restore_backup"], names)
+        # The next automatic backup counts the protected ones out again.
+        installer.create_backup("world", kind="pre-downgrade")
+        self.assertEqual(len([n for n in self.backup_files() if "-pre-" in n]), 1)
+
+    def test_backups_without_their_kind_in_the_name_are_never_pruned(self):
+        os.environ["BACKUP_KEEP"] = "1"
+        imported = self.path("backups", "world-20200101-000000.tar.gz")
+        made = installer.create_backup("world", kind="auto")["name"]
+        os.replace(self.path("backups", made), imported)  # an archive of kind "auto", renamed
+        installer.create_backup("world", kind="auto")
+        installer.create_backup("world", kind="auto")
+        self.assertIn("world-20200101-000000.tar.gz", self.backup_files())
+
 
 class RestoreTests(BackupTestCase):
     def setUp(self):
@@ -195,6 +216,59 @@ class RestoreTests(BackupTestCase):
             self.assertEqual(handle.read(), b"old-level")
         self.assertEqual(self.read("server.properties"), "motd=after\n")
         self.assertEqual(self.read("manager.json"), self.manager_before)
+
+
+class ImportBackupTests(BackupTestCase):
+    def upload(self, entries, meta=None, name="upload.part"):
+        path = os.path.join(self.tmp, name)
+        with tarfile.open(path, "w:gz") as archive:
+            if meta is not None:
+                payload = json.dumps(meta).encode()
+                info = tarfile.TarInfo(installer.BACKUP_META_FILE)
+                info.size = len(payload)
+                archive.addfile(info, io.BytesIO(payload))
+            for arcname, body in entries.items():
+                info = tarfile.TarInfo(arcname)
+                info.size = len(body)
+                archive.addfile(info, io.BytesIO(body))
+        return path
+
+    def test_a_downloaded_backup_comes_back(self):
+        made = installer.create_backup("world")["name"]
+        moved = os.path.join(self.tmp, "downloaded.tar.gz")
+        os.replace(self.path("backups", made), moved)
+        item = installer.import_backup(moved)
+        self.assertEqual(item["world"], "world")
+        self.assertRegex(item["name"], r"^world-\d{8}-\d{6}(-\d+)?\.tar\.gz$")
+        self.assertFalse(os.path.exists(moved))
+        self.write("worlds/world/data/a.txt", "v2")
+        installer.restore_backup(item["name"])
+        self.assertEqual(self.world_file("world", "data", "a.txt"), "v1")
+
+    def test_plain_world_archives_are_accepted(self):
+        item = installer.import_backup(self.upload({"survival/level.dat": b"L", "survival/region/r.mca": b"R"}))
+        self.assertEqual(item["world"], "survival")
+        item = installer.import_backup(self.upload({"worlds/legacy/level.dat": b"L"}, name="v1.part"))
+        self.assertEqual(item["world"], "legacy")
+
+    def test_bad_archives_are_refused(self):
+        cases = {
+            "no world": self.upload({"readme.txt": b"x", "other/readme.txt": b"x"}, name="a.part"),
+            "no level.dat": self.upload({"survival/region/r.mca": b"R"}, name="b.part"),
+            "unsafe": self.upload({"survival/level.dat": b"L", "survival/../../x": b"x"}, name="c.part"),
+        }
+        for label, path in cases.items():
+            with self.subTest(label), self.assertRaises(installer.InstallError) as ctx:
+                installer.import_backup(path)
+            self.assertEqual(ctx.exception.code, "invalid_backup")
+            self.assertTrue(os.path.exists(path))  # the caller deletes it
+        bad = os.path.join(self.tmp, "bad.part")
+        with open(bad, "wb") as handle:
+            handle.write(b"\x1f\x8b not really gzip")
+        with self.assertRaises(installer.InstallError) as ctx:
+            installer.import_backup(bad)
+        self.assertEqual(ctx.exception.code, "invalid_backup")
+        self.assertEqual([n for n in self.backup_files() if n != ".gitkeep"], [])
 
 
 class BackupListingTests(BackupTestCase):

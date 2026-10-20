@@ -986,6 +986,35 @@ class PanelHandler(BaseHTTPRequestHandler):
         )
         self._json({"task": task.to_dict()}, 202)
 
+    @route("POST", "/api/backups/upload")
+    def api_upload_backup(self) -> None:
+        """Bring a downloaded backup (.tar.gz) back, e.g. onto a new volume.
+        The body is the file; it's checked and listed like any backup."""
+        if not _upload_lock.acquire(blocking=False):
+            self.close_connection = True
+            raise ApiError(409, "busy", "Another upload is in progress. Wait for it to finish.")
+        try:
+            limit = installer.max_upload_bytes()
+            length = self._content_length(limit, required=True)
+            backups = installer.paths()["backups"]
+            os.makedirs(backups, exist_ok=True)
+            if shutil.disk_usage(backups).free < length + 64 * 1024 * 1024:
+                self.close_connection = True
+                raise ApiError(507, "disk_full", "There isn't enough free space on the volume for this backup.")
+            partial = os.path.join(backups, f".upload-{secrets.token_hex(6)}.part")
+            try:
+                self._receive_file(partial, length)
+                with open(partial, "rb") as handle:
+                    magic = handle.read(2)
+                if magic != b"\x1f\x8b":
+                    raise ApiError(400, "invalid_backup", "That file isn't a .tar.gz backup.")
+                backup = ix.import_backup(partial)
+            finally:
+                _remove_quietly(partial)  # gone already when it was imported
+        finally:
+            _upload_lock.release()
+        self._json({"ok": True, "backup": backup, "backups": ix.list_backups()}, 201)
+
     def _backup_path(self, name: str) -> str:
         if not ix.valid_backup_name(name):
             raise ApiError(400, "invalid_name", "That isn't a backup name.")

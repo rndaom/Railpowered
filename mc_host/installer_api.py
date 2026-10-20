@@ -254,6 +254,11 @@ def delete_backup(name: str) -> None:
     installer.delete_backup(name)
 
 
+def import_backup(path: str) -> dict[str, Any]:
+    """Validate an uploaded .tar.gz and move it into backups/ (a listing item)."""
+    return _backup_shape(installer.import_backup(path))
+
+
 def backup_file(name: str) -> str:
     return installer.backup_file(name)
 
