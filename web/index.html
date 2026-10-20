@@ -310,7 +310,7 @@
                         <input type="radio" name="type" value="forge">
                         <span class="glyph t-forge" aria-hidden="true"><svg class="icon"><use href="#i-hammer"/></svg></span>
                         <span class="choice-title">Forge</span>
-                        <span class="choice-text">The classic mod loader for older modded versions.</span>
+                        <span class="choice-text">The classic mod loader, for old and new modded versions.</span>
                       </label>
                       <label class="choice">
                         <input type="radio" name="type" value="modpack">
@@ -327,6 +327,13 @@
                     <label class="step-title" for="setup-version">Minecraft version</label>
                     <select class="select" id="setup-version" aria-describedby="version-help" aria-busy="true"><option value="" disabled selected>Loading versions…</option></select>
                     <p class="field-help" id="version-help">Friends need this exact version selected in their Minecraft launcher.</p>
+                    <label class="radio-line" id="setup-snapshots-row" hidden>
+                      <input type="checkbox" id="setup-snapshots">
+                      <span class="radio-copy">
+                        <span>Show snapshots and pre-releases</span>
+                        <span class="field-help">Mojang's test builds. They can break worlds, so give each one its own world.</span>
+                      </span>
+                    </label>
                   </div>
                 </li>
 

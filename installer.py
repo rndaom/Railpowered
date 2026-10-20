@@ -65,6 +65,7 @@ MANIFEST_URL = "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json"
 FABRIC_META_URL = "https://meta.fabricmc.net/v2"
 FABRIC_MAVEN_URL = "https://maven.fabricmc.net/net/fabricmc/fabric-installer"
 FORGE_MAVEN_URL = "https://maven.minecraftforge.net/net/minecraftforge/forge"
+FORGE_PROMOS_URL = "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json"
 MOJANG_PROFILE_URLS = (
     "https://api.mojang.com/users/profiles/minecraft/{name}",
     "https://api.minecraftservices.com/minecraft/profile/lookup/name/{name}",
@@ -97,6 +98,7 @@ RESERVED_INSTANCE_PREFIXES = ("fabric-", "forge-")
 IDLE_MAX_MINUTES = 1440  # sleep timer limit (one day), shared with config.py
 MANIFEST_TTL = 600  # seconds a version list counts as fresh
 FABRIC_TTL = 3600
+FORGE_TTL = 6 * 3600
 NETWORK_RETRY_AFTER = 60  # seconds before retrying a host that just failed
 UUID_CACHE_TTL = 30 * 24 * 3600
 INSTALL_TIMEOUT = 900
@@ -116,7 +118,8 @@ LOG4J_CONFIGS = {
     ),
 }
 
-# Curated Forge builds (newest recommended build for each version).
+# Tested Forge builds. They win over Forge's promotions list, which supplies
+# the build (recommended, else latest) for every other version.
 FORGE_BUILDS = {
     "1.16.5": "36.2.39",
     "1.12.2": "14.23.5.2859",
@@ -125,6 +128,10 @@ FORGE_BUILDS = {
 CURATED_VANILLA = ["1.21.11", "1.21.1", "1.20.1", "1.16.5", "1.12.2", "1.8.9", "1.7.10", "1.2.5"]
 CURATED_FABRIC = ["1.21.11", "1.21.1", "1.20.1"]
 OLDEST_SERVER_JAR = (1, 2, 5)  # 1.0-1.2.4 have no official server download
+# Forge before 1.6.1 ships no server installer (1.5.2's only unpacks a jar to
+# merge by hand). 1.7.2's launchwrapper crashes on Java 8 and needs Java 7.
+OLDEST_FORGE_INSTALLER = (1, 6, 1)
+FORGE_BROKEN = {"1.7.2"}
 
 JAVA_HOMES = {
     8: os.environ.get("JAVA_8_HOME", "/opt/java/8"),
@@ -450,15 +457,59 @@ def sha1_file(path: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def parse_version(version: str) -> tuple[int, int, int]:
-    raw = str(version or "").strip()
+_SNAPSHOT_INFO: tuple[Any, dict[str, tuple[str, int]]] = (None, {})
+
+
+def _snapshot_info() -> dict[str, tuple[str, int]]:
+    """Every snapshot and pre-release in the cached Mojang manifest, mapped to
+    (the release it leads to, its position in release order). Weekly ids like
+    24w14a carry no version number, so this is the only way to place them."""
+    global _SNAPSHOT_INFO
+    manifest, _ = _manifest(network=False)
+    if not manifest:
+        return {}
+    if _SNAPSHOT_INFO[0] is manifest:  # holding it keeps its id from being reused
+        return _SNAPSHOT_INFO[1]
+    entries = [v for v in manifest["versions"] if isinstance(v, dict) and isinstance(v.get("id"), str)]
+    entries.sort(key=lambda v: str(v.get("releaseTime") or ""))
+    info: dict[str, tuple[str, int]] = {}
+    pending: list[tuple[str, int]] = []
+    for position, entry in enumerate(entries, start=1):
+        if entry.get("type") == "release":
+            for vid, seq in pending:
+                info[vid] = (entry["id"], seq)
+            pending = []
+        elif entry.get("type") == "snapshot":
+            pending.append((entry["id"], position))
+    for vid, seq in pending:  # snapshots for a release that isn't out yet
+        info[vid] = (vid, seq)
+    _SNAPSHOT_INFO = (manifest, info)
+    return info
+
+
+def _numeric_prefix(raw: str) -> tuple[list[int], bool]:
+    """Leading dotted numbers of ``raw`` and whether they were all of it
+    (before any -pre/-rc/-snapshot suffix)."""
     base = re.split(r"[-+ _]", raw, maxsplit=1)[0]
     parts: list[int] = []
-    for token in base.split("."):
+    tokens = base.split(".")
+    for token in tokens:
         if token.isdigit():
             parts.append(int(token))
         else:
             break
+    return parts, len(parts) == len(tokens)
+
+
+def parse_version(version: str) -> tuple[int, int, int]:
+    raw = str(version or "").strip()
+    parts, clean = _numeric_prefix(raw)
+    if not clean:
+        target = _snapshot_info().get(raw, (None, 0))[0]
+        if target and target != raw:
+            target_parts, target_clean = _numeric_prefix(target)
+            if target_parts and target_clean:
+                parts = target_parts
     if not parts:
         raise InstallError(f"'{version}' isn't a Minecraft version.", code="invalid_version")
     while len(parts) < 3:
@@ -466,15 +517,24 @@ def parse_version(version: str) -> tuple[int, int, int]:
     return (parts[0], parts[1], parts[2])
 
 
+def is_snapshot(version: str) -> bool:
+    """A snapshot, pre-release or release candidate rather than a release."""
+    raw = str(version or "").strip()
+    if raw in _snapshot_info():
+        return True
+    return bool(re.search(r"[-_ ](pre|rc)|snapshot", raw.lower()))
+
+
 def version_key(version: str) -> tuple[int, ...] | None:
-    """Sortable key; pre-releases sort before their release. None if unknown."""
+    """Sortable key; snapshots and pre-releases sort before their release,
+    in the order Mojang published them. None if unknown."""
     try:
         base = parse_version(version)
     except InstallError:
         return None
-    lowered = str(version).lower()
-    pre = bool(re.search(r"(-pre|-rc|pre-release|-snapshot|snapshot)", lowered))
-    return (*base, 0 if pre else 1)
+    if not is_snapshot(version):
+        return (*base, 1, 0)
+    return (*base, 0, _snapshot_info().get(str(version).strip(), ("", 0))[1])
 
 
 def is_year_version(version: str) -> bool:
@@ -502,7 +562,15 @@ def _validate_version(version: Any, server_type: str) -> str:
         )
     if not VERSION_RE.match(text):
         raise InstallError(f"'{text[:40]}' isn't a Minecraft version.", code="invalid_version")
-    parse_version(text)
+    try:
+        parse_version(text)
+    except InstallError:
+        if _numeric_prefix(text)[1]:
+            raise
+        # A weekly snapshot id (24w14a) is placed through Mojang's list,
+        # which a fresh volume hasn't fetched yet.
+        _manifest(network=True)
+        parse_version(text)
     return text
 
 
@@ -1622,10 +1690,10 @@ def _setup_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
             code="invalid_type",
         )
     version = _validate_version(fields.get("minecraft_version"), stype)
-    if stype == "forge" and version not in FORGE_BUILDS:
+    if stype == "forge" and not forge_supported(version):
         raise InstallError(
-            f"Forge setups support Minecraft {', '.join(FORGE_BUILDS)}. "
-            "For other versions, install a Forge modpack.",
+            f"Forge has no server installer for Minecraft {version}. "
+            "Pick another version, or install a Forge modpack.",
             code="invalid_version",
         )
     level = validate_name(fields.get("level_name") or "world", "world")
@@ -2549,12 +2617,59 @@ def install_fabric(version: str, dest: str | None = None, loader: str | None = N
     return dest
 
 
+def forge_catalog(network: bool = True) -> tuple[dict[str, str] | None, bool]:
+    """({Minecraft version: Forge build}, fresh) for every version Forge has
+    an installer for: Forge's recommended build, else its latest, with the
+    tested FORGE_BUILDS on top. None when Forge was never reachable."""
+    data, fresh = _cached_json("forge_promotions", FORGE_PROMOS_URL, FORGE_TTL, network)
+    promos = data.get("promos") if isinstance(data, dict) else None
+    if not isinstance(promos, dict):
+        return None, False
+    catalog: dict[str, str] = {}
+    for key, build in promos.items():
+        mc, _, kind = str(key).rpartition("-")
+        if kind not in ("recommended", "latest") or not VERSION_RE.match(mc) or is_snapshot(mc):
+            continue
+        if mc in FORGE_BROKEN:
+            continue
+        if not isinstance(build, str) or not re.fullmatch(r"[0-9][0-9A-Za-z._-]{0,40}", build):
+            continue
+        try:
+            if parse_version(mc) < OLDEST_FORGE_INSTALLER:
+                continue
+        except InstallError:
+            continue
+        if kind == "recommended" or mc not in catalog:
+            catalog[mc] = build
+    catalog.update(FORGE_BUILDS)
+    return catalog, fresh
+
+
+def forge_supported(mc_version: str, network: bool = True) -> bool:
+    """Whether Forge publishes an installer for this Minecraft version. When
+    Forge has never been reachable, any release from 1.6.1 on is allowed and
+    the install itself reports a missing build."""
+    if mc_version in FORGE_BUILDS:
+        return True
+    if mc_version in FORGE_BROKEN:
+        return False
+    catalog, _ = forge_catalog(network)
+    if catalog is not None:
+        return mc_version in catalog
+    try:
+        return not is_snapshot(mc_version) and parse_version(mc_version) >= OLDEST_FORGE_INSTALLER
+    except InstallError:
+        return False
+
+
 def forge_build_for(mc_version: str, forge_version: str | None = None) -> str:
     build = str(forge_version or "").strip() or FORGE_BUILDS.get(mc_version, "")
     if not build:
+        build = (forge_catalog()[0] or {}).get(mc_version, "")
+    if not build:
         raise InstallError(
-            f"Railpowered has no Forge build for Minecraft {mc_version}. "
-            f"Supported: {', '.join(FORGE_BUILDS)}, or a modpack that names its Forge version.",
+            f"Forge has no server installer for Minecraft {mc_version}. "
+            "Pick another version, or a modpack that names its Forge version.",
             code="invalid_version",
         )
     if not re.fullmatch(r"[0-9][0-9A-Za-z._-]{0,40}", build):
@@ -2570,10 +2685,36 @@ def forge_build_for(mc_version: str, forge_version: str | None = None) -> str:
     return build
 
 
+def _forge_url(rev: str) -> str:
+    return f"{FORGE_MAVEN_URL}/{rev}/forge-{rev}-installer.jar"
+
+
 def _forge_installer_url(mc_version: str, forge_version: str | None = None) -> str:
     build = forge_build_for(mc_version, forge_version)
-    rev = f"{mc_version}-{build}"
-    return f"{FORGE_MAVEN_URL}/{rev}/forge-{rev}-installer.jar"
+    return _forge_url(f"{mc_version}-{build}")
+
+
+def _forge_installer_source(mc_version: str, build: str) -> tuple[str, str | None]:
+    """(installer URL, its sha1). Forge's maven names old builds
+    inconsistently (1.8-11.14.4.1563, 1.8.9-11.15.1.2318-1.8.9,
+    1.7.2-10.12.2.1161-mc172, 1.10-12.18.0.2000-1.10.0), so each spelling is
+    tried until maven has a checksum for one."""
+    core = build
+    for suffix in (f"-{mc_version}.0", f"-{mc_version}", "-mc" + mc_version.replace(".", "")):
+        if core.endswith(suffix):
+            core = core[: -len(suffix)]
+            break
+    spellings = [build, core, f"{core}-{mc_version}", f"{core}-{mc_version}.0",
+                 f"{core}-mc{mc_version.replace('.', '')}"]
+    urls = [_forge_url(f"{mc_version}-{b}") for b in dict.fromkeys(spellings)]
+    for url in urls:
+        if os.path.isfile(os.path.join(paths()["jars"], os.path.basename(urlparse(url).path))):
+            return url, _maven_sha1(url)  # downloaded before; reused offline too
+    for url in urls:
+        sha1 = _maven_sha1(url)
+        if sha1:
+            return url, sha1
+    return urls[0], None
 
 
 def _find_forge_launch(directory: str, mc_version: str | None = None) -> str | None:
@@ -2591,12 +2732,15 @@ def _find_forge_launch(directory: str, mc_version: str | None = None) -> str | N
         names = sorted(os.listdir(directory))
     except OSError:
         return None
+    # 1.5.2 to 1.6.4 installers name it minecraftforge-universal-<mc>-<build>.jar.
     jars = [
         n for n in names
-        if n.lower().startswith("forge-") and n.lower().endswith(".jar") and "installer" not in n.lower()
+        if n.lower().startswith(("forge-", "minecraftforge-universal-")) and n.lower().endswith(".jar")
+        and "installer" not in n.lower()
     ]
     if mc_version:
-        jars.sort(key=lambda n: not n.startswith(f"forge-{mc_version}-"))
+        jars.sort(key=lambda n: not (n.startswith(f"forge-{mc_version}-")
+                                     or n.startswith(f"minecraftforge-universal-{mc_version}-")))
     return os.path.join(directory, jars[0]) if jars else None
 
 
@@ -2608,26 +2752,31 @@ def install_forge(
 ) -> str:
     """Install Forge into ``dest`` (default instances/forge-<version>)."""
     _validate_version(version, "forge")
-    build = forge_build_for(version, forge_version) if not installer_path else (forge_version or "")
     dest = dest or instance_dir("forge", version)
+    if not forge_version and not installer_path and _find_forge_launch(dest, version) \
+            and _install_complete(dest, "forge", version):
+        # Already installed: keep that build even after Forge promotes a newer one.
+        return dest
+    build = forge_build_for(version, forge_version) if not installer_path else (forge_version or "")
     if _find_forge_launch(dest, version) and _install_complete(dest, "forge", version, build or None):
         return dest
     os.makedirs(dest, exist_ok=True)
     if not installer_path:
-        url = _forge_installer_url(version, build)
+        url, sha1 = _forge_installer_source(version, build)
         installer_path = download_file(
             url,
             os.path.join(paths()["jars"], os.path.basename(urlparse(url).path)),
-            _maven_sha1(url),
+            sha1,
             label=f"the Forge installer for {version}",
             reuse=True,
         )
-    if version == "1.7.10":
-        # The 1.7.10 installer fetches the vanilla jar from a host that no
-        # longer exists; it skips the download when the jar is already there.
-        seeded = os.path.join(dest, "minecraft_server.1.7.10.jar")
+    if not is_year_version(version) and parse_version(version) < (1, 13, 0):
+        # Installers before 1.13 fetch the vanilla jar from Mojang's old S3
+        # host, which no longer exists; they skip the download when the jar
+        # is already there.
+        seeded = os.path.join(dest, f"minecraft_server.{version}.jar")
         if not os.path.isfile(seeded):
-            shutil.copy2(install_vanilla("1.7.10"), seeded)
+            shutil.copy2(install_vanilla(version), seeded)
     major, java, home = select_java(8 if parse_version(version) < (1, 17, 0) else required_java(version),
                                     8 if parse_version(version) < (1, 17, 0) else None)
     _say(f"Installing Forge {build or ''} for Minecraft {version} (Java {major})...".replace("  ", " "))
@@ -2966,18 +3115,31 @@ def _restore_after_failed_prepare(path: str, saved_text: bytes | None, saved_leg
 # ---------------------------------------------------------------------------
 
 
+def version_group(version: str) -> str:
+    """Heading the setup form files a version under: 1.20.x, 26.x."""
+    try:
+        major, minor, _ = parse_version(version)
+    except InstallError:
+        return "Other"
+    return f"{major}.x" if major >= 2 else f"{major}.{minor}.x"
+
+
 def list_available_versions() -> dict[str, Any]:
     """Versions for the setup form. Never fails offline (cached or curated)."""
     manifest, fresh = _manifest(network=True)
     latest = _manifest_latest(manifest) or cached_latest_release()
     releases: list[str] = []
+    snapshots: list[str] = []
     if manifest:
         for item in manifest["versions"]:
             vid = item.get("id")
             key = version_key(str(vid)) if vid else None
-            if item.get("type") == "release" and key and VERSION_RE.match(str(vid)):
-                if key[:3] >= OLDEST_SERVER_JAR:
-                    releases.append(str(vid))
+            if not key or not VERSION_RE.match(str(vid)):
+                continue  # "1.14 Pre-Release 1" and friends: ids with spaces
+            if item.get("type") == "release" and key[:3] >= OLDEST_SERVER_JAR:
+                releases.append(str(vid))
+            elif item.get("type") == "snapshot":
+                snapshots.append(str(vid))  # every snapshot has a server jar
     else:
         releases = list(CURATED_VANILLA)
         for extra in _installed_vanilla_versions():
@@ -2985,14 +3147,23 @@ def list_available_versions() -> dict[str, Any]:
                 releases.append(extra)
         if latest and latest not in releases:
             releases.insert(0, latest)
-    releases.sort(key=lambda v: version_key(v) or (0,), reverse=True)
+    def by_newest(ids: list[str]) -> list[str]:
+        return sorted(ids, key=lambda v: version_key(v) or (0,), reverse=True)
 
     def item(vid: str, popular: set[str]) -> dict[str, Any]:
         label = f"{vid} (latest)" if vid == latest else vid
-        return {"id": vid, "label": label, "popular": vid in popular or vid == latest}
+        entry: dict[str, Any] = {"id": vid, "label": label, "popular": vid in popular or vid == latest,
+                                 "group": version_group(vid)}
+        if vid in snapshot_set:
+            entry["snapshot"] = True
+            if not re.search(r"(pre|rc|snapshot)", vid.lower()):
+                label = f"{vid} (snapshot)"  # weekly ids like 24w14a say nothing by themselves
+            entry["label"] = label
+        return entry
 
+    snapshot_set = set(snapshots)
     vanilla_popular = set(CURATED_VANILLA)
-    vanilla = [item(v, vanilla_popular) for v in releases]
+    vanilla = [item(v, vanilla_popular) for v in by_newest(releases + snapshots)]
 
     games, fabric_fresh = _cached_json("fabric_games", f"{FABRIC_META_URL}/versions/game", FABRIC_TTL)
     fabric_ids: list[str] = []
@@ -3000,24 +3171,32 @@ def list_available_versions() -> dict[str, Any]:
         release_set = set(releases) if manifest else None
         for entry in games:
             vid = str((entry or {}).get("version") or "")
-            if (entry or {}).get("stable") and VERSION_RE.match(vid) and (release_set is None or vid in release_set):
+            if not VERSION_RE.match(vid) or vid in fabric_ids:
+                continue
+            if (entry or {}).get("stable") and (release_set is None or vid in release_set):
+                fabric_ids.append(vid)
+            elif vid in snapshot_set:  # Fabric supports most snapshots from 1.14 on
                 fabric_ids.append(vid)
     if not fabric_ids:
         fabric_ids = list(dict.fromkeys(([latest] if latest else []) + CURATED_FABRIC))
-    fabric_ids.sort(key=lambda v: version_key(v) or (0,), reverse=True)
-    fabric = [item(v, set(CURATED_FABRIC)) for v in fabric_ids]
+    fabric = [item(v, set(CURATED_FABRIC)) for v in by_newest(fabric_ids)]
 
-    forge = [
-        {"id": mc, "label": f"{mc} (Forge {build.split('-')[0]})", "popular": True, "forge_version": build}
-        for mc, build in FORGE_BUILDS.items()
-    ]
+    catalog, forge_fresh = forge_catalog()
+    builds = dict(catalog or FORGE_BUILDS)
+    if manifest:
+        builds = {mc: b for mc, b in builds.items() if mc in set(releases) or mc in FORGE_BUILDS}
+    forge = []
+    for mc in by_newest(list(builds)):
+        entry = item(mc, set(FORGE_BUILDS))
+        entry.update({"label": f"{mc} (Forge {builds[mc].split('-')[0]})", "forge_version": builds[mc]})
+        forge.append(entry)
     return {
         "vanilla": vanilla,
         "fabric": fabric,
         "forge": forge,
         "latest": latest,
-        "snapshots": False,
-        "offline": not (fresh and (fabric_fresh or games is not None)),
+        "snapshots": bool(snapshots),
+        "offline": not (fresh and (fabric_fresh or games is not None) and (forge_fresh or catalog is not None)),
     }
 
 

@@ -142,7 +142,17 @@ VANILLA = [
     "1.20.6", "1.20.4", "1.20.1", "1.19.4", "1.19.2", "1.18.2", "1.17.1",
     "1.16.5", "1.14.4", "1.12.2", "1.8.9", "1.7.10",
 ]
-FORGE = ["1.21.1", "1.20.1", "1.19.2", "1.18.2", "1.16.5", "1.12.2"]
+# Snapshots and pre-releases, each listed after the release they lead to.
+SNAPSHOTS = {
+    "26.4-snapshot-2": "26.4", "26.4-snapshot-1": "26.4",
+    "26.3-rc1": "26.3", "26.3-pre2": "26.3",
+    "1.21.11-pre1": "1.21.11", "25w41a": "1.21.11",
+    "24w14a": "1.20.5",
+}
+FORGE = [
+    "26.3", "26.1", "1.21.11", "1.21.1", "1.20.6", "1.20.1", "1.19.4", "1.19.2", "1.18.2",
+    "1.17.1", "1.16.5", "1.14.4", "1.12.2", "1.8.9", "1.7.10", "1.6.4", "1.6.1",
+]
 LATEST = VANILLA[0]
 LEGACY_VERSION = "1.6.4"
 
@@ -181,6 +191,25 @@ def vcmp(a, b):
 
 
 FABRIC = [v for v in VANILLA if vcmp(v, "1.14") >= 0]
+
+
+def vgroup(version):
+    parts = (vkey(SNAPSHOTS.get(version, version)) + [0])[:2]
+    return f"{parts[0]}.x" if parts[0] >= 2 else f"{parts[0]}.{parts[1]}.x"
+
+
+def version_items(releases, snapshots=True):
+    """Releases plus (online) the snapshots, newest first, as the real API sends them."""
+    def snap(s):
+        label = s if re.search(r"pre|rc|snapshot", s) else f"{s} (snapshot)"
+        return {"id": s, "label": label, "group": vgroup(s), "snapshot": True}
+
+    # Snapshots for a release that isn't out yet come first, the rest after their release.
+    items = [snap(s) for s, target in SNAPSHOTS.items() if snapshots and vcmp(target, releases[0]) > 0]
+    for v in releases:
+        items.append({"id": v, "label": f"{v} (latest)" if v == LATEST else v, "group": vgroup(v)})
+        items.extend(snap(s) for s, target in SNAPSHOTS.items() if snapshots and target == v)
+    return items
 
 
 def java_for(version):
@@ -1009,11 +1038,12 @@ class Mock:
         if route == "versions" and method == "GET":
             vanilla = VANILLA[:10] if self.versions_offline else VANILLA
             fabric = FABRIC[:6] if self.versions_offline else FABRIC
+            online = not self.versions_offline
             return 200, {
-                "vanilla": [{"id": v, "label": f"{v} (latest)" if v == LATEST else v} for v in vanilla],
-                "fabric": [{"id": v, "label": f"{v} (latest)" if v == LATEST else v} for v in fabric],
-                "forge": [{"id": v, "label": v} for v in FORGE],
-                "latest": LATEST, "snapshots": False, "offline": self.versions_offline,
+                "vanilla": version_items(vanilla, online),
+                "fabric": version_items(fabric, online),
+                "forge": [{"id": v, "label": v, "group": vgroup(v)} for v in FORGE],
+                "latest": LATEST, "snapshots": online, "offline": self.versions_offline,
             }
         if parts[0] == "setups":
             return self.setups_api(method, parts[1:], body)

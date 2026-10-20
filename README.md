@@ -49,9 +49,9 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 **Setups: any version, any loader**
 
 - A *setup* is a server type, a Minecraft version and a world. Save as many as you like and switch between them. One is active at a time.
-- **Vanilla:** every release from 1.2.5 to the newest, or `latest`, which follows new releases.
-- **Fabric:** every stable Fabric game version, with the newest stable loader (or a pinned one).
-- **Forge:** 1.16.5, 1.12.2 and 1.7.10, using curated recommended builds.
+- **Vanilla:** every release from 1.2.5 to the newest, or `latest`, which follows new releases. Every snapshot and pre-release too, behind a "Show snapshots" switch.
+- **Fabric:** every Fabric game version, releases and snapshots, with the newest stable loader (or a pinned one).
+- **Forge:** every version Forge has a working server installer for, 1.6.1 to the newest (except 1.7.2, which needs Java 7), using Forge's recommended build (or its latest where there's none).
 - **Modpacks:** a Modrinth `.mrpack` or a server `.zip`, from a link or uploaded from your computer (Fabric or Forge packs).
 - **Java picked for you.** The image ships Eclipse Temurin 8, 17, 21 and 25. Railpowered reads the Java requirement from Mojang's version metadata and uses the smallest Java that fits.
 - **Installs are transactional.** A new setup installs first and becomes active only if that succeeds. If it fails, your current setup keeps working.
@@ -217,7 +217,7 @@ Most settings live in the dashboard and are stored on the volume. Railway variab
 | `TOTP_SECRET` | *unset* | Optional second sign-in factor. A base32 secret (16+ characters) shared with an authenticator app; the sign-in page then also asks for its 6-digit code. See [Security](#security). |
 | `PORT` | `8080` | Dashboard port. Keep `8080` so Railway's health check and HTTP domain reach it. Ignored if it equals 25565. |
 | `MINECRAFT_VERSION` | `latest` | **First boot only:** the version of the first setup (`latest`, or a version such as `1.21.1`). After that, change versions from the Setups page. A later change is noted in the log and otherwise ignored. |
-| `SERVER_TYPE` | `vanilla` | **First boot only:** `vanilla`, `fabric` or `forge`. Forge needs `MINECRAFT_VERSION` set to `1.16.5`, `1.12.2` or `1.7.10`. Add modpacks from the dashboard. |
+| `SERVER_TYPE` | `vanilla` | **First boot only:** `vanilla`, `fabric` or `forge`. Forge needs a specific `MINECRAFT_VERSION` (1.6.1 or newer). Add modpacks from the dashboard. |
 | `AUTO_START` | `false` | Start Minecraft when the container boots instead of waiting for a join. **The dashboard's *Start on deploy* setting overrides it once saved.** |
 | `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft sleeps. `0` means never, the maximum is `86400` (one day), and values from 1 to 59 become 60. **The dashboard's sleep timer overrides it once saved.** |
 | `MC_MAX_MEMORY` | `auto` | Java heap limit (`-Xmx`): `auto`, or a size such as `1536M` or `3G` (at least `128M`). See *Memory and performance* below. |
@@ -285,9 +285,9 @@ Everything Railpowered writes lives in `/server/data`, so it survives redeploys:
 
 | Type | Versions | Java |
 |---|---|---|
-| Vanilla | Every release from **1.2.5** to the newest, from Mojang's version manifest (no snapshots). `latest` follows new releases. | From Mojang's `javaVersion`. The fallback is 8 below 1.17, 17 up to 1.20.4, 21 up to 1.21.x, and 25 for 26.x. |
-| Fabric | Every stable Fabric game version. `latest` follows new releases. | Same as vanilla |
-| Forge | 1.16.5 (36.2.39), 1.12.2 (14.23.5.2859), 1.7.10 (10.13.4.1614) | 8 |
+| Vanilla | Every release from **1.2.5** to the newest, and every snapshot and pre-release, from Mojang's version manifest. `latest` follows new releases. Older versions (1.0 to 1.2.4, Beta, Alpha) have no official server download. | From Mojang's `javaVersion`. The fallback is 8 below 1.17, 17 up to 1.20.4, 21 up to 1.21.x, and 25 for 26.x. |
+| Fabric | Every Fabric game version (1.14 on), snapshots included. `latest` follows new releases. | Same as vanilla |
+| Forge | Every version with a working Forge server installer (**1.6.1** to the newest, except 1.7.2, which needs Java 7), from Forge's promotions list. 1.16.5 (36.2.39), 1.12.2 (14.23.5.2859) and 1.7.10 (10.13.4.1614) use pinned, tested builds. An installed Forge keeps its build. | 8 below 1.17, otherwise same as vanilla |
 | Modpack | Modrinth `.mrpack` or server `.zip` with a Fabric or Forge loader. A pack's own Forge version is honoured. NeoForge and Quilt packs aren't supported yet. | Chosen from the pack's Minecraft version |
 
 - 1.0 to 1.2.4 never had an official server download, so they aren't offered.

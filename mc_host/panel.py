@@ -846,10 +846,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             raise ApiError(400, "invalid_version", "That Minecraft version doesn't look right.")
         if version == "latest" and server_type == "forge":
             raise ApiError(400, "invalid_version", "Pick a specific Minecraft version for Forge.")
-        if server_type == "forge" and version not in installer.FORGE_BUILDS:
+        if server_type == "forge" and not ix.forge_supported(version):
             raise ApiError(
                 400, "invalid_version",
-                f"Forge is available for {', '.join(installer.FORGE_BUILDS)}.",
+                f"Forge has no server installer for Minecraft {version}. Pick another version.",
             )
         name = _str(data, "name")
         if len(name) > ix.SETUP_NAME_MAX:

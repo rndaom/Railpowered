@@ -34,6 +34,38 @@ class VersionParsingTests(unittest.TestCase):
         self.assertEqual(keys, ["1.9", "1.20.4", "1.20.5-pre1", "1.20.5", "26.1"])
 
 
+class SnapshotVersionTests(InstallerTestCase):
+    def setUp(self):
+        super().setUp()
+        timeline = [("1.20.4", "release"), ("24w14a", "snapshot"), ("1.20.5-pre1", "snapshot"),
+                    ("1.20.5", "release"), ("26.4-snapshot-1", "snapshot")]
+        self.net.add(installer.MANIFEST_URL, {
+            "latest": {"release": "1.20.5", "snapshot": "26.4-snapshot-1"},
+            "versions": [
+                {"id": vid, "type": kind, "url": f"https://piston-meta.mojang.com/v1/packages/{vid}.json",
+                 "releaseTime": f"2024-0{i + 1}-01T00:00:00+00:00"}
+                for i, (vid, kind) in reversed(list(enumerate(timeline)))
+            ],
+        })
+        installer.latest_release()  # caches the manifest
+
+    def test_weekly_snapshots_take_the_release_they_lead_to(self):
+        self.assertEqual(installer.parse_version("24w14a"), (1, 20, 5))
+        self.assertTrue(installer.is_snapshot("24w14a"))
+        self.assertFalse(installer.is_snapshot("1.20.4"))
+        self.assertEqual(installer.required_java("24w14a"), 21)
+        self.assertTrue(installer.uses_json_lists("24w14a"))
+        self.assertEqual(installer.parse_version("26.4-snapshot-1"), (26, 4, 0))
+
+    def test_snapshots_sort_in_release_order(self):
+        keys = sorted(["1.20.5", "1.20.5-pre1", "24w14a", "1.20.4"], key=installer.version_key)
+        self.assertEqual(keys, ["1.20.4", "24w14a", "1.20.5-pre1", "1.20.5"])
+
+    def test_unknown_weekly_id_is_not_a_version(self):
+        with self.assertRaises(installer.InstallError):
+            installer.parse_version("99w99z")
+
+
 class JavaSelectionTests(InstallerTestCase):
     def test_fallback_table(self):
         cases = {
@@ -149,14 +181,55 @@ class AvailableVersionsTests(InstallerTestCase):
         )
         result = installer.list_available_versions()
         ids = [v["id"] for v in result["vanilla"]]
-        self.assertEqual(ids, ["26.3", "1.21.1", "1.20.1", "1.12.2", "1.7.10", "1.2.5"])
+        self.assertEqual(ids, ["26.4-snapshot-1", "26.3", "1.21.1", "1.20.1", "1.12.2", "1.7.10", "1.2.5"])
         self.assertNotIn("1.0", ids)  # no official server jar
-        self.assertEqual(result["vanilla"][0]["label"], "26.3 (latest)")
-        self.assertEqual([v["id"] for v in result["fabric"]], ["26.3", "1.20.1"])
+        self.assertEqual(result["vanilla"][1]["label"], "26.3 (latest)")
+        self.assertTrue(result["vanilla"][0]["snapshot"])
+        self.assertNotIn("snapshot", result["vanilla"][1])
+        self.assertEqual([v["group"] for v in result["vanilla"][:3]], ["26.x", "26.x", "1.21.x"])
+        self.assertEqual([v["id"] for v in result["fabric"]], ["26.4-snapshot-1", "26.3", "1.20.1"])
         self.assertEqual(result["latest"], "26.3")
-        self.assertFalse(result["snapshots"])
-        self.assertFalse(result["offline"])
+        self.assertTrue(result["snapshots"])
+        self.assertTrue(result["offline"])  # Forge's list was unreachable
         self.assertEqual({f["id"] for f in result["forge"]}, set(installer.FORGE_BUILDS))
+
+    def test_forge_lists_every_version_with_an_installer(self):
+        self.manifest(latest="26.3", releases=("26.3", "1.20.1", "1.16.5", "1.12.2", "1.7.10", "1.7.2", "1.6.4", "1.5.2"))
+        self.net.add(f"{installer.FABRIC_META_URL}/versions/game", [{"version": "26.3", "stable": True}])
+        self.net.add(installer.FORGE_PROMOS_URL, {"promos": {
+            "26.3-latest": "66.0.13",
+            "1.20.1-latest": "47.4.12", "1.20.1-recommended": "47.4.10",
+            "1.16.5-recommended": "36.2.34",  # FORGE_BUILDS pins a tested build instead
+            "1.7.2-latest": "10.12.2.1161",  # crashes on Java 8
+            "1.6.4-recommended": "9.11.1.1345",
+            "1.5.2-latest": "7.8.1.738",  # no server installer that old
+            "26.4-snapshot-1-latest": "67.0.0",  # not a release
+        }})
+        result = installer.list_available_versions()
+        forge = {f["id"]: f["forge_version"] for f in result["forge"]}
+        self.assertEqual(list(forge), ["26.3", "1.20.1", "1.16.5", "1.12.2", "1.7.10", "1.6.4"])
+        self.assertEqual(forge["1.20.1"], "47.4.10")
+        self.assertEqual(forge["1.16.5"], installer.FORGE_BUILDS["1.16.5"])
+        self.assertEqual(result["forge"][0]["label"], "26.3 (Forge 66.0.13)")
+        self.assertFalse(result["offline"])
+        self.assertTrue(installer.forge_supported("1.20.1"))
+        self.assertFalse(installer.forge_supported("1.5.2"))
+        self.assertFalse(installer.forge_supported("1.7.2"))
+        self.assertEqual(installer.forge_build_for("26.3"), "66.0.13")
+
+    def test_forge_check_without_any_list(self):
+        self.assertTrue(installer.forge_supported("1.18.2", network=False))
+        self.assertFalse(installer.forge_supported("1.5.2", network=False))
+        self.assertFalse(installer.forge_supported("1.7.2", network=False))
+
+    def test_legacy_forge_universal_jar_is_found(self):
+        directory = self.path("instances", "forge-1.6.4")
+        os.makedirs(directory)
+        for name in ("minecraft_server.1.6.4.jar", "minecraftforge-universal-1.6.4-9.11.1.1345.jar",
+                     "forge-1.6.4-9.11.1.1345-installer.jar"):
+            open(os.path.join(directory, name), "wb").close()
+        self.assertTrue(installer._find_forge_launch(directory, "1.6.4").endswith(
+            "minecraftforge-universal-1.6.4-9.11.1.1345.jar"))
 
     def test_offline_list_still_works(self):
         self.vanilla_jar("1.19.2")
@@ -316,6 +389,29 @@ class LoaderInstallTests(InstallerTestCase):
         self.assertTrue(installer._install_complete(dest, "forge", "1.7.10", "10.13.4.1614-1.7.10"))
         jar, prefix = installer._modpack_launch(dest, "1.7.10")
         self.assertTrue(jar.endswith("-universal.jar"))
+
+
+    def test_forge_finds_the_maven_spelling_and_seeds_old_vanilla_jars(self):
+        # Forge's promotions say 11.14.4.1563 for 1.8; maven has it without the -1.8 suffix.
+        self.vanilla_jar("1.8")
+        self.net.add(installer.FORGE_PROMOS_URL, {"promos": {"1.8-recommended": "11.14.4.1563"}})
+        url = installer._forge_url("1.8-11.14.4.1563")
+        self.net.add(url, b"forge-installer")
+        self.net.add(url + ".sha1", sha1(b"forge-installer"))
+        dest = installer.install_forge("1.8")
+        self.assertIn(url, self.net.calls)
+        self.assertTrue(os.path.isfile(os.path.join(dest, "minecraft_server.1.8.jar")))
+        self.assertTrue(self.runs[0][0][0].startswith(self.java_homes[8]))
+
+    def test_installed_forge_keeps_its_build_after_a_new_promotion(self):
+        self.vanilla_jar("1.12.2")
+        self.net.add(installer._forge_installer_url("1.12.2"), b"forge-installer")
+        dest = installer.install_forge("1.12.2")
+        marker = installer._read_install_marker(dest)
+        with mock.patch.dict(installer.FORGE_BUILDS, {"1.12.2": "14.23.5.9999"}):
+            self.assertEqual(installer.install_forge("1.12.2"), dest)
+        self.assertEqual(len(self.runs), 1)
+        self.assertEqual(installer._read_install_marker(dest)["loader_version"], marker["loader_version"])
 
 
 class Log4ShellTests(InstallerTestCase):

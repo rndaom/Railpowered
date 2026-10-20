@@ -99,7 +99,7 @@ Useful variables while developing:
 | `PORT` | `8080` | Dashboard port. |
 | `AUTO_START` | `false` | Start Minecraft at boot instead of on the first join. |
 | `MINECRAFT_VERSION` | `latest` | First boot only: the version of the first setup. |
-| `SERVER_TYPE` | `vanilla` | First boot only: `vanilla`, `fabric` or `forge` (Forge needs a pinned `MINECRAFT_VERSION`: 1.16.5, 1.12.2 or 1.7.10). |
+| `SERVER_TYPE` | `vanilla` | First boot only: `vanilla`, `fabric` or `forge` (Forge needs a specific `MINECRAFT_VERSION`, 1.6.1 or newer). |
 | `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft sleeps (`0` = never, at most `86400`: the dashboard allows up to one day). |
 | `START_TIMEOUT` | `900` | Seconds a start may take before Minecraft is stopped and reported as crashed (`0` = no limit; at least `120`, at most `21600`). |
 | `MC_MAX_MEMORY` / `MC_MIN_MEMORY` | `auto` / `256M` | Java heap limits. |
