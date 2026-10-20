@@ -41,7 +41,7 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 
 **Server**
 
-- **Wake on join.** While asleep, a sleep proxy owns port 25565. It answers the server list with your real MOTD and version, and a real login attempt wakes the server. A server-list ping never does.
+- **Wake on join.** While asleep, a sleep proxy owns port 25565. It answers the server list with your real MOTD and version, and a real login attempt wakes the server. A server-list ping never does. If a wake ends with nobody actually joining (a scanner, or a friend who gave up), joins stop waking the server for 15 minutes, then for an hour after each further empty wake; a player joining or a press of **Start** ends the pause.
 - **Sleep when empty.** After 10 minutes with nobody online (configurable, or off), Minecraft saves and stops.
 - **Start, stop, restart, save** from the dashboard, plus a live log and a **console** for server commands.
 - **Graceful shutdown on redeploy.** `SIGTERM` runs `save-all flush` and `stop` inside Railway's 60-second draining window.
@@ -113,7 +113,7 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 ## Quick start
 
 1. **Click [Deploy on Railway](https://railway.com/new/template/AGX0Mu?utm_medium=integration&utm_source=button&utm_campaign=railpowered).**
-2. **Set `ADMIN_KEY`** on the Deploy form. This is your dashboard password, so make it a long passphrase (four or more random words, or 20+ characters). Anyone who has it controls the server.
+2. **Keep or replace `ADMIN_KEY`** on the Deploy form. This is your dashboard password. The template fills in a random 32-character key (you can read it later in the service's Variables); if you type your own, make it a long passphrase (four or more random words, or 20+ characters). Anyone who has it controls the server.
 3. **Deploy.** The template creates one service with a volume at `/server/data`, a TCP proxy for Minecraft and a public HTTPS domain for the dashboard. The dashboard comes up within seconds, and the first Minecraft download runs in the background.
 4. **Open the service's public URL** and sign in with your `ADMIN_KEY`.
 5. **Copy the join address** from the Overview (it comes from Railway's TCP proxy and looks like `something.proxy.rlwy.net:12345`) and send it to your friends.
@@ -188,7 +188,7 @@ stateDiagram-v2
 
 | Phase | Meaning |
 |---|---|
-| `sleeping` | Minecraft is down. The sleep proxy owns 25565, and a login wakes it. |
+| `sleeping` | Minecraft is down. The sleep proxy owns 25565, and a login wakes it (unless wakes are paused after an empty wake; the Overview then shows when joins wake it again). |
 | `preparing` | A background task is installing or downloading. Joins are told to try again shortly. |
 | `starting` | The JVM is up but hasn't finished loading the world. |
 | `online` | Minecraft printed `Done (…)`, so players can join. The idle timer runs while nobody is online. |
@@ -212,7 +212,9 @@ Most settings live in the dashboard and are stored on the volume. Railway variab
 
 | Variable | Default | What it does |
 |---|---|---|
-| `ADMIN_KEY` | *required* | Dashboard password. Use a long passphrase. Changing it signs everyone out. If it's unset, a random key is generated, saved on the volume (`.admin-key`) and printed **once** in the deploy log. A key shorter than 12 characters triggers a warning. |
+| `ADMIN_KEY` | *required* | Dashboard password. Use a long passphrase. Changing it signs everyone out. If it's unset, a random key is generated, saved on the volume (`.admin-key`) and printed **once** in the deploy log. A weak key (shorter than 12 characters, fewer than 5 different characters, or a well-known password) is refused: the key on the volume is used instead, the deploy log says so loudly and the dashboard shows a banner until you fix it. |
+| `ALLOW_WEAK_ADMIN_KEY` | `false` | `1` accepts a weak `ADMIN_KEY` anyway (not recommended). |
+| `TOTP_SECRET` | *unset* | Optional second sign-in factor. A base32 secret (16+ characters) shared with an authenticator app; the sign-in page then also asks for its 6-digit code. See [Security](#security). |
 | `PORT` | `8080` | Dashboard port. Keep `8080` so Railway's health check and HTTP domain reach it. Ignored if it equals 25565. |
 | `MINECRAFT_VERSION` | `latest` | **First boot only:** the version of the first setup (`latest`, or a version such as `1.21.1`). After that, change versions from the Setups page. A later change is noted in the log and otherwise ignored. |
 | `SERVER_TYPE` | `vanilla` | **First boot only:** `vanilla`, `fabric` or `forge`. Forge needs `MINECRAFT_VERSION` set to `1.16.5`, `1.12.2` or `1.7.10`. Add modpacks from the dashboard. |
@@ -301,13 +303,15 @@ The dashboard sits on a public URL and the join address is easy to scan for. Rai
 
 - **Sessions:** signed `HttpOnly` cookies (`__Host-` prefixed and `Secure` over HTTPS, `SameSite=Lax`) that last 30 days. They're keyed to a secret on the volume plus `ADMIN_KEY`, so changing the key signs everyone out. Signing out revokes the session for good, even across restarts, and **Sign out everywhere** (in the sidebar) revokes every session at once, this browser's included.
 - **CSRF:** every state-changing API request must carry the `X-Railpowered: 1` header and pass a same-origin check.
-- **Sign-in limits:** 10 failed attempts per address per 10 minutes. A flood of failures from many addresses slows every sign-in down instead of locking you out. The key is compared in constant time.
+- **Sign-in limits:** 10 failed attempts per address per 10 minutes. Past 60 failures from all addresses, sign-ins go through a slow lane: one key check every 3 seconds, at most two waiting, and everyone else is told "Too many attempts" at once. A wait that times out counts as a failure. During such a flood new sign-ins may be refused, but browsers that are already signed in keep working: some connections are kept for requests with a valid session (and some for `/health`). The key is compared in constant time.
+- **Optional authenticator codes:** set `TOTP_SECRET` and the sign-in page also asks for a 6-digit code from an authenticator app (RFC 6238: SHA-1, 30-second steps; the previous and next code are accepted for clock drift, and each code works once). A wrong key and a wrong code read the same and count the same toward the limits. If `TOTP_SECRET` isn't a valid base32 secret, every sign-in is refused (and the deploy log says why) rather than quietly dropping the second factor.
 - **Headers:** a strict Content Security Policy (no inline scripts), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin`, and `Cache-Control: no-store` on API responses.
 - **Least privilege:** Minecraft and the manager run as an unprivileged `minecraft` user. `ADMIN_KEY` and other secrets are removed from the JVM's environment. Names of worlds, setups and packs are validated, and every delete is checked to stay inside the volume. Modpack downloads are limited to public addresses, with size limits on downloads and extraction.
 
 **What you should do:**
 
 - Use a **long `ADMIN_KEY`**, and keep Railway variables and logs private.
+- For a **second factor**, create a secret with `python3 -c "import base64,os; print(base64.b32encode(os.urandom(20)).decode())"`, add it to your authenticator app (manual entry, time-based), then set it as `TOTP_SECRET` in the service's Variables. Removing the variable turns the second factor off again.
 - **Turn on the whitelist** (Players page) for a private server. Without it, anyone with a Minecraft account who finds the address can join.
 - **Keep online mode on.** With it off, anyone can join under any name, an operator's included. Old versions (1.6.4 and older) always run offline, so use the whitelist there.
 - **Only install mods and modpacks you trust.** They run with the same permissions as the dashboard.

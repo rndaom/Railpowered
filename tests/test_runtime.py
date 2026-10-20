@@ -47,8 +47,8 @@ class RailwayRuntimeConfigTests(unittest.TestCase):
             resolve_public_address(
                 {
                     "MC_PUBLIC_ADDRESS": "play.example:25565",
-                    "RAILWAY_TCP_PROXY_DOMAIN": "x.proxy.rlwy.net",
-                    "RAILWAY_TCP_PROXY_PORT": "11105",
+                    "RAILWAY_TCP_PROXY_DOMAIN": "example.proxy.rlwy.net",
+                    "RAILWAY_TCP_PROXY_PORT": "12345",
                 }
             ),
             "play.example:25565",
@@ -60,11 +60,11 @@ class RailwayRuntimeConfigTests(unittest.TestCase):
         self.assertEqual(
             resolve_public_address(
                 {
-                    "RAILWAY_TCP_PROXY_DOMAIN": "roundhouse.proxy.rlwy.net",
-                    "RAILWAY_TCP_PROXY_PORT": "11105",
+                    "RAILWAY_TCP_PROXY_DOMAIN": "example.proxy.rlwy.net",
+                    "RAILWAY_TCP_PROXY_PORT": "12345",
                 }
             ),
-            "roundhouse.proxy.rlwy.net:11105",
+            "example.proxy.rlwy.net:12345",
         )
 
     def test_public_address_ignores_unevaluated_template(self):
@@ -74,11 +74,11 @@ class RailwayRuntimeConfigTests(unittest.TestCase):
             resolve_public_address(
                 {
                     "MC_PUBLIC_ADDRESS": "${{Minecraft.RAILWAY_TCP_PROXY_DOMAIN}}",
-                    "RAILWAY_TCP_PROXY_DOMAIN": "host.proxy.rlwy.net",
-                    "RAILWAY_TCP_PROXY_PORT": "2000",
+                    "RAILWAY_TCP_PROXY_DOMAIN": "example.proxy.rlwy.net",
+                    "RAILWAY_TCP_PROXY_PORT": "12345",
                 }
             ),
-            "host.proxy.rlwy.net:2000",
+            "example.proxy.rlwy.net:12345",
         )
 
     def test_web_port_ignores_minecraft_port_collision(self):
@@ -100,9 +100,9 @@ class RailwayRuntimeConfigTests(unittest.TestCase):
             second, again_from_env = resolve_admin_key(tmp.name, {})
             self.assertFalse(again_from_env)
             self.assertEqual(first, second)
-            chosen, env_set = resolve_admin_key(tmp.name, {"ADMIN_KEY": "chosen-key"})
+            chosen, env_set = resolve_admin_key(tmp.name, {"ADMIN_KEY": "chosen-key-4-the-test"})
             self.assertTrue(env_set)
-            self.assertEqual(chosen, "chosen-key")
+            self.assertEqual(chosen, "chosen-key-4-the-test")
         finally:
             tmp.cleanup()
 

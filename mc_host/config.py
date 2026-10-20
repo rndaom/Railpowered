@@ -20,6 +20,25 @@ APP_VERSION = "2.0.0"
 ADMIN_KEY_FILE = ".admin-key"
 SESSION_SECRET_FILE = ".session-secret"
 MIN_RECOMMENDED_KEY_LENGTH = 12
+# An ADMIN_KEY shorter than MIN_RECOMMENDED_KEY_LENGTH, made of very few
+# different characters, or on this list (compared case-insensitively) is
+# refused at boot unless ALLOW_WEAK_ADMIN_KEY=1. Keys shorter than 12
+# characters are refused anyway, so the list only needs longer ones.
+COMMON_KEYS = frozenset({
+    "123456789012", "1234567890123", "12345678901234", "123456789123",
+    "1q2w3e4r5t6y", "1qaz2wsx3edc", "abc123456789", "abcdefghijkl",
+    "qwertyuiop12", "qwertyuiop123", "qwertyuiopasdf", "qwertyuiopasdfgh",
+    "asdfghjkl123", "zxcvbnm12345", "password1234", "password12345",
+    "password123456", "passwordpassword", "password!123", "p@ssw0rd1234",
+    "letmein12345", "iloveyou1234", "welcome12345", "changeme1234",
+    "changemenow!", "administrator", "administrator1", "adminadmin12",
+    "adminpassword", "admin1234567", "superadmin123", "trustno1trustno1",
+    "minecraft123", "minecraft1234", "minecraft12345", "minecraftserver",
+    "minecraftadmin", "minecraft2024", "minecraft2025", "minecraft2026",
+    "railpowered1", "railpowered123", "railpowered2026", "railwayapp123",
+    "dev-only-passphrase", "correcthorsebatterystaple",
+    "correct horse battery staple", "correct-horse-battery-staple",
+})
 
 CONFIG_WARNINGS: list[str] = []
 
@@ -111,17 +130,41 @@ def _read_secret_file(path: str) -> str:
         return ""
 
 
+def weak_key_reason(key: str) -> str | None:
+    """Why ``key`` is too easy to guess, or None."""
+    if len(key) < MIN_RECOMMENDED_KEY_LENGTH:
+        return f"it is shorter than {MIN_RECOMMENDED_KEY_LENGTH} characters"
+    if len(set(key)) < 5:
+        return "it uses fewer than 5 different characters"
+    if key.lower() in COMMON_KEYS:
+        return "it is a common password"
+    return None
+
+
+def refused_admin_key(env: Mapping[str, str] | None = None) -> str | None:
+    """Why the ADMIN_KEY variable is being ignored, or None when it is used
+    (or unset). ALLOW_WEAK_ADMIN_KEY=1 accepts a weak key anyway."""
+    environ = os.environ if env is None else env
+    env_key = str(environ.get("ADMIN_KEY", "")).strip()
+    if not env_key or _unevaluated_template(env_key):
+        return None
+    if str(environ.get("ALLOW_WEAK_ADMIN_KEY", "")).strip().lower() in _TRUE:
+        return None
+    return weak_key_reason(env_key)
+
+
 def load_or_create_admin_key(
     data_dir: str, env: Mapping[str, str] | None = None
 ) -> tuple[str, str]:
     """Return (key, source); source is "env", "volume" or "generated".
 
     "generated" is returned only by the call that actually created the file,
-    so the caller can show the key exactly once.
+    so the caller can show the key exactly once. A weak ADMIN_KEY (see
+    refused_admin_key) is ignored in favour of the key on the volume.
     """
     environ = os.environ if env is None else env
     env_key = str(environ.get("ADMIN_KEY", "")).strip()
-    if env_key and not _unevaluated_template(env_key):
+    if env_key and not _unevaluated_template(env_key) and refused_admin_key(environ) is None:
         return env_key, "env"
     path = os.path.join(data_dir, ADMIN_KEY_FILE)
     stored = _read_secret_file(path)
@@ -154,7 +197,8 @@ def admin_key_info() -> tuple[str, str]:
     data_dir = installer.DATA_DIR
     with _admin_lock:
         env_key = str(os.environ.get("ADMIN_KEY", "")).strip()
-        cache_key = f"{data_dir}\0{env_key}"
+        allow_weak = str(os.environ.get("ALLOW_WEAK_ADMIN_KEY", "")).strip().lower()
+        cache_key = f"{data_dir}\0{env_key}\0{allow_weak}"
         cached = _admin_cache.get(cache_key)
         if cached is None:
             cached = load_or_create_admin_key(data_dir)

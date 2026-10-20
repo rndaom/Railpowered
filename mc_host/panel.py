@@ -39,7 +39,7 @@ GENERIC_500 = "Something went wrong on the server. The log has the details."
 # body; past it the connection is shut. Uploads instead must keep moving at
 # least UPLOAD_MIN_BYTES per UPLOAD_WINDOW seconds.
 REQUEST_DEADLINE = 15.0
-HEALTH_DEADLINE = 5.0  # connections on the slots kept for /health
+HEALTH_DEADLINE = 5.0  # connections on the slots kept for /health and signed-in requests
 UPLOAD_WINDOW = 20.0
 UPLOAD_MIN_BYTES = 64 * 1024
 HSTS = "max-age=31536000"  # no includeSubDomains: custom domains may have siblings
@@ -82,37 +82,46 @@ _BACKUP_WORLD = re.compile(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.g
 class PanelServer(ThreadingHTTPServer):
     """ThreadingHTTPServer with a cap on concurrent connections.
 
-    The last ``health_slots`` connections only serve /health (with a short
-    deadline), so a flood of slow requests can't fail Railway's health
-    check; one client (last X-Forwarded-For hop) can have at most
-    ``per_client`` requests in progress."""
+    When the general slots are full, the next ``session_slots`` connections
+    only serve requests with a valid session cookie (and /health), and the
+    last ``health_slots`` only serve /health; both get a short deadline for
+    their headers. So a flood of slow or anonymous requests can't lock a
+    signed-in owner out or fail Railway's health check. One client (last
+    X-Forwarded-For hop) can have at most ``per_client`` requests in
+    progress."""
 
     daemon_threads = True
     allow_reuse_address = os.name != "nt"
     request_queue_size = 64
     max_connections = 64
     health_slots = 8
+    session_slots = 8
     per_client = 16
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._slots = threading.BoundedSemaphore(self.max_connections - self.health_slots)
-        self._health = threading.BoundedSemaphore(self.health_slots)
-        self._reserved: set[int] = set()
+        general = self.max_connections - self.health_slots - self.session_slots
+        if general < 1:
+            raise ValueError("max_connections must leave at least one general slot")
+        self._pools = {
+            "general": threading.BoundedSemaphore(general),
+            "session": threading.BoundedSemaphore(self.session_slots) if self.session_slots else None,
+            "health": threading.BoundedSemaphore(self.health_slots) if self.health_slots else None,
+        }
+        self._reserved: dict[int, str] = {}
         self._clients: dict[str, int] = {}
         self._clients_lock = threading.Lock()
 
     def process_request(self, request: Any, client_address: Any) -> None:
-        if self._slots.acquire(blocking=False):
-            reserved = False
-        elif self._health.acquire(blocking=False):
-            reserved = True
+        for pool, slots in self._pools.items():
+            if slots is not None and slots.acquire(blocking=False):
+                break
         else:
             self.shutdown_request(request)
             return
-        with self._clients_lock:
-            if reserved:
-                self._reserved.add(id(request))
+        if pool != "general":
+            with self._clients_lock:
+                self._reserved[id(request)] = pool
         try:
             super().process_request(request, client_address)
         except Exception:
@@ -127,13 +136,13 @@ class PanelServer(ThreadingHTTPServer):
 
     def _release(self, request: Any) -> None:
         with self._clients_lock:
-            reserved = id(request) in self._reserved
-            self._reserved.discard(id(request))
-        (self._health if reserved else self._slots).release()
+            pool = self._reserved.pop(id(request), "general")
+        self._pools[pool].release()
 
-    def health_only(self, request: Any) -> bool:
+    def slot_kind(self, request: Any) -> str:
+        """"general", "session" (signed-in requests and /health) or "health"."""
         with self._clients_lock:
-            return id(request) in self._reserved
+            return self._reserved.get(id(request), "general")
 
     def client_enter(self, ip: str) -> bool:
         with self._clients_lock:
@@ -315,9 +324,9 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     # -- deadlines -------------------------------------------------------------
     def handle_one_request(self) -> None:
-        health_only = getattr(self.server, "health_only", None)
-        self._health_only = bool(health_only and health_only(self.request))
-        self._arm(HEALTH_DEADLINE if self._health_only else REQUEST_DEADLINE)
+        slot_kind = getattr(self.server, "slot_kind", None)
+        self._slot = slot_kind(self.request) if slot_kind else "general"
+        self._arm(REQUEST_DEADLINE if self._slot == "general" else HEALTH_DEADLINE)
         try:
             super().handle_one_request()
         except OSError:
@@ -402,7 +411,8 @@ class PanelHandler(BaseHTTPRequestHandler):
         path = url.path or "/"
         self.query = parse_qs(url.query, keep_blank_values=True)
         is_api = path.startswith("/api/")
-        if getattr(self, "_health_only", False) and path != "/health":
+        slot = getattr(self, "_slot", "general")
+        if path != "/health" and (slot == "health" or (slot == "session" and not self._authed())):
             self.close_connection = True
             self._fail(is_api, 503, "busy", "The dashboard is busy. Try again in a moment.")
             return
@@ -624,7 +634,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._redirect("/")
                 return
             error = (self.query.get("error") or [""])[0]
-            self._html(web.login_page(error))
+            self._html(web.login_page(error, totp=auth.second_factor.enabled()))
             return
         if path in ("/login", "/api/login") and method == "POST":
             self._login()
@@ -677,6 +687,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         form = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
         key = (form.get("key") or [""])[0]
+        code = (form.get("code") or [""])[0]
         # Reserve the attempt (after the body: a slow body holds no reservation).
         verdict, ticket = auth.limiter.begin(ip)
         if verdict == "limited":
@@ -684,12 +695,15 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
 
         def check() -> bool:
-            return bool(key) and auth.sessions.check_key(key)
+            if not key or not auth.sessions.check_key(key):
+                return False
+            # The code is only looked at once the key is right, so a wrong
+            # key can't use up a code. Either one wrong is the same failure.
+            return not auth.second_factor.enabled() or auth.second_factor.check(code)
 
         if verdict == "slow":
-            ok = auth.limiter.slow_lane(check)
+            ok = auth.limiter.slow_lane(ip, ticket, check)
             if ok is None:
-                auth.limiter.cancel(ip, ticket)
                 self._redirect("/login?error=rate", 303)
                 return
         else:
@@ -697,14 +711,14 @@ class PanelHandler(BaseHTTPRequestHandler):
         if ok:
             auth.limiter.succeed(ip, ticket)
             token = auth.sessions.issue()
-            state.add_log(f"Dashboard login from {ip}")
+            state.add_log(f"Dashboard login from {auth.loggable_ip(ip)}")
             secure = self._cookie_secure()
             cookies = [auth.sessions.cookie_header(token, secure)]
             if secure:  # the pre-__Host- cookie, if any, goes
                 cookies.append(f"{auth.COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure")
             self._redirect("/", 303, cookies)
             return
-        state.add_log(f"Failed dashboard login from {ip}", "warn")
+        state.add_log(f"Failed dashboard login from {auth.loggable_ip(ip)}", "warn")
         target = "/login?error=rate" if auth.limiter.limited(ip) else "/login?error=1"
         self._redirect(target, 303)
 
@@ -728,7 +742,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         """Sign out every browser, this one included (kept across restarts)."""
         self._json_body()
         auth.sessions.revoke_all()
-        state.add_log(f"All dashboard sessions were signed out from {self._client_ip()}.", "warn")
+        state.add_log(f"All dashboard sessions were signed out from {auth.loggable_ip(self._client_ip())}.", "warn")
         body = json.dumps({"ok": True}).encode("utf-8")
         self._send(
             200, body, "application/json; charset=utf-8",
@@ -1453,7 +1467,20 @@ def build_status() -> dict[str, Any]:
         "product": installer.APP_NAME,
         "app_version": config.APP_VERSION,
         "max_upload_bytes": installer.max_upload_bytes(),
+        "admin_key_warning": _admin_key_warning(),
     }
+
+
+def _admin_key_warning() -> str | None:
+    """Shown as a banner on every dashboard page while ADMIN_KEY is refused."""
+    refused = config.refused_admin_key()
+    if not refused:
+        return None
+    return (
+        f"The ADMIN_KEY variable is being ignored because {refused}, so you're signed in "
+        "with the key saved on the volume. Set ADMIN_KEY to a long random value in the "
+        "service's Variables on Railway (the template's ${{secret(32)}} works) and redeploy."
+    )
 
 
 def cached_versions() -> dict[str, Any]:

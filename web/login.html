@@ -62,6 +62,8 @@
                 Can't find it? Set <code>ADMIN_KEY</code> under Variables; Railway redeploys, and you sign in with that.
               </p>
             </div>
+            <!-- The server puts the authenticator code field here when TOTP_SECRET is set. -->
+            {{totp}}
             <button class="btn btn-primary btn-lg btn-block" type="submit" id="login-submit">
               <span>Sign in</span>
               <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg>

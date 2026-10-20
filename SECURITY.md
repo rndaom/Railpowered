@@ -44,8 +44,18 @@ share and to scan for, so a few habits matter:
 - **Use a long `ADMIN_KEY`.** Four or more random words, or 20+ random
   characters. Anyone with the key controls your server, including uploading
   modpacks that run code. Failed sign-ins are limited per address, and a
-  flood of them from many addresses slows every sign-in down (it never locks
-  you out), but a short or reused key is still the weakest point.
+  flood of them from many addresses puts every sign-in into a short, slow
+  queue. While such a flood lasts, new sign-ins (yours too) may be refused
+  with "Too many attempts"; browsers that are already signed in keep working,
+  because some connections are kept for them. A short or reused key is still
+  the weakest point, so Railpowered refuses a key that is shorter than 12
+  characters or a well-known password (and uses the key saved on the volume
+  instead) unless you set `ALLOW_WEAK_ADMIN_KEY=1`.
+- **Add a second factor if you like.** Set `TOTP_SECRET` to a base32 secret
+  that you also add to an authenticator app, and signing in needs the app's
+  6-digit code as well as the key. A malformed secret refuses every sign-in
+  instead of silently turning the second factor off; fix or remove the
+  variable to get back in.
 - **Know where a generated key appears.** If `ADMIN_KEY` is not set,
   Railpowered generates one, saves it on the volume and prints it in the
   Railway deploy logs, which everyone in your Railway project can read. Set

@@ -1,4 +1,5 @@
-"""Dashboard authentication: signed session cookies, logout, login rate limits.
+"""Dashboard authentication: signed session cookies, logout, login rate limits,
+and optional time-based one-time codes (TOTP_SECRET, RFC 6238).
 
 Cookie `__Host-rp_session` (over https; `rp_session` on a local http
 address) = "v1.<issued_unix>.<nonce>.<hmac>". The HMAC key is
@@ -10,12 +11,16 @@ volume (.session-revoked.json) so a restart doesn't bring sessions back.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import collections
 import hashlib
 import hmac
 import ipaddress
 import os
+import re
 import secrets
+import struct
 import threading
 import time
 from typing import Any, Callable
@@ -31,14 +36,20 @@ CLOCK_SKEW = 300
 FAILURE_WINDOW = 600
 MAX_FAILURES_PER_IP = 10
 MAX_FAILURES_GLOBAL = 60
-# Past the global ceiling, logins are not refused: key checks queue up and
-# run one every SLOW_LANE_DELAY seconds across all clients (a caller waits at
-# most SLOW_LANE_WAIT for its turn). Distributed guessing stays slow and the
-# owner still gets in.
+# Past the global ceiling, key checks go through a slow lane: one check every
+# SLOW_LANE_DELAY seconds across all clients, with at most SLOW_LANE_QUEUE
+# callers waiting (each for at most SLOW_LANE_WAIT). Anyone past that gets an
+# immediate "too many attempts", so a flood can't tie up the dashboard's
+# connections, and a wait that times out counts as a failed attempt.
 SLOW_LANE_DELAY = 3.0
-SLOW_LANE_WAIT = 30.0
+SLOW_LANE_WAIT = 10.0
+SLOW_LANE_QUEUE = 2
 REVOKED_FILE = ".session-revoked.json"
 MAX_REVOKED = 500
+TOTP_STEP = 30
+TOTP_DIGITS = 6
+TOTP_DRIFT = 1  # steps either side of now, for clocks that are a little off
+TOTP_MIN_SECRET_BYTES = 10  # 16 base32 characters, what authenticator apps make
 
 
 def client_ip(peer: str, forwarded_for: str | None) -> str:
@@ -69,9 +80,18 @@ def is_local_host(host_header: str | None) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
+def loggable_ip(value: str) -> str:
+    """``value`` when it parses as an IP address, else a placeholder, so a
+    forged X-Forwarded-For can't write arbitrary text into the log."""
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return "an unrecognised address"
+
+
 class RateLimiter:
     """Login attempts: a hard per-IP limit, and a global ceiling that turns
-    into a slow lane instead of locking everyone (the owner too) out.
+    into a short, bounded slow lane.
 
     begin() reserves an attempt atomically (counted as a failure unless
     succeed() or cancel() follows), so concurrent guesses can't all slip
@@ -85,6 +105,7 @@ class RateLimiter:
         clock: Callable[[], float] = time.monotonic,
         slow_delay: float = SLOW_LANE_DELAY,
         slow_wait: float = SLOW_LANE_WAIT,
+        slow_queue: int = SLOW_LANE_QUEUE,
     ) -> None:
         self.per_ip = per_ip
         self.global_limit = global_limit
@@ -92,6 +113,8 @@ class RateLimiter:
         self.clock = clock
         self.slow_delay = slow_delay
         self.slow_wait = slow_wait
+        self.slow_queue = slow_queue
+        self._waiting = 0
         self._lock = threading.Lock()
         self._slow = threading.Lock()
         self._by_ip: dict[str, collections.deque[float]] = {}
@@ -150,9 +173,23 @@ class RateLimiter:
         with self._lock:
             self._drop(ip, ticket)
 
-    def slow_lane(self, check: Callable[[], bool]) -> bool | None:
-        """Run ``check`` in the global slow lane; None when it never got a turn."""
-        if not self._slow.acquire(timeout=self.slow_wait):
+    def slow_lane(self, ip: str, ticket: float | None, check: Callable[[], bool]) -> bool | None:
+        """Run ``check`` in the global slow lane; None when it got no turn.
+
+        A full queue answers at once and the attempt is dropped (no key was
+        tried). A wait that runs out keeps the reservation, so it counts as a
+        failure: one address can't hold the queue forever for free."""
+        with self._lock:
+            if self._waiting >= self.slow_queue:
+                self._drop(ip, ticket)
+                return None
+            self._waiting += 1
+        try:
+            got_turn = self._slow.acquire(timeout=self.slow_wait)
+        finally:
+            with self._lock:
+                self._waiting -= 1
+        if not got_turn:
             return None
         try:
             time.sleep(self.slow_delay)
@@ -171,6 +208,76 @@ class RateLimiter:
     def reset(self, ip: str) -> None:
         with self._lock:
             self._by_ip.pop(ip, None)
+
+
+def hotp(key: bytes, counter: int, digits: int = TOTP_DIGITS, digest: str = "sha1") -> str:
+    """RFC 4226 one-time code for ``counter``."""
+    mac = hmac.new(key, struct.pack(">Q", counter), digest).digest()
+    offset = mac[-1] & 0x0F
+    value = int.from_bytes(mac[offset:offset + 4], "big") & 0x7FFFFFFF
+    return str(value % 10 ** digits).zfill(digits)
+
+
+def totp(
+    key: bytes, at: float, digits: int = TOTP_DIGITS, step: int = TOTP_STEP, digest: str = "sha1"
+) -> str:
+    """RFC 6238 code for unix time ``at``."""
+    return hotp(key, int(at // step), digits, digest)
+
+
+def parse_totp_secret(raw: str) -> bytes | None:
+    """The key behind a base32 TOTP secret (spaces, dashes, lower case and
+    missing padding are fine), or None when it isn't one or is too short."""
+    text = re.sub(r"[\s-]", "", raw or "").upper().rstrip("=")
+    if not text or not re.fullmatch(r"[A-Z2-7]+", text):
+        return None
+    try:
+        key = base64.b32decode(text + "=" * (-len(text) % 8))
+    except (binascii.Error, ValueError):
+        return None
+    return key if len(key) >= TOTP_MIN_SECRET_BYTES else None
+
+
+class TotpChecker:
+    """Second sign-in factor, on when TOTP_SECRET is set.
+
+    A secret that doesn't parse fails closed (every code is wrong) so a typo
+    can't silently turn the second factor off; main() says so at boot. A code
+    is accepted once: a step already used can't sign in again."""
+
+    def __init__(
+        self,
+        secret_source: Callable[[], str] | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._secret_source = secret_source or (lambda: os.environ.get("TOTP_SECRET", ""))
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._last_step: dict[bytes, int] = {}
+
+    def _raw(self) -> str:
+        raw = str(self._secret_source() or "").strip()
+        return "" if raw.startswith("${{") else raw
+
+    def enabled(self) -> bool:
+        return bool(self._raw())
+
+    def valid_secret(self) -> bool:
+        return parse_totp_secret(self._raw()) is not None
+
+    def check(self, submitted: str) -> bool:
+        key = parse_totp_secret(self._raw())
+        code = re.sub(r"\s", "", submitted or "")
+        if key is None or not re.fullmatch(rf"[0-9]{{{TOTP_DIGITS}}}", code):
+            return False
+        now = int(self.clock() // TOTP_STEP)
+        with self._lock:
+            last = self._last_step.get(key, -1)
+            for step in range(now - TOTP_DRIFT, now + TOTP_DRIFT + 1):
+                if step > last and hmac.compare_digest(hotp(key, step), code):
+                    self._last_step = {key: step}
+                    return True
+        return False
 
 
 class SessionManager:
@@ -352,6 +459,7 @@ def session_token(cookie_header: str | None) -> str | None:
 
 sessions = SessionManager()
 limiter = RateLimiter()
+second_factor = TotpChecker()
 
 
 def ensure_session_secret() -> None:

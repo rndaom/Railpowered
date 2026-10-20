@@ -25,7 +25,7 @@ import installer
 
 from . import config
 from . import installer_api as ix
-from .proxy import MODE_CRASHED, MODE_SLEEPING, MODE_STARTING, MODE_UPDATING, SleepProxy
+from .proxy import MODE_CRASHED, MODE_RESTING, MODE_SLEEPING, MODE_STARTING, MODE_UPDATING, SleepProxy
 from .state import CRASHED, ONLINE, PREPARING, SLEEPING, STARTING, STOPPING, ServerState
 from .state import state as default_state
 from .tasks import TaskRunner
@@ -70,6 +70,11 @@ MONITOR_JOIN = 2
 # After a start fails (or crashes before it is ready), joins don't wake the
 # server again for this long; persistent failures wait for the owner.
 WAKE_BACKOFF = 300
+# When a join woke the server and it went back to sleep without anyone
+# actually joining (a scanner, or a player who gave up), joins don't wake it
+# again for 15 minutes, then an hour after each further empty wake. A player
+# joining, or a start from the dashboard, ends the pause.
+EMPTY_WAKE_BACKOFF = (900, 3600)
 _STACK_FRAME = re.compile(r"^\s+(at |\.\.\. \d+ more)")
 _THROWABLE = re.compile(r"(?:^|[\s:])(?:[\w$]+\.)+[\w$]*(?:Exception|Error)(?::|$)")
 
@@ -216,6 +221,12 @@ class ServerController:
         self._failed_start: tuple[float, str] | None = None
         self._timed_out: Any = None  # the process stopped by the start watchdog
         self._whitelist_error_logged = False
+        # Empty-wake backoff: what the current run is, and the pause it set.
+        self._run_woken = False
+        self._run_saw_player = False
+        self._idle_stop_proc: Any = None
+        self._empty_wakes = 0
+        self._wake_paused_until = 0.0
         self._recent: collections.deque[str] = collections.deque(maxlen=60)
         self._idle_cache: tuple[float, int] = (0.0, 0)
         self._info_cache: tuple[float, dict[str, Any]] = (0.0, {})
@@ -325,6 +336,31 @@ class ServerController:
         now = time.time() if now is None else now
         return code in PERSISTENT_START_FAILURES or now - at < WAKE_BACKOFF
 
+    def wake_paused_until(self, now: float | None = None) -> float | None:
+        """When joins may wake the server again after empty wakes, or None."""
+        now = time.time() if now is None else now
+        until = self._wake_paused_until
+        return until if until > now else None
+
+    def _clear_wake_pause(self) -> None:
+        self._empty_wakes = 0
+        self._wake_paused_until = 0.0
+
+    def _note_empty_wake(self) -> None:
+        with self.state.lock:
+            if self.state.phase not in (SLEEPING, CRASHED):
+                return  # started again (from the dashboard) since that run ended
+        self._empty_wakes += 1
+        pause = EMPTY_WAKE_BACKOFF[min(self._empty_wakes, len(EMPTY_WAKE_BACKOFF)) - 1]
+        self._wake_paused_until = time.time() + pause
+        until = time.strftime("%H:%M UTC", time.gmtime(self._wake_paused_until))
+        self.log(
+            f"A join woke the server but nobody joined before it went back to sleep, so joins "
+            f"won't wake it again until {until} ({pause // 60} minutes). Starting it from the "
+            "dashboard works any time.",
+            "warn",
+        )
+
     def _wake_info(self, now: float) -> dict[str, Any]:
         """How a join treats the crashed server (see wake_blocked), for the
         dashboard: wake "join" (a join starts it), "later" (not before
@@ -364,8 +400,12 @@ class ServerController:
         ignore_task: bool = False,
         reason: str | None = None,
         allow_downgrade: bool = False,
+        woken: bool = False,
     ) -> Any:
         """Prepare and launch Minecraft. Returns the RuntimeSpec.
+
+        ``woken`` marks a start caused by a join to the sleep proxy (see
+        EMPTY_WAKE_BACKOFF); any other start ends a wake pause.
 
         Raises ServerBusy / AlreadyRunning (409) or StartFailed (500; 409
         with code world_downgrade and its data when the world has been
@@ -392,6 +432,10 @@ class ServerController:
                 self.state.players.clear()
                 self.state.idle_since = None
                 self.state.online_since = None
+                self._run_woken = woken
+                self._run_saw_player = False
+        if not woken:
+            self._clear_wake_pause()
         self._info_cache = (0.0, {})
         self.log(f"Starting Minecraft{f' ({reason})' if reason else ''}…")
         try:
@@ -568,10 +612,14 @@ class ServerController:
     def _finish_exit(self, proc: Any, expected: bool) -> None:
         code = proc.poll()
         timed_out = self._timed_out is proc
+        idle_stop = self._idle_stop_proc is proc
         with self.state.lock:
             if self.state.process is not proc:
                 return  # already finalised by the other thread
             reached_online = self.state.phase in (ONLINE, STOPPING) and self.state.online_since
+            empty_wake = idle_stop and expected and self._run_woken and not self._run_saw_player
+            self._idle_stop_proc = None
+            self._run_woken = False
             setup_id = getattr(self.state.runtime, "setup_id", None) or None
             self.state.process = None
             self.state.port_handed_off = False
@@ -602,6 +650,8 @@ class ServerController:
                 }
         if timed_out or (not expected and not reached_online):
             self._failed_start = (time.time(), "start_timeout" if timed_out else "crashed_starting")
+        if empty_wake and reached_online:
+            self._note_empty_wake()
         if timed_out:
             self.log("Minecraft was stopped because it never finished starting.", "error")
         elif expected:
@@ -739,6 +789,9 @@ class ServerController:
                 with self.state.lock:
                     self.state.players.add(match.group(1))
                     self.state.idle_since = None
+                    self._run_saw_player = True
+                if self._wake_paused_until or self._empty_wakes:
+                    self._clear_wake_pause()
                 return
         for regex in LEAVE_RES:
             match = regex.search(line)
@@ -862,6 +915,8 @@ class ServerController:
             with self.state.lock:
                 self.state.players = set(names)
                 self.state.idle_since = None
+                self._run_saw_player = True  # a join line the patterns missed
+            self._clear_wake_pause()
             self.log(f"Idle check found players online ({', '.join(names)}); staying up.")
             return False
         minutes = max(1, timeout // 60)
@@ -869,9 +924,12 @@ class ServerController:
             f"No players for {minutes} minute{'s' if minutes != 1 else ''}; "
             "going to sleep. The next join wakes it up."
         )
+        with self.state.lock:
+            self._idle_stop_proc = self.state.process
         try:
             return self.stop(reason="idle")
         except ServerError:
+            self._idle_stop_proc = None
             return False
 
     def _start_watchdog(self, now: float) -> bool:
@@ -909,7 +967,7 @@ class ServerController:
         with self.state.lock:
             if self.state.phase in (STARTING, ONLINE, STOPPING):
                 return False
-        if self.tasks.is_busy() or self.wake_blocked():
+        if self.tasks.is_busy() or self.wake_blocked() or self.wake_paused_until() is not None:
             return False
         if not self._wake_lock.acquire(blocking=False):
             return False
@@ -917,7 +975,7 @@ class ServerController:
         def run() -> None:
             try:
                 who = name if name and PLAYER_RE.match(name) else "a player"
-                self.start(reason=f"{who} joined")
+                self.start(reason=f"{who} joined", woken=True)
             except ServerError:
                 pass
             except Exception:
@@ -938,6 +996,8 @@ class ServerController:
             mode = MODE_STARTING
         elif self.wake_blocked():
             mode = MODE_CRASHED
+        elif self.wake_paused_until() is not None:
+            mode = MODE_RESTING
         else:
             mode = MODE_SLEEPING
         cached_at, info = self._info_cache
@@ -1025,6 +1085,9 @@ class ServerController:
             "idle": {
                 "timeout_seconds": self.idle_timeout_seconds(),
                 "seconds_until_sleep": self.seconds_until_sleep(now),
+                "wake_paused_until": (
+                    int(paused) if (paused := self.wake_paused_until(now)) is not None else None
+                ),
             },
             "last_exit": last_exit,
             "runtime": runtime,

@@ -6,8 +6,8 @@
 //
 // Also set in the template editor, because a template cannot know them ahead:
 //   - a generated public HTTP domain on port 8080 (the dashboard);
-//   - ADMIN_KEY as required with an empty default, so each deployer picks
-//     their own. Do not use ${{secret()}}: the owner has to know the key.
+//   - ADMIN_KEY defaulting to ${{secret(32)}}: a random 32-character key the
+//     owner reads (or replaces) in the service's Variables.
 import { defineRailway, github, project, service, volume } from "railway/iac";
 
 export default defineRailway(() => {
@@ -37,8 +37,9 @@ export default defineRailway(() => {
     },
     env: {
       ADMIN_KEY: {
+        value: "${{secret(32)}}",
         description:
-          "Dashboard password. Use a long passphrase (four or more random words, or 20+ characters): anyone who has it controls your server.",
+          "Dashboard password, generated for you. Find it in the service's Variables after deploying, or replace it with your own long passphrase (20+ characters). Weak keys are refused. Anyone who has it controls your server.",
         isOptional: false,
       },
       PORT: {

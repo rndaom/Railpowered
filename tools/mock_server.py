@@ -338,7 +338,7 @@ class Mock:
         self.pack_version = "1.21.1"
         self.latest_known = True
         self.storage = {}
-        self.join_address = "shuttle.proxy.rlwy.net:28415"
+        self.join_address = "example.proxy.rlwy.net:12345"
         self.friends = ["TheRealZoe", "pixel_pete", "Marrowbone"]
         self.properties = {
             "motd": "Friends only. Be nice!", "difficulty": "normal", "gamemode": "survival",
@@ -969,7 +969,8 @@ class Mock:
             "player_count": len(self.players) if self.running() else 0,
             "max_players": self.max_players,
             "uptime": int(now - self.online_since) if self.phase == "online" and self.online_since else None,
-            "idle": {"timeout_seconds": self.idle_timeout, "seconds_until_sleep": until},
+            "idle": {"timeout_seconds": self.idle_timeout, "seconds_until_sleep": until,
+                     "wake_paused_until": None},
             "join_address": self.join_address,
             "setup": public,
             "java": java_for(self.ver(setup)) if setup else None,
@@ -980,6 +981,7 @@ class Mock:
             "product": "Railpowered",
             "app_version": "2.0.0",
             "max_upload_bytes": self.max_upload,
+            "admin_key_warning": None,
         }
 
     def online_mode(self):
@@ -2119,6 +2121,7 @@ class Handler(BaseHTTPRequestHandler):
             page = fh.read().decode("utf-8")
         # Same substitution as web.login_page(): every {{error}}, escaped.
         page = page.replace("{{error}}", html.escape(LOGIN_ERRORS.get(error, "")))
+        page = page.replace("{{totp}}", "")  # the mock has no second factor
         self.send_bytes(200, page.encode("utf-8"), CONTENT_TYPES[".html"], {"Cache-Control": "no-store"})
 
     def login(self):

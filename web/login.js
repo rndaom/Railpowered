@@ -130,6 +130,13 @@
         input.focus();
         return;
       }
+      var code = document.getElementById('code');
+      if (code && !code.value.trim()) {
+        e.preventDefault();
+        code.setAttribute('aria-invalid', 'true');
+        code.focus();
+        return;
+      }
       // The form posts normally; this only stops double submits and shows progress.
       submit.setAttribute('aria-busy', 'true');
       var spin = document.createElement('span');
