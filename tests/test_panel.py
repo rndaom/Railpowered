@@ -207,7 +207,7 @@ class PagesAndAuthTests(PanelTestCase):
         response = self.login(TEST_KEY, headers={"X-Forwarded-For": "6.6.6.6, 10.0.0.10"})
         self.assertEqual(response.getheader("Location"), "/")
 
-    def test_global_ceiling_slows_logins_but_never_locks_the_owner_out(self):
+    def test_global_ceiling_slows_logins_but_the_owner_still_gets_in(self):
         limiter = auth.RateLimiter(per_ip=100, global_limit=3, slow_delay=0.3)
         with mock.patch.object(auth, "limiter", limiter):
             for index in range(3):
@@ -220,7 +220,7 @@ class PagesAndAuthTests(PanelTestCase):
             response = self.login("bad", headers={"X-Forwarded-For": "7.7.7.7"})
             self.assertEqual(response.getheader("Location"), "/login?error=1")
 
-    def test_slow_lane_timeout_is_a_rate_error_that_costs_no_attempt(self):
+    def test_slow_lane_timeout_is_a_rate_error_that_counts_as_a_failure(self):
         limiter = auth.RateLimiter(per_ip=100, global_limit=0, slow_delay=0, slow_wait=0.05)
         with mock.patch.object(auth, "limiter", limiter):
             self.assertTrue(limiter._slow.acquire())
@@ -229,7 +229,57 @@ class PagesAndAuthTests(PanelTestCase):
             finally:
                 limiter._slow.release()
         self.assertEqual(response.getheader("Location"), "/login?error=rate")
-        self.assertEqual(len(limiter._all), 0)
+        self.assertEqual(len(limiter._all), 1)
+
+    def test_a_login_flood_cannot_lock_out_the_signed_in_owner(self):
+        # Reproduces R1: past the global ceiling every login used to wait up
+        # to 30 s in the slow lane while holding a connection, so a burst of
+        # concurrent posts filled every slot and the owner, signed in or
+        # not, got no answer at all.
+        self.login()
+
+        class Small(PanelServer):
+            max_connections = 8
+            health_slots = 1
+            session_slots = 2
+
+        server = Small(("127.0.0.1", 0), PanelHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.port = server.server_address[1]
+        limiter = auth.RateLimiter(per_ip=100, global_limit=0, slow_delay=0.5, slow_wait=5)
+        timings: list = []
+        lock = threading.Lock()
+
+        def attack(index: int) -> None:
+            started = time.monotonic()
+            try:
+                response = self.login("bad", headers={"X-Forwarded-For": f"9.9.{index}.1"})
+                location = response.getheader("Location")
+            except OSError:
+                location = None
+            with lock:
+                timings.append((location, time.monotonic() - started))
+
+        with mock.patch.object(auth, "limiter", limiter):
+            attackers = [threading.Thread(target=attack, args=(i,)) for i in range(10)]
+            for thread in attackers:
+                thread.start()
+            time.sleep(0.3)
+            # Signed in: the dashboard still answers mid-flood.
+            self.assertEqual(self.api("GET", "/api/status")[0], 200)
+            for thread in attackers:
+                thread.join(15)
+        # One check plus slow_queue waiters went through the slow lane;
+        # everyone else was told "too many attempts" straight away.
+        self.assertEqual(len(timings), 10)
+        slow = [took for _location, took in timings if took >= 0.4]
+        self.assertLessEqual(len(slow), 1 + limiter.slow_queue)
+        locations = [location for location, _took in timings]
+        # (None: answered 503 "busy" from a slot kept for signed-in requests.)
+        self.assertTrue(set(locations) <= {"/login?error=1", "/login?error=rate", None}, locations)
+        self.assertGreaterEqual(locations.count("/login?error=rate"), 1)
 
     def test_https_login_uses_a_host_prefixed_cookie_and_hsts(self):
         response = self.login(headers={"X-Forwarded-Proto": "https"})
@@ -348,9 +398,55 @@ class RateLimiterTests(unittest.TestCase):
         limiter = auth.RateLimiter(per_ip=10, global_limit=2, slow_delay=0)
         limiter.begin("1.1.1.1")
         limiter.begin("2.2.2.2")
-        verdict, _ticket = limiter.begin("3.3.3.3")
+        verdict, ticket = limiter.begin("3.3.3.3")
         self.assertEqual(verdict, "slow")
-        self.assertTrue(limiter.slow_lane(lambda: True))
+        self.assertTrue(limiter.slow_lane("3.3.3.3", ticket, lambda: True))
+
+    def test_slow_lane_queue_is_bounded_and_overflow_costs_nothing(self):
+        limiter = auth.RateLimiter(per_ip=10, global_limit=0, slow_delay=0, slow_wait=5, slow_queue=2)
+        self.assertTrue(limiter._slow.acquire())  # a check is running
+        results: list = []
+        waiters = []
+        for index in range(2):
+            ip = f"1.1.1.{index}"
+            _verdict, ticket = limiter.begin(ip)
+            thread = threading.Thread(
+                target=lambda ip=ip, ticket=ticket: results.append(
+                    limiter.slow_lane(ip, ticket, lambda: False)
+                )
+            )
+            thread.start()
+            waiters.append(thread)
+        deadline = time.monotonic() + 5
+        while limiter._waiting < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        _verdict, ticket = limiter.begin("2.2.2.2")
+        started = time.monotonic()
+        self.assertIsNone(limiter.slow_lane("2.2.2.2", ticket, lambda: True))
+        self.assertLess(time.monotonic() - started, 0.5)  # no waiting when the queue is full
+        self.assertNotIn("2.2.2.2", limiter._by_ip)  # the overflow attempt was dropped
+        limiter._slow.release()
+        for thread in waiters:
+            thread.join(5)
+        self.assertEqual(results, [False, False])
+
+    def test_slow_lane_timeouts_count_toward_the_per_ip_limit(self):
+        limiter = auth.RateLimiter(per_ip=2, global_limit=0, slow_delay=0, slow_wait=0.02)
+        self.assertTrue(limiter._slow.acquire())
+        try:
+            for _ in range(2):
+                _verdict, ticket = limiter.begin("6.6.6.6")
+                self.assertIsNone(limiter.slow_lane("6.6.6.6", ticket, lambda: True))
+        finally:
+            limiter._slow.release()
+        self.assertTrue(limiter.limited("6.6.6.6"))
+        self.assertEqual(limiter.begin("6.6.6.6"), ("limited", None))
+
+    def test_only_real_addresses_reach_the_log(self):
+        self.assertEqual(auth.loggable_ip("203.0.113.9"), "203.0.113.9")
+        self.assertEqual(auth.loggable_ip(" 2001:db8::1 "), "2001:db8::1")
+        self.assertEqual(auth.loggable_ip("evil\nFAKE LINE"), "an unrecognised address")
+        self.assertEqual(auth.loggable_ip(""), "an unrecognised address")
 
 
 class HardeningTests(PanelTestCase):
@@ -430,6 +526,7 @@ class HardeningTests(PanelTestCase):
         class Small(PanelServer):
             max_connections = 2
             health_slots = 1
+            session_slots = 0
 
         server = Small(("127.0.0.1", 0), PanelHandler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -448,6 +545,39 @@ class HardeningTests(PanelTestCase):
         conn.request("GET", "/health")
         self.assertEqual(conn.getresponse().status, 200)
         conn.close()
+
+    def test_signed_in_requests_have_slots_of_their_own(self):
+        self.login()
+
+        class Small(PanelServer):
+            max_connections = 3
+            health_slots = 1
+            session_slots = 1
+
+        server = Small(("127.0.0.1", 0), PanelHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.port = server.server_address[1]
+        idle = socket.create_connection(("127.0.0.1", self.port), timeout=10)  # holds the general slot
+        self.addCleanup(idle.close)
+        time.sleep(0.2)
+        self.assertEqual(self.api("GET", "/api/status", cookie=False)[0], 503)
+        time.sleep(0.1)
+        self.assertEqual(self.api("GET", "/api/status")[0], 200)
+        time.sleep(0.1)
+        self.assertEqual(self.api("GET", "/health", cookie=False)[0], 200)
+        time.sleep(0.1)
+        self.assertEqual(self.login("bad").status, 503)  # no anonymous logins on a reserved slot
+
+    def test_server_needs_a_general_slot(self):
+        class Broken(PanelServer):
+            max_connections = 4
+            health_slots = 2
+            session_slots = 2
+
+        with self.assertRaises(ValueError):
+            Broken(("127.0.0.1", 0), PanelHandler)
 
     def test_one_client_can_hold_only_so_many_requests(self):
         self.server.per_client = 2

@@ -31,12 +31,14 @@ CLOCK_SKEW = 300
 FAILURE_WINDOW = 600
 MAX_FAILURES_PER_IP = 10
 MAX_FAILURES_GLOBAL = 60
-# Past the global ceiling, logins are not refused: key checks queue up and
-# run one every SLOW_LANE_DELAY seconds across all clients (a caller waits at
-# most SLOW_LANE_WAIT for its turn). Distributed guessing stays slow and the
-# owner still gets in.
+# Past the global ceiling, key checks go through a slow lane: one check every
+# SLOW_LANE_DELAY seconds across all clients, with at most SLOW_LANE_QUEUE
+# callers waiting (each for at most SLOW_LANE_WAIT). Anyone past that gets an
+# immediate "too many attempts", so a flood can't tie up the dashboard's
+# connections, and a wait that times out counts as a failed attempt.
 SLOW_LANE_DELAY = 3.0
-SLOW_LANE_WAIT = 30.0
+SLOW_LANE_WAIT = 10.0
+SLOW_LANE_QUEUE = 2
 REVOKED_FILE = ".session-revoked.json"
 MAX_REVOKED = 500
 
@@ -69,9 +71,18 @@ def is_local_host(host_header: str | None) -> bool:
     return ip.is_loopback or ip.is_private or ip.is_link_local
 
 
+def loggable_ip(value: str) -> str:
+    """``value`` when it parses as an IP address, else a placeholder, so a
+    forged X-Forwarded-For can't write arbitrary text into the log."""
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return "an unrecognised address"
+
+
 class RateLimiter:
     """Login attempts: a hard per-IP limit, and a global ceiling that turns
-    into a slow lane instead of locking everyone (the owner too) out.
+    into a short, bounded slow lane.
 
     begin() reserves an attempt atomically (counted as a failure unless
     succeed() or cancel() follows), so concurrent guesses can't all slip
@@ -85,6 +96,7 @@ class RateLimiter:
         clock: Callable[[], float] = time.monotonic,
         slow_delay: float = SLOW_LANE_DELAY,
         slow_wait: float = SLOW_LANE_WAIT,
+        slow_queue: int = SLOW_LANE_QUEUE,
     ) -> None:
         self.per_ip = per_ip
         self.global_limit = global_limit
@@ -92,6 +104,8 @@ class RateLimiter:
         self.clock = clock
         self.slow_delay = slow_delay
         self.slow_wait = slow_wait
+        self.slow_queue = slow_queue
+        self._waiting = 0
         self._lock = threading.Lock()
         self._slow = threading.Lock()
         self._by_ip: dict[str, collections.deque[float]] = {}
@@ -150,9 +164,23 @@ class RateLimiter:
         with self._lock:
             self._drop(ip, ticket)
 
-    def slow_lane(self, check: Callable[[], bool]) -> bool | None:
-        """Run ``check`` in the global slow lane; None when it never got a turn."""
-        if not self._slow.acquire(timeout=self.slow_wait):
+    def slow_lane(self, ip: str, ticket: float | None, check: Callable[[], bool]) -> bool | None:
+        """Run ``check`` in the global slow lane; None when it got no turn.
+
+        A full queue answers at once and the attempt is dropped (no key was
+        tried). A wait that runs out keeps the reservation, so it counts as a
+        failure: one address can't hold the queue forever for free."""
+        with self._lock:
+            if self._waiting >= self.slow_queue:
+                self._drop(ip, ticket)
+                return None
+            self._waiting += 1
+        try:
+            got_turn = self._slow.acquire(timeout=self.slow_wait)
+        finally:
+            with self._lock:
+                self._waiting -= 1
+        if not got_turn:
             return None
         try:
             time.sleep(self.slow_delay)
