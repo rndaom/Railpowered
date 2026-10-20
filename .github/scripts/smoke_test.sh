@@ -9,6 +9,8 @@ IMAGE="${1:-railpowered:ci}"
 NAME="railpowered-smoke"
 VOLUME="railpowered-smoke-data"
 PORT=18080
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+MCPROTO="$ROOT/tests/e2e/mcproto.py"
 
 cleanup() {
   docker rm -f "$NAME" >/dev/null 2>&1 || true
@@ -27,6 +29,7 @@ fail() {
 docker volume create "$VOLUME" >/dev/null
 docker run -d --name "$NAME" \
   -p "127.0.0.1:$PORT:8080" \
+  -p "127.0.0.1::25565" \
   -e ADMIN_KEY=ci-smoke-test-passphrase \
   -e AUTO_START=false \
   -v "$VOLUME:/server/data" \
@@ -44,6 +47,25 @@ done
 [ -n "$healthy" ] || fail "/health did not answer within 90 seconds"
 echo "/health: $healthy"
 grep -q '"ok"' <<<"$healthy" || fail "/health did not report ok"
+
+# /health is static, so it says nothing about the sleep proxy. Ping port
+# 25565 through its published port like a launcher would; the proxy binds
+# right after the dashboard, so allow it a few seconds.
+mc_mapping="$(docker port "$NAME" 25565/tcp | head -n 1)"
+[ -n "$mc_mapping" ] || fail "port 25565 is not published"
+mc_port="${mc_mapping##*:}"
+ping_reply="$(python3 "$MCPROTO" status 127.0.0.1 "$mc_port" --wait 30)" \
+  || fail "the sleep proxy did not answer a status ping on port 25565"
+echo "Sleep proxy ping: $ping_reply"
+python3 -c '
+import json, sys
+reply = json.loads(sys.argv[1])
+assert isinstance(reply.get("version", {}).get("name"), str), "no version in the reply"
+assert "description" in reply, "no MOTD in the reply"
+' "$ping_reply" || fail "the sleep proxy's status reply is incomplete"
+if docker logs "$NAME" 2>&1 | grep -E "could not listen on port|Could not open the dashboard port" >&2; then
+  fail "a port could not be bound"
+fi
 
 login_page="$(curl -fsS "http://127.0.0.1:$PORT/login")" || fail "/login did not load"
 # The real sign-in page from /server/web (not the built-in fallback), with
