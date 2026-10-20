@@ -520,9 +520,11 @@ def _resolve_host(host: str) -> list[str]:
     return [str(info[4][0]).split("%")[0] for info in infos]
 
 
-def _check_public_url(url: str) -> None:
+def _check_public_url(url: str) -> str:
     """Refuse links to private, loopback or link-local addresses (user-supplied
-    modpack links must not reach Railway's internal network)."""
+    modpack links must not reach Railway's internal network). Returns the
+    vetted address; the download connects to exactly that address, so a name
+    that resolves differently a moment later (DNS rebinding) can't slip by."""
     host = urlparse(url).hostname or ""
     try:
         addresses = _resolve_host(host)
@@ -530,6 +532,7 @@ def _check_public_url(url: str) -> None:
         raise InstallError(
             f"Couldn't find the server '{host}'. Check the link.", code="invalid_url", detail=str(exc)
         ) from exc
+    vetted: list[str] = []
     for address in addresses:
         try:
             ip = ipaddress.ip_address(address)
@@ -541,6 +544,38 @@ def _check_public_url(url: str) -> None:
                 code="invalid_url",
                 detail=f"{host} -> {address}",
             )
+        vetted.append(str(ip))
+    if not vetted:
+        raise InstallError(f"Couldn't find the server '{host}'. Check the link.", code="invalid_url")
+    return vetted[0]
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to a vetted IP address; the certificate is still checked
+    against the link's host name (SNI and hostname verification)."""
+
+    def __init__(self, host: str, *args: Any, pinned_ip: str, **kwargs: Any) -> None:
+        super().__init__(host, *args, **kwargs)
+        self.pinned_ip = pinned_ip
+
+        def create(address: tuple[str, int], timeout: Any = None, source: Any = None) -> socket.socket:
+            return socket.create_connection((self.pinned_ip, address[1]), timeout, source)
+
+        self._create_connection = create
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """Opens requests that carry ``pinned_ip`` with _PinnedHTTPSConnection."""
+
+    def https_open(self, req: urllib.request.Request) -> Any:
+        pinned = getattr(req, "pinned_ip", None)
+        if not pinned or req.has_proxy():
+            return super().https_open(req)
+
+        def connection(host: str, **kwargs: Any) -> _PinnedHTTPSConnection:
+            return _PinnedHTTPSConnection(host, pinned_ip=pinned, **kwargs)
+
+        return self.do_open(connection, req, context=self._context)
 
 
 class _SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -555,15 +590,15 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
                 detail=newurl,
             )
         public_only = getattr(req, "public_only", False)
-        if public_only:
-            _check_public_url(newurl)
+        pinned = _check_public_url(newurl) if public_only else None
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is not None and public_only:
             new.public_only = True
+            new.pinned_ip = pinned  # every hop connects to the address it vetted
         return new
 
 
-_OPENER = urllib.request.build_opener(_SafeRedirect)
+_OPENER = urllib.request.build_opener(_SafeRedirect, _PinnedHTTPSHandler)
 
 
 def _urlopen(request: urllib.request.Request, timeout: float):
@@ -691,8 +726,7 @@ def download_file(
     and hash checks. An existing ``dest`` is reused only when its hash matches,
     or when ``reuse=True`` is passed for files keyed by version."""
     url = _require_https(url)
-    if public_only:
-        _check_public_url(url)
+    pinned_ip = _check_public_url(url) if public_only else None
     label = label or os.path.basename(urlparse(url).path) or "a file"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.isfile(dest):
@@ -709,6 +743,8 @@ def download_file(
         try:
             request = urllib.request.Request(url, headers={"User-Agent": APP_USER_AGENT})
             request.public_only = public_only  # checked again on every redirect
+            if pinned_ip:
+                request.pinned_ip = pinned_ip  # connect to the address that was checked
             digest1 = hashlib.sha1()
             digest512 = hashlib.sha512()
             written = 0

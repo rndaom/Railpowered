@@ -474,6 +474,35 @@ class UrlInstallTests(ModpackTestCase):
             handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/b")
         new = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example/b")
         self.assertTrue(new.public_only)
+        self.assertEqual(new.pinned_ip, "93.184.216.34")
+
+    def test_downloads_connect_to_the_address_that_was_checked(self):
+        seen = []
+
+        def capture(request, timeout=None):
+            seen.append(getattr(request, "pinned_ip", None))
+            raise installer.urllib.error.URLError("stop here")
+
+        self.resolved["pack.example"] = ["93.184.216.34"]
+        with mock.patch.object(installer, "_urlopen", side_effect=capture):
+            with self.assertRaises(installer.InstallError):
+                installer.download_file("https://pack.example/p.mrpack", os.path.join(self.tmp, "p"),
+                                        public_only=True, retries=1)
+        self.assertEqual(seen, ["93.184.216.34"])
+
+    def test_pinned_connection_uses_the_vetted_address_and_the_real_host_name(self):
+        connection = installer._PinnedHTTPSConnection("pack.example", pinned_ip="93.184.216.34", timeout=5)
+        self.assertEqual(connection.host, "pack.example")  # SNI and certificate check
+        with mock.patch.object(installer.socket, "create_connection", return_value="sock") as create:
+            self.assertEqual(connection._create_connection(("pack.example", 443), 5, None), "sock")
+        create.assert_called_once_with(("93.184.216.34", 443), 5, None)
+        handler = installer._PinnedHTTPSHandler()
+        request = installer.urllib.request.Request("https://pack.example/p")
+        request.pinned_ip = "93.184.216.34"
+        with mock.patch.object(handler, "do_open", return_value="response") as do_open:
+            self.assertEqual(handler.https_open(request), "response")
+        made = do_open.call_args[0][0]("pack.example", timeout=5)
+        self.assertEqual((made.host, made.pinned_ip), ("pack.example", "93.184.216.34"))
 
     def test_upload_limit(self):
         os.environ["MAX_UPLOAD_MB"] = "1"
