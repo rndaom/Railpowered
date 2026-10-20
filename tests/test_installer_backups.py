@@ -233,6 +233,7 @@ class WorldTests(BackupTestCase):
         self.assertEqual(ctx.exception.code, "active_world")
         self.assertEqual(installer.delete_world("creative"), ["Creative"])
         self.assertFalse(os.path.exists(self.path("worlds", "creative")))
+        self.assertEqual([n for n in os.listdir(self.path("worlds")) if n.startswith(".")], [])
         self.assertEqual([s["id"] for s in installer.list_setups()], ["default"])
         with self.assertRaises(installer.InstallError) as ctx:
             installer.delete_world("creative")

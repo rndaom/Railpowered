@@ -1927,13 +1927,29 @@ def delete_world(name: str) -> list[str]:
         dest = world_path(name)
         if not os.path.isdir(dest):
             raise InstallError(f"World '{name}' doesn't exist.", code="world_not_found")
-        _rmtree_child(paths()["worlds"], name)
+        # Move it aside under the lock (instant), delete it after releasing
+        # the lock: a multi-GB rmtree must not stall every config reader.
+        trash = os.path.join(paths()["worlds"], f".trash-{name}-{secrets.token_hex(4)}")
+        os.replace(dest, trash)
         _SIZE_CACHE.pop(dest, None)
         removed = [s["name"] for s in cfg["profiles"] if s["level_name"] == name]
         if removed:
             cfg["profiles"] = [s for s in cfg["profiles"] if s["level_name"] != name]
             save_config(cfg)
-        return removed
+    _remove_tree(trash)
+    return removed
+
+
+def _remove_tree(path: str) -> None:
+    """Delete a folder (or a link to one) that was already moved aside.
+    Leftovers are swept at the next boot (recover_interrupted)."""
+    if os.path.islink(path) or os.path.isfile(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return
+    shutil.rmtree(path, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
@@ -3765,14 +3781,19 @@ def _uuid_cache() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _cached_uuid(name: str) -> tuple[str, str] | None:
+def _cached_uuid(name: str, allow_expired: bool = False) -> tuple[str, str] | None:
+    """(name, online UUID) from the cache. Expired entries count only with
+    ``allow_expired`` (a last resort when Mojang can't be reached)."""
     entry = _uuid_cache().get(name.casefold())
     if not isinstance(entry, dict):
         return None
     try:
-        if _now() - float(entry.get("at") or 0) > UUID_CACHE_TTL:
+        if not allow_expired and _now() - float(entry.get("at") or 0) > UUID_CACHE_TTL:
             return None
-        return str(entry["name"]), dashed_uuid(entry["uuid"])
+        exact = str(entry["name"])
+        if not PLAYER_NAME_RE.match(exact):
+            return None
+        return exact, dashed_uuid(entry["uuid"])
     except (KeyError, TypeError, ValueError, InstallError):
         return None
 
@@ -3785,6 +3806,64 @@ def _store_uuid(name: str, uuid: str) -> None:
             _atomic_write_json(paths()["uuid_cache"], cache)
         except OSError:
             pass
+
+
+def _remember_online_uuids(entries: dict[str, str]) -> None:
+    """Keep online UUIDs that an offline-mode render is about to replace, so a
+    later switch back to online mode can restore them even without Mojang.
+    They are stored as unverified ("at": 0): a fresh lookup still wins."""
+    with _CONFIG_LOCK:
+        cache = _uuid_cache()
+        changed = False
+        for name, uuid in entries.items():
+            current = cache.get(name.casefold())
+            if isinstance(current, dict) and current.get("uuid") == uuid:
+                continue
+            cache[name.casefold()] = {"name": name, "uuid": uuid, "at": 0}
+            changed = True
+        if changed:
+            try:
+                _atomic_write_json(paths()["uuid_cache"], cache)
+            except OSError:
+                pass
+
+
+# Render-time lookups (on start) share one budget and back off after a failure,
+# so a slow Mojang can't hold a wake-up for minutes.
+LOOKUP_BUDGET = 20.0
+_MOJANG_FAILED_AT = [0.0]
+
+
+def _resolve_online_uuids(names: list[str], network: bool) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """Online (name, UUID) for players whose entry holds an offline UUID.
+    Runs without any lock held. Returns ({casefolded name: (name, uuid)}, warnings)."""
+    resolved: dict[str, tuple[str, str]] = {}
+    warnings: list[str] = []
+    deadline = time.monotonic() + LOOKUP_BUDGET
+    use_network = network and _now() - _MOJANG_FAILED_AT[0] >= NETWORK_RETRY_AFTER
+    for name in names:
+        found = _cached_uuid(name)
+        if found is None and use_network and time.monotonic() < deadline:
+            try:
+                found = lookup_player(name, network=True)
+            except InstallError as exc:
+                if exc.code == "player_not_found":
+                    warnings.append(f"{name}: {exc}")
+                    continue
+                _MOJANG_FAILED_AT[0] = _now()
+                use_network = False
+        if found is None:
+            found = _cached_uuid(name, allow_expired=True)
+            if found is not None:
+                warnings.append(f"{name}: Mojang couldn't be reached; using the last known account ID.")
+        if found is None:
+            warnings.append(
+                f"{name}: Couldn't check this player with Mojang, so they may be refused until "
+                "the next start. Re-add them on the Players page if it keeps happening."
+            )
+            continue
+        resolved[name.casefold()] = found
+    return resolved, warnings
 
 
 def lookup_player(name: str, network: bool = True) -> tuple[str, str]:
@@ -3894,7 +3973,9 @@ def _canonical_path(kind: str) -> str:
 
 def _load_list(kind: str) -> list[dict[str, Any]]:
     entries = _read_entries(kind, _canonical_path(kind))
-    if entries:
+    if entries is not None:
+        # An empty list is a real answer ("nobody"): falling back to a .txt
+        # here would bring back the last player someone just removed.
         return entries
     names = _read_txt_names(os.path.join(DATA_DIR, _LIST_FILES[kind][1])) or []
     return _dedupe([e for e in (_normalize_entry(kind, n) for n in names) if e])
@@ -3920,26 +4001,40 @@ def _effective_online_mode(version: str) -> bool:
 def _render_access_lists(version: str, run_dir: str, network: bool = False) -> list[str]:
     """Write the canonical lists in the format ``version`` reads, into
     ``run_dir``, fixing UUIDs for the current online mode. Returns warnings."""
-    warnings = []
+    warnings: list[str] = []
     online = _effective_online_mode(version)
     json_lists = uses_json_lists(version)
     same_dir = os.path.realpath(run_dir) == os.path.realpath(DATA_DIR)
+    resolved: dict[str, tuple[str, str]] = {}
+    if online:
+        # Mojang lookups happen without _CONFIG_LOCK: holding it across the
+        # network would stall status, settings and the sleep proxy's pings.
+        with _CONFIG_LOCK:
+            pending = {
+                entry["name"]
+                for kind in _LIST_FILES
+                for entry in _load_list(kind)
+                if entry["uuid"] == offline_uuid(entry["name"])
+            }
+        if pending:
+            resolved, warnings = _resolve_online_uuids(sorted(pending, key=str.casefold), network)
     with _CONFIG_LOCK:
+        remember: dict[str, str] = {}
         for kind in _LIST_FILES:
             entries = _load_list(kind)
             converted = []
             for entry in entries:
                 entry = dict(entry)
                 if online and entry["uuid"] == offline_uuid(entry["name"]):
-                    try:
-                        exact, uuid = lookup_player(entry["name"], network=network)
-                        entry["uuid"] = uuid
-                        entry["name"] = exact
-                    except InstallError as exc:
-                        warnings.append(f"{entry['name']}: {exc}")
+                    found = resolved.get(entry["name"].casefold())
+                    if found:
+                        entry["name"], entry["uuid"] = found
                 elif not online:
+                    if entry["uuid"] != offline_uuid(entry["name"]):
+                        remember[entry["name"]] = entry["uuid"]
                     entry["uuid"] = offline_uuid(entry["name"])
                 converted.append(entry)
+            converted = _dedupe(converted)
             if _list_key(converted) != _list_key(_read_entries(kind, _canonical_path(kind)) or []):
                 _save_list(kind, converted)
             json_name, txt_name = _LIST_FILES[kind]
@@ -3948,6 +4043,8 @@ def _render_access_lists(version: str, run_dir: str, network: bool = False) -> l
                     _atomic_write_json(os.path.join(run_dir, json_name), converted)
             else:
                 _atomic_write(os.path.join(run_dir, txt_name), "".join(e["name"] + "\n" for e in converted))
+        if remember:
+            _remember_online_uuids(remember)
     for warning in warnings:
         _say(f"Player list: {warning}")
     return warnings
@@ -4136,6 +4233,7 @@ def _reset_caches() -> None:
     with _NET_LOCK:
         _JSON_CACHE.clear()
         _FAILED_AT.clear()
+        _MOJANG_FAILED_AT[0] = 0.0
     with _CONFIG_LOCK:
         _config_cache = None
         _config_warnings.clear()
