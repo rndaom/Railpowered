@@ -45,7 +45,12 @@ done
 echo "/health: $healthy"
 grep -q '"ok"' <<<"$healthy" || fail "/health did not report ok"
 
-curl -fsS -o /dev/null "http://127.0.0.1:$PORT/login" || fail "/login did not load"
+login_page="$(curl -fsS "http://127.0.0.1:$PORT/login")" || fail "/login did not load"
+# The real sign-in page from /server/web (not the built-in fallback), with
+# content-hashed asset links so a redeploy never serves a stale script.
+grep -Eq 'src="/static/login\.js\?v=[0-9a-f]{12}"' <<<"$login_page" \
+  || fail "/login is not the web/ sign-in page (is web/ missing from the image?)"
+curl -fsS -o /dev/null "http://127.0.0.1:$PORT/static/app.js" || fail "/static/app.js did not load"
 
 [ "$(docker exec "$NAME" cat /proc/1/comm)" = "tini" ] || fail "PID 1 is not tini"
 
@@ -69,7 +74,8 @@ for file in eula.txt server.properties; do
   owner="$(docker exec "$NAME" stat -c %U "/server/data/$file")" || fail "/server/data/$file is missing"
   [ "$owner" = "minecraft" ] || fail "/server/data/$file is owned by $owner"
 done
-[ "$(docker exec "$NAME" cat /server/data/eula.txt)" = "eula=true" ] || fail "eula.txt is wrong"
+# start.sh writes "eula=true"; the installer later adds a comment line linking the EULA.
+docker exec "$NAME" grep -qx 'eula=true' /server/data/eula.txt || fail "eula.txt is wrong"
 
 for major in 8 21 25; do
   docker exec "$NAME" "/opt/java/$major/bin/java" -version >/dev/null 2>&1 || fail "Java $major does not run"

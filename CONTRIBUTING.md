@@ -94,7 +94,8 @@ Useful variables while developing:
 | `AUTO_START` | `false` | Start Minecraft at boot instead of on the first join. |
 | `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft sleeps (`0` = never). |
 | `MC_MAX_MEMORY` / `MC_MIN_MEMORY` | `auto` / `256M` | Java heap limits. |
-| `JAVA_8_HOME`, `JAVA_21_HOME`, `JAVA_25_HOME` | `/opt/java/<n>` | Where each Java lives; without them Railpowered falls back to `java` on `PATH`. |
+| `STOP_TIMEOUT` | `30` | Seconds Minecraft gets to save and exit before it is killed (5 to 45, so a shutdown fits in Railway's 60-second draining window). |
+| `JAVA_8_HOME`, `JAVA_21_HOME`, `JAVA_25_HOME` | `/opt/java/<n>` | Where each Java lives. Set only the ones you have: Railpowered picks the smallest installed Java the version needs (a Java 25 also runs 1.20.5+), then falls back to `java` on `PATH`. |
 | `WEB_DIR` | `/server/web`, then `./web` | Where the dashboard files are served from. |
 
 Fabric, Forge and modpack setups link their world folders with symlinks. On
