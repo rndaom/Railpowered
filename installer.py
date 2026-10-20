@@ -25,6 +25,7 @@ import copy
 import hashlib
 import http.client
 import io
+import ipaddress
 import json
 import logging
 import math
@@ -32,6 +33,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import subprocess
 import sys
 import tarfile
@@ -496,9 +498,61 @@ _JSON_CACHE: dict[str, tuple[float, Any]] = {}
 _FAILED_AT: dict[str, float] = {}
 
 
+def _resolve_host(host: str) -> list[str]:
+    """IP addresses for ``host`` (tests replace this)."""
+    infos = socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)
+    return [str(info[4][0]).split("%")[0] for info in infos]
+
+
+def _check_public_url(url: str) -> None:
+    """Refuse links to private, loopback or link-local addresses (user-supplied
+    modpack links must not reach Railway's internal network)."""
+    host = urlparse(url).hostname or ""
+    try:
+        addresses = _resolve_host(host)
+    except (OSError, UnicodeError) as exc:
+        raise InstallError(
+            f"Couldn't find the server '{host}'. Check the link.", code="invalid_url", detail=str(exc)
+        ) from exc
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if not ip.is_global:
+            raise InstallError(
+                "That link points at a private network address, which isn't allowed.",
+                code="invalid_url",
+                detail=f"{host} -> {address}",
+            )
+
+
+class _SafeRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow redirects only to https, and only to public hosts when the
+    original request was user-supplied."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if urlparse(newurl).scheme != "https":
+            raise InstallError(
+                "The download link redirected to a non-https address, which isn't allowed.",
+                code="invalid_url",
+                detail=newurl,
+            )
+        public_only = getattr(req, "public_only", False)
+        if public_only:
+            _check_public_url(newurl)
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is not None and public_only:
+            new.public_only = True
+        return new
+
+
+_OPENER = urllib.request.build_opener(_SafeRedirect)
+
+
 def _urlopen(request: urllib.request.Request, timeout: float):
     """The only place that opens network connections (tests replace it)."""
-    return urllib.request.urlopen(request, timeout=timeout)
+    return _OPENER.open(request, timeout=timeout)
 
 
 def _sleep(seconds: float) -> None:
@@ -615,11 +669,14 @@ def download_file(
     reuse: bool | None = None,
     retries: int = 3,
     timeout: float = 60,
+    public_only: bool = False,
 ) -> str:
     """Download ``url`` to ``dest`` (https only) via a temp file, with retries
     and hash checks. An existing ``dest`` is reused only when its hash matches,
     or when ``reuse=True`` is passed for files keyed by version."""
     url = _require_https(url)
+    if public_only:
+        _check_public_url(url)
     label = label or os.path.basename(urlparse(url).path) or "a file"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.isfile(dest):
@@ -635,6 +692,7 @@ def download_file(
         os.close(fd)
         try:
             request = urllib.request.Request(url, headers={"User-Agent": APP_USER_AGENT})
+            request.public_only = public_only  # checked again on every redirect
             digest1 = hashlib.sha1()
             digest512 = hashlib.sha512()
             written = 0
@@ -726,15 +784,6 @@ def _manifest(network: bool = True, force: bool = False) -> tuple[dict[str, Any]
         return None, False
     return data, fresh
 
-
-def fetch_version_manifest() -> dict[str, Any]:
-    manifest, _fresh = _manifest(network=True)
-    if manifest is None:
-        raise InstallError(
-            "Couldn't reach Mojang's version list. Check the connection and try again in a minute.",
-            code="network",
-        )
-    return manifest
 
 
 def _manifest_latest(manifest: dict[str, Any] | None) -> str | None:
@@ -2462,13 +2511,6 @@ def _safe_extract_zip(archive_path: str, dest: str, max_total: int | None = None
                 ) from exc
 
 
-def _zip_root_has(archive_path: str, inner: str) -> bool:
-    try:
-        with zipfile.ZipFile(archive_path) as archive:
-            return any(item.filename.replace("\\", "/").lstrip("/") == inner for item in archive.infolist())
-    except (zipfile.BadZipFile, OSError):
-        return False
-
 
 _CONTENT_DIRS = {
     "mods", "config", "libraries", "defaultconfigs", "kubejs", "scripts", "world", "worlds",
@@ -2910,7 +2952,9 @@ def install_modpack_from_url(
     os.close(fd)
     try:
         _say("Downloading the modpack...")
-        download_file(url, tmp, max_bytes=max_upload_bytes(), label="the modpack", reuse=False)
+        download_file(
+            url, tmp, max_bytes=max_upload_bytes(), label="the modpack", reuse=False, public_only=True
+        )
         if not zipfile.is_zipfile(tmp):
             raise InstallError(
                 "That link didn't return a .mrpack or .zip file. On Modrinth, copy the download "
@@ -3738,12 +3782,6 @@ def lookup_player(name: str, network: bool = True) -> tuple[str, str]:
         detail=detail or (str(last) if last else None),
     )
 
-
-def player_uuid(name: str, online: bool = False) -> str:
-    """Online UUID (cache/Mojang) when ``online``; never silently offline."""
-    if online:
-        return lookup_player(name)[1]
-    return offline_uuid(name)
 
 
 def _kind(kind: str) -> str:

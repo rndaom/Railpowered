@@ -314,6 +314,27 @@ class UrlInstallTests(ModpackTestCase):
         self.assertEqual(ctx.exception.code, "invalid_archive")
         self.assertEqual(os.listdir(self.path("modpacks")), [])
 
+    def test_private_addresses_are_refused(self):
+        for address in ("127.0.0.1", "10.0.0.5", "169.254.169.254", "::1", "fd00::1"):
+            with self.subTest(address=address):
+                self.resolved["internal.example"] = [address]
+                with self.assertRaises(installer.InstallError) as ctx:
+                    installer.install_modpack_from_url("https://internal.example/pack.mrpack", "mypack")
+                self.assertEqual(ctx.exception.code, "invalid_url")
+        self.assertEqual(self.net.count("internal.example"), 0)
+
+    def test_redirects_must_stay_https_and_public(self):
+        handler = installer._SafeRedirect()
+        request = installer.urllib.request.Request("https://example.com/a")
+        request.public_only = True
+        with self.assertRaises(installer.InstallError):
+            handler.redirect_request(request, None, 302, "Found", {}, "http://example.com/b")
+        self.resolved["evil.example"] = ["192.168.1.1"]
+        with self.assertRaises(installer.InstallError):
+            handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/b")
+        new = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example/b")
+        self.assertTrue(new.public_only)
+
     def test_upload_limit(self):
         os.environ["MAX_UPLOAD_MB"] = "1"
         self.net.add(self.URL, b"x" * (1024 * 1024 + 10))

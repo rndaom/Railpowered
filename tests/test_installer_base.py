@@ -145,6 +145,10 @@ class InstallerTestCase(unittest.TestCase):
         self._patch(mock.patch.object(installer, "DATA_DIR", self.data))
         self._patch(mock.patch.object(installer, "_urlopen", self.net))
         self._patch(mock.patch.object(installer, "_sleep", self.sleeps.append))
+        self.resolved: dict[str, list[str]] = {}
+        self._patch(mock.patch.object(
+            installer, "_resolve_host", side_effect=lambda host: self.resolved.get(host, ["93.184.216.34"])
+        ))
         self._patch(mock.patch.object(installer, "JAVA_HOMES", dict(self.java_homes)))
         self._patch(mock.patch.object(installer, "FABRIC_LOADER_PIN", ""))
         self._patch(mock.patch.object(installer, "FABRIC_INSTALLER_PIN", ""))
