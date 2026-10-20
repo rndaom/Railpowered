@@ -382,15 +382,21 @@
 
                 <li class="step" id="step-finish">
                   <div class="step-body">
-                    <label class="step-title" for="setup-name">Setup name <span class="subtle">(optional)</span></label>
-                    <input class="input" id="setup-name" autocomplete="off" maxlength="60">
-                    <label class="radio-line" style="cursor:pointer">
+                    <div class="stack-sm" id="setup-name-wrap">
+                      <label class="step-title" for="setup-name">Setup name <span class="subtle">(optional)</span></label>
+                      <input class="input" id="setup-name" autocomplete="off" maxlength="48">
+                    </div>
+                    <label class="radio-line" id="setup-activate-row" style="cursor:pointer">
                       <input type="checkbox" id="setup-activate" checked>
                       <span class="radio-copy">
                         <span>Switch to it when it's ready</span>
                         <span class="field-help" id="setup-impact">The server is asleep, so nobody is interrupted.</span>
                       </span>
                     </label>
+                    <div class="field" id="pack-finish" hidden>
+                      <p class="step-title">When it's installed</p>
+                      <p class="field-help" id="pack-impact"></p>
+                    </div>
                     <div class="field" id="upload-progress" hidden>
                       <div class="meter-legend"><span id="upload-label">Uploading…</span><span id="upload-pct" class="tabular">0%</span></div>
                       <div class="progress" role="progressbar" aria-labelledby="upload-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-bar"><span></span></div>

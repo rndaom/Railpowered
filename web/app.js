@@ -1747,7 +1747,7 @@
     var data = state.versions || {};
     var list = versionsFor(type);
     var latest = data.latest || '';
-    var hasLatestEntry = list.some(function (v) { return v.id === 'latest'; });
+    var hasLatestEntry = type !== 'forge' && list.some(function (v) { return v.id === 'latest'; });
     var nodes = [];
     if ((type === 'vanilla' || type === 'fabric') && !hasLatestEntry) {
       nodes.push(el('option', { value: 'latest' }, 'Always latest' + (latest ? ' (now ' + latest + ')' : '')));
@@ -1823,7 +1823,7 @@
     var editing = state.editingSetup && state.editingSetup.id === setup.id;
     var title;
     if (editing) {
-      var input = el('input', { class: 'input', value: state.editingSetup.draft, 'aria-label': 'Setup name', maxlength: '60' });
+      var input = el('input', { class: 'input', value: state.editingSetup.draft, 'aria-label': 'Setup name', maxlength: '48' });
       input.addEventListener('input', function () { state.editingSetup.draft = input.value; });
       input.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); saveRename(setup, input.value, saveBtn); }
@@ -1896,7 +1896,9 @@
         el('p', null, setupSummary(setup) + '.'),
         el('p', null, RUNNING[s.phase]
           ? 'The server saves the world, stops, and starts again on this setup. It may need to download files first, which can take a few minutes.'
-          : 'The server stays asleep and uses this setup the next time it wakes up. Any files it needs are downloaded now.'),
+          : s.phase === 'sleeping'
+            ? 'The server stays asleep and uses this setup the next time it wakes up. Any files it needs are downloaded now.'
+            : 'The server isn\'t running. It uses this setup the next time it starts, and any files it needs are downloaded now.'),
         n > 0 ? el('div', { class: 'callout tone-warn' }, icon('i-alert'), el('p', null, el('strong', null, plural(n, 'player is', 'players are') + ' online'), ' and will be disconnected.')) : null,
       ],
       confirmLabel: 'Switch setup',
@@ -2171,6 +2173,11 @@
     renderExistingWorldNote();
     var nameInput = $('#setup-name');
     nameInput.placeholder = defaultSetupName();
+    // A modpack setup is named after the pack and always switches over, so those two controls only apply to the others.
+    var modpack = form.type === 'modpack';
+    $('#setup-name-wrap').hidden = modpack;
+    $('#setup-activate-row').hidden = modpack;
+    $('#pack-finish').hidden = !modpack;
     if (form.versionHelp && form.type !== 'modpack') {
       setText($('#version-help'), form.versionHelp + ($('#setup-version').value === 'latest'
         ? ' With “Always latest”, the server moves up when Mojang ships a new release, and friends then need to update too.'
@@ -2246,15 +2253,27 @@
   function renderSetupImpact() {
     var s = state.status;
     var node = $('#setup-impact');
-    if (!node) return;
-    var activate = $('#setup-activate').checked;
+    if (!node || !state.setupForm) return;
+    // Modpacks always become the active setup once installed; the server has no "just add it" option for them.
+    var modpack = state.setupForm.type === 'modpack';
+    var activate = modpack || $('#setup-activate').checked;
     var text;
+    var packText;
     if (!activate) text = 'It goes on your list, and you can switch to it whenever you like.';
     else if (s && RUNNING[s.phase]) {
       var n = s.player_count || 0;
-      text = 'When it\'s ready, the server restarts on it.' + (n > 0 ? ' ' + plural(n, 'player', 'players') + ' online will be disconnected.' : ' Nobody is online right now.');
-    } else text = 'The server is asleep, so nobody is interrupted. It wakes up on the new setup.';
+      var crowd = n > 0 ? ' ' + plural(n, 'player', 'players') + ' online will be disconnected.' : ' Nobody is online right now.';
+      text = 'When it\'s ready, the server restarts on it.' + crowd;
+      packText = 'It becomes the active setup, and the server restarts on it.' + crowd;
+    } else if (s && s.phase === 'sleeping') {
+      text = 'The server is asleep, so nobody is interrupted. The next time someone joins, it starts on the new setup.';
+      packText = 'It becomes the active setup. The server is asleep, so nobody is interrupted, and it starts on the modpack the next time someone joins.';
+    } else {
+      text = 'The server isn\'t running, so nobody is interrupted. It uses the new setup the next time it starts.';
+      packText = 'It becomes the active setup. The server isn\'t running, so nobody is interrupted.';
+    }
     setText(node, text);
+    setText($('#pack-impact'), modpack ? packText : '');
   }
 
   function renderSetupSteps() {
@@ -2263,7 +2282,7 @@
     var versionOk = form.type === 'modpack' ? true : !!$('#setup-version').value;
     $('#step-version').classList.toggle('is-done', form.type !== 'modpack' && versionOk);
     var packOk = form.type === 'modpack' && NAME_RE.test($('#pack-name').value.trim()) &&
-      (form.packSource === 'url' ? /^https?:\/\/\S+$/i.test($('#pack-url').value.trim()) : !!form.file);
+      (form.packSource === 'url' ? /^https:\/\/\S+$/i.test($('#pack-url').value.trim()) : !!form.file);
     $('#step-pack').classList.toggle('is-done', packOk);
     var worldOk = worldMode() === 'existing' ? !!$('#existing-world').value : NAME_RE.test($('#new-world-name').value.trim() || $('#new-world-name').placeholder);
     $('#step-world').classList.toggle('is-done', worldOk);
@@ -2331,7 +2350,7 @@
         var url = $('#pack-url').value.trim();
         var urlMsg = '';
         if (!url) urlMsg = 'Paste the link to the modpack file.';
-        else if (!/^https?:\/\/\S+$/i.test(url)) urlMsg = 'The link should start with https://';
+        else if (!/^https:\/\/\S+$/i.test(url)) urlMsg = 'The link should start with https://';
         showFieldError($('#pack-url'), $('#pack-url-error'), urlMsg);
         if (urlMsg) firstBad = firstBad || $('#pack-url');
       } else if (!form.file) {
@@ -2367,7 +2386,9 @@
       if (allowDowngrade) mp.allow_downgrade = true;
       request = runBusy(btn, 'Checking…', function () { return api('POST', '/api/modpacks', mp); });
     } else {
-      var q = 'name=' + encodeURIComponent($('#pack-name').value.trim()) + '&level_name=' + encodeURIComponent(body.level_name) + (allowDowngrade ? '&allow_downgrade=1' : '');
+      // filename only tells the server whether this is a .mrpack or a .zip; it is percent-encoded so any name is safe.
+      var q = 'name=' + encodeURIComponent($('#pack-name').value.trim()) + '&level_name=' + encodeURIComponent(body.level_name) +
+        '&filename=' + encodeURIComponent(form.file.name) + (allowDowngrade ? '&allow_downgrade=1' : '');
       var bar = $('#upload-bar');
       var wrap = $('#upload-progress');
       wrap.hidden = false;
