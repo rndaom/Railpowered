@@ -4,7 +4,10 @@
   Served as /static/login.js (the CSP allows scripts from 'self' only). It is
   loaded from <head> so the saved colour theme applies before first paint; the
   rest waits for the DOM. The server redirects failed sign-ins back here with
-  ?error=1 (wrong key) or ?error=rate (too many attempts).
+  ?error=1 (wrong key) or ?error=rate (too many attempts), and renders a short
+  message into #login-error so it shows without JavaScript; this script swaps in
+  the fuller wording below. The dashboard sends people here with ?error=expired
+  when their session ends.
 */
 (function () {
   'use strict';
@@ -43,9 +46,31 @@
   applyTheme(readTheme());
 
   var MESSAGES = {
-    '1': 'That key didn\'t work. Check for typos and extra spaces, then try again.',
-    rate: 'Too many wrong keys from this network. Wait about 10 minutes, then try again.',
+    '1': { text: 'That key didn\'t work. Check for typos and extra spaces, then try again.', tone: 'bad', icon: '#i-alert-circle' },
+    // The limit counts this network and, as a backstop, everyone together, so don't blame "this network".
+    rate: { text: 'Too many wrong keys were tried recently. Wait about 10 minutes, then try again.', tone: 'bad', icon: '#i-clock' },
+    expired: { text: 'You were signed out because the key changed or the session ran out. Sign in again to pick up where you left off.', tone: 'info', icon: '#i-info' },
   };
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function svgIcon(href) {
+    var svg = document.createElementNS(SVG_NS, 'svg');
+    svg.setAttribute('class', 'icon');
+    svg.setAttribute('aria-hidden', 'true');
+    var use = document.createElementNS(SVG_NS, 'use');
+    use.setAttribute('href', href);
+    svg.appendChild(use);
+    return svg;
+  }
+
+  // Same structure as the dashboard's field errors: an icon, then the text.
+  function showFieldError(node, text) {
+    var span = document.createElement('span');
+    span.textContent = text;
+    node.replaceChildren(svgIcon('#i-alert-circle'), span);
+    node.hidden = false;
+  }
 
   function boot() {
     var form = document.getElementById('login-form');
@@ -57,16 +82,17 @@
 
     var params = new URLSearchParams(window.location.search);
     var code = params.get('error');
+    // Served without the server's substitution (a static preview), the placeholder is still there.
+    if (banner.getAttribute('data-message') === '{{error}}') banner.setAttribute('data-message', '');
     if (code) {
       var message = MESSAGES[code] || MESSAGES['1'];
-      document.getElementById('login-error-text').textContent = message;
-      banner.hidden = false;
-      if (code === 'rate') {
-        banner.querySelector('use').setAttribute('href', '#i-clock');
-      } else {
-        input.setAttribute('aria-invalid', 'true');
-      }
-      document.title = 'Try again · Railpowered';
+      document.getElementById('login-error-text').textContent = message.text;
+      banner.setAttribute('data-message', message.text);
+      banner.className = 'callout tone-' + message.tone + ' login-error';
+      banner.querySelector('use').setAttribute('href', message.icon);
+      if (message.tone === 'info') banner.setAttribute('role', 'status');
+      if (code !== 'rate' && code !== 'expired') input.setAttribute('aria-invalid', 'true');
+      document.title = (code === 'expired' ? 'Sign in again' : 'Try again') + ' · Railpowered';
       // Drop the error from the address bar so a reload starts clean.
       if (window.history && window.history.replaceState) {
         window.history.replaceState(null, '', window.location.pathname);
@@ -94,8 +120,7 @@
       }
       if (!input.value.trim()) {
         e.preventDefault();
-        fieldError.textContent = 'Enter your dashboard key.';
-        fieldError.hidden = false;
+        showFieldError(fieldError, 'Enter your dashboard key.');
         input.setAttribute('aria-invalid', 'true');
         input.focus();
         return;
@@ -118,13 +143,7 @@
       submit.removeAttribute('aria-busy');
       var label = document.createElement('span');
       label.textContent = 'Sign in';
-      var arrow = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      arrow.setAttribute('class', 'icon');
-      arrow.setAttribute('aria-hidden', 'true');
-      var use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
-      use.setAttribute('href', '#i-arrow-right');
-      arrow.appendChild(use);
-      submit.replaceChildren(label, arrow);
+      submit.replaceChildren(label, svgIcon('#i-arrow-right'));
     });
 
     var current = readTheme();
