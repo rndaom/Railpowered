@@ -4,10 +4,11 @@
   Served as /static/login.js (the CSP allows scripts from 'self' only). It is
   loaded from <head> so the saved colour theme applies before first paint; the
   rest waits for the DOM. The server redirects failed sign-ins back here with
-  ?error=1 (wrong key) or ?error=rate (too many attempts), and renders a short
-  message into #login-error so it shows without JavaScript; this script swaps in
-  the fuller wording below. The dashboard sends people here with ?error=expired
-  when their session ends.
+  ?error=1 (wrong key) or ?error=rate (too many attempts), and the dashboard
+  sends people here with ?error=expired when their session ends. The server
+  renders a short message for each into #login-error so it shows without
+  JavaScript; this script replaces it in place with the fuller wording below
+  (one message, never two).
 */
 (function () {
   'use strict';
@@ -84,8 +85,12 @@
     var code = params.get('error');
     // Served without the server's substitution (a static preview), the placeholder is still there.
     if (banner.getAttribute('data-message') === '{{error}}') banner.setAttribute('data-message', '');
+    // The server renders the short wording for the codes it knows (mc_host/web.py
+    // LOGIN_ERRORS: 1, rate, expired) and nothing for others; this swaps in the
+    // fuller wording for those same codes and leaves anything else alone.
+    if (code && !Object.prototype.hasOwnProperty.call(MESSAGES, code)) code = null;
     if (code) {
-      var message = MESSAGES[code] || MESSAGES['1'];
+      var message = MESSAGES[code];
       document.getElementById('login-error-text').textContent = message.text;
       banner.setAttribute('data-message', message.text);
       banner.className = 'callout tone-' + message.tone + ' login-error';

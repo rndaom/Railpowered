@@ -132,8 +132,15 @@
     },
     crashed: {
       label: 'Crashed', icon: 'i-alert',
-      copy: function () { return 'Minecraft stopped unexpectedly. It still wakes up when someone joins, or you can start it again now.'; },
-      sub: function () { return 'Stopped unexpectedly'; },
+      copy: function (s) {
+        switch (crashKind(s)) {
+          case 'runtime': return 'Minecraft stopped unexpectedly. It still wakes up when someone joins, or you can start it again now.';
+          case 'starting': return 'Minecraft failed while starting. Joining doesn\'t wake it for 5 minutes after that, but you can start it again here at any time.';
+          case 'start': return 'Minecraft couldn\'t start, so joining won\'t wake it for now. Fix what\'s below, then start it again here.';
+          default: return 'Minecraft stopped unexpectedly. You can start it again now.';
+        }
+      },
+      sub: function (s) { var kind = crashKind(s); return kind === 'start' || kind === 'starting' ? 'Couldn\'t start' : 'Stopped unexpectedly'; },
     },
     unknown: {
       label: 'Checking…', icon: 'i-loader',
@@ -141,6 +148,20 @@
       sub: function () { return 'Connecting to your server'; },
     },
   };
+
+  // Whether a join still wakes a crashed server depends on how it went down
+  // (mc_host/process.py wake_blocked): a crash after it was online wakes on the
+  // next join; a crash while starting (or a start that timed out) blocks wake-ups
+  // for 5 minutes; a start that failed outright (no exit code) blocks them for at
+  // least that long, and for good when a retry can't help (a missing Java, a
+  // world from a newer version) until it's started from the dashboard.
+  function crashKind(s) {
+    var exit = s && s.last_exit;
+    if (!exit) return '';
+    if (exit.code == null) return 'start';
+    if (/^Crashed while starting|didn't finish starting/.test(String(exit.reason || ''))) return 'starting';
+    return 'runtime';
+  }
 
   /* ================================================================ state */
 
@@ -159,7 +180,11 @@
     settings: null,
     settingsPeek: null,     // /api/settings fetched for the New setup form while Settings hasn't loaded
     settingsDirty: false,
-    uploading: null,        // { abort } while a modpack upload is in flight
+    storage: null,          // GET /api/storage: { items, total }
+    uploading: null,        // { abort } while a modpack or backup upload is in flight
+    // What started a task from this tab, by taskIdent(), so a task that fails
+    // with world_downgrade can be confirmed and sent again: { world, retry(), newWorld() }.
+    taskRequests: {},
     removedPlayers: {},     // kind -> { name, timer }: just removed, with an inline Undo
     pending: {},            // server actions in flight: { start: true, ... }
     // Task ids restart at t1 when the backend restarts, so tasks are tracked by
@@ -870,7 +895,7 @@
       window.requestAnimationFrame(function () { if (logState.follow) scrollLogToBottom(); });
       updateConsoleInput();
     }
-    if (view === 'setups') { loadSetups(); loadWorlds(); loadVersions(); }
+    if (view === 'setups') { loadSetups(); loadWorlds(); loadVersions(); loadStorage(); }
     if (view === 'worlds') { loadWorlds(); loadBackups(); }
     if (view === 'players') { loadPlayers(); renderPlayersOnline(); }
     if (view === 'settings') loadSettings();
@@ -968,6 +993,32 @@
           toast({
             tone: 'bad', title: 'Couldn\'t sign out',
             text: res ? 'The server didn\'t confirm it, so you\'re still signed in. Try again.' : 'Couldn\'t reach your server, so you\'re still signed in. Try again.',
+          });
+        });
+      });
+    });
+
+    $('#logout-all').addEventListener('click', function () {
+      var button = this;
+      confirmDialog({
+        tone: 'danger', icon: 'i-shield',
+        title: 'Sign out everywhere?',
+        body: [
+          el('p', null, 'Every browser signed in to this dashboard is signed out, this one included. Anyone who wants back in needs the dashboard key.'),
+          el('p', null, 'If someone else might know the key, change ', el('code', null, 'ADMIN_KEY'), ' in Railway too. Signing out doesn\'t stop them from signing in again with it.'),
+        ],
+        confirmLabel: 'Sign out everywhere', confirmIcon: 'i-logout',
+      }).then(function (ok) {
+        if (!ok) return;
+        runBusy(button, 'Signing out…', function () {
+          return api('POST', '/api/sessions/revoke-all', {}).then(function () {
+            redirecting = true;
+            stopPolling();
+            window.location.replace('/login');
+            return new Promise(function () {}); // keep the button busy while the page changes
+          }, function (err) {
+            if (err.status === 401) return; // already signed out: goLogin() takes over
+            toastError('Couldn\'t sign out everywhere', err);
           });
         });
       });
@@ -1110,7 +1161,7 @@
     var v = state.route.view;
     if (v === 'worlds') { loadWorlds(true); loadBackups(true); }
     if (v === 'players') loadPlayers(true);
-    if (v === 'setups') { loadSetups(true); loadWorlds(true); }
+    if (v === 'setups') { loadSetups(true); loadWorlds(true); loadStorage(true); }
   }
 
   function onStatus(s) {
@@ -1171,9 +1222,37 @@
     if (!wasRunning) return; // finished before this page loaded: the banner shows it
     state.notifiedTasks[ident] = true;
     var label = next.label || 'Task';
-    if (next.state === 'done') announce(label + ': done. ' + taskDoneText(next));
+    if (next.state === 'done') announce(label + ': done. ' + (next.note ? next.note : taskDoneText(next)));
     else announce(label + ': failed. ' + (next.error || 'The console has the details.'));
     onTaskFinished(next);
+  }
+
+  // Remember how to send a task's request again (see state.taskRequests).
+  function rememberTaskRequest(task, request) {
+    if (!task || !task.id || !request) return;
+    state.taskRequests[taskIdent(task)] = request;
+  }
+
+  function taskDowngradeRequest(task) {
+    if (!task || task.state !== 'failed' || task.code !== 'world_downgrade') return null;
+    return state.taskRequests[taskIdent(task)] || null;
+  }
+
+  // A task that found the world was played on a newer version (the check runs
+  // once the exact version is known, e.g. after a modpack download): ask the
+  // same question as before a switch, then send the same request again.
+  function offerTaskDowngrade(task) {
+    var request = taskDowngradeRequest(task);
+    if (!request) return;
+    var err = { message: task.error || 'This world was played on a newer version of Minecraft.', data: task.data || {} };
+    downgradeDialog(err, request.world).then(function (choice) {
+      if (choice !== 'continue' && choice !== 'new') return;
+      delete state.taskRequests[taskIdent(task)];
+      dismissTask(task);
+      renderTaskBanner();
+      if (choice === 'continue') request.retry(task.data || {});
+      else request.newWorld(task.data || {});
+    });
   }
 
   function taskDoneText(task) {
@@ -1191,13 +1270,18 @@
     if (state.setups || state.route.view === 'setups') loadSetups(true);
     if (state.worlds || state.route.view === 'worlds' || state.route.view === 'setups') loadWorlds(true);
     if (state.backups || state.route.view === 'worlds') loadBackups(true);
+    if (state.storage || state.route.view === 'setups') loadStorage(true);
     var form = state.setupForm;
+    var downgrade = !!taskDowngradeRequest(task);
     if (form && form.pendingTaskId === taskIdent(task)) {
       form.pendingTaskId = null;
       if (task.state === 'done') resetSetupForm();
+      else if (downgrade) setText($('#setup-summary'), 'Nothing was changed yet. Choose how to go on in the dialog, or adjust the details and try again.');
       else setText($('#setup-summary'), 'That didn\'t work. Your details are still here, so you can adjust them and try again.');
       updateSetupSubmit();
     }
+    if (task.state !== 'running' && !downgrade) delete state.taskRequests[taskIdent(task)];
+    if (downgrade) offerTaskDowngrade(task);
   }
 
   function taskElapsed(task) {
@@ -1223,7 +1307,8 @@
       banner.removeAttribute('data-key');
       return;
     }
-    var key = taskIdent(task) + ':' + task.state + ':' + (task.label || '') + ':' + (task.error || '');
+    var downgrade = !!taskDowngradeRequest(task);
+    var key = taskIdent(task) + ':' + task.state + ':' + (task.label || '') + ':' + (task.error || '') + ':' + (task.note || '') + ':' + downgrade;
     banner.hidden = false;
     if (banner.getAttribute('data-key') === key) { updateTaskTimes(); return; }
     var hadFocus = banner.contains(document.activeElement);
@@ -1243,11 +1328,14 @@
           el('div', { class: 'task-track', 'aria-hidden': 'true' })));
     } else if (task.state === 'done') {
       var doneText = taskDoneText(task);
-      banner.className = 'banner tone-ok';
+      // A note is a warning about the result (say, a restored world that was
+      // played on a newer version), so the banner takes the warning tone.
+      banner.className = 'banner ' + (task.note ? 'tone-warn' : 'tone-ok');
       banner.replaceChildren(
-        icon('i-check-circle'),
+        icon(task.note ? 'i-alert' : 'i-check-circle'),
         el('div', { class: 'banner-body' },
-          el('p', { class: 'banner-title' }, label + ': done'),
+          el('p', { class: 'banner-title' }, label + (task.note ? ': done, with a warning' : ': done')),
+          task.note ? el('p', { class: 'banner-text banner-note' }, task.note) : null,
           el('p', { class: 'banner-text' }, doneText ? doneText + ' ' : '', 'Finished ',
             el('span', { id: 'task-finished', title: formatDateTime(task.finished_at) || null }), '.')),
         el('div', { class: 'banner-actions' }, dismissBtn));
@@ -1257,8 +1345,12 @@
         icon('i-alert-circle'),
         el('div', { class: 'banner-body' },
           el('p', { class: 'banner-title' }, label + ': failed'),
-          el('p', { class: 'banner-text' }, task.error || 'It stopped with an error. The console has the details.')),
+          el('p', { class: 'banner-text' }, task.error || 'It stopped with an error. The console has the details.'),
+          task.note ? el('p', { class: 'banner-text banner-note' }, task.note) : null),
         el('div', { class: 'banner-actions' },
+          // The downgrade question was asked in a dialog; this brings it back if it was closed.
+          downgrade ? el('button', { class: 'btn btn-sm', type: 'button', onclick: function () { offerTaskDowngrade(task); } },
+            icon('i-alert', 'icon-sm'), 'Review options') : null,
           el('a', { class: 'btn btn-sm', href: '#/console' }, icon('i-console', 'icon-sm'), 'Open console'),
           dismissBtn));
     }
@@ -1423,6 +1515,33 @@
     return t && t.state === 'running' ? t : null;
   }
 
+  // Why a change that runs as a task (switch, install, back up, restore) can't
+  // start right now, or ''. The server answers 409 busy while another task runs
+  // and while Minecraft is starting or stopping.
+  function worldOpsWait() {
+    var task = runningTask();
+    if (task) return 'Available when “' + (task.label || 'the current task') + '” finishes';
+    var phase = state.status && state.status.phase;
+    if (phase === 'starting') return 'Available once the server is online';
+    if (phase === 'stopping') return 'Available once the server has stopped';
+    return '';
+  }
+
+  // Like the hero's Start and Stop: an unavailable button stays focusable and
+  // says why in its title, instead of going dead with `disabled`.
+  function markUnavailable(button, reason) {
+    if (!button || button.getAttribute('aria-busy') === 'true') return;
+    if (reason) {
+      button.setAttribute('aria-disabled', 'true');
+      button.title = reason;
+    } else {
+      button.removeAttribute('aria-disabled');
+      button.removeAttribute('title');
+    }
+  }
+
+  function isUnavailable(button) { return !!button && button.getAttribute('aria-disabled') === 'true'; }
+
   // Unavailable buttons use aria-disabled rather than disabled, so a button
   // keeps keyboard focus while its request runs; focus is put back on the same
   // action after every rebuild instead of falling to <body>.
@@ -1481,7 +1600,10 @@
     }
   }
 
-  function serverAction(id) {
+  // opts.allowDowngrade: start a world that was played on a newer version
+  // (asked for after a 409 world_downgrade; the world is backed up first).
+  function serverAction(id, opts) {
+    opts = opts || {};
     var s = state.status || {};
     var n = s.player_count || 0;
     var confirmFirst = Promise.resolve(true);
@@ -1511,11 +1633,12 @@
       }
       renderHero();
       var path = { start: '/api/server/start', stop: '/api/server/stop', restart: '/api/server/restart', save: '/api/server/save' }[id];
-      api('POST', path).then(function () {
+      api('POST', path, opts.allowDowngrade ? { allow_downgrade: true } : undefined).then(function () {
         // The save is only requested here; Minecraft writes in the background and logs "Saved the game".
         if (id === 'save') toast({ tone: 'ok', title: 'Save requested', text: 'Minecraft is writing the world to disk. The console shows when it\'s done.' });
       }, function (err) {
         if (err.code === 'already_running') { toast({ tone: 'info', title: 'Already running', text: err.message }); return; }
+        if (id === 'start' && err.code === 'world_downgrade') { offerStartDowngrade(err); return; }
         if (id === 'restart' && state.settings) loadSettings(); // the banner was hidden optimistically
         var titles = { start: 'Couldn\'t start the server', stop: 'Couldn\'t stop the server', restart: 'Couldn\'t restart the server', save: 'Couldn\'t save the world' };
         toastError(titles[id], err);
@@ -1523,6 +1646,27 @@
         delete state.pending[id];
         heroKey = '';
         pollStatus().then(function () { if (state.status) renderHero(); });
+      });
+    });
+  }
+
+  // The active setup's world was played on a newer version (often a restored
+  // backup). Same choices as before a switch: an empty world, or a backup and
+  // then open it anyway.
+  function offerStartDowngrade(err) {
+    var setup = state.status && state.status.setup;
+    downgradeDialog(err, setup && setup.level_name).then(function (choice) {
+      if (choice === 'continue') { serverAction('start', { allowDowngrade: true }); return; }
+      if (choice !== 'new' || !setup || !setup.id) return;
+      (state.worlds ? Promise.resolve() : loadWorlds(true)).then(function () {
+        state.pending.start = true;
+        heroKey = '';
+        renderHero();
+        return moveSetupToNewWorld(setup, null, { start: true });
+      }).finally(function () {
+        delete state.pending.start;
+        heroKey = '';
+        renderHero();
       });
     });
   }
@@ -2212,8 +2356,8 @@
       return;
     }
     var sorted = setups.slice().sort(function (a, b) { return (b.active ? 1 : 0) - (a.active ? 1 : 0); });
-    var busy = !!runningTask();
-    host.replaceChildren(el('ul', { class: 'list', role: 'list' }, sorted.map(function (s) { return setupRow(s, busy); })));
+    var wait = worldOpsWait();
+    host.replaceChildren(el('ul', { class: 'list', role: 'list' }, sorted.map(function (s) { return setupRow(s, wait); })));
 
     var ed = state.editingSetup;
     var input = ed && host.querySelector('.inline-edit input');
@@ -2239,7 +2383,8 @@
     renderSetups();
   }
 
-  function setupRow(setup, busy) {
+  // wait: why switching isn't possible right now (worldOpsWait), or ''.
+  function setupRow(setup, wait) {
     var editing = state.editingSetup && state.editingSetup.id === setup.id;
     var title;
     if (editing) {
@@ -2261,9 +2406,9 @@
       // Every row has the same three slots, so the buttons line up down the
       // list; the active setup gets invisible stand-ins for the two it can't use.
       var switchBtn = el('button', {
-        class: 'btn btn-sm', type: 'button', disabled: busy || null,
-        title: busy ? 'Wait for the current task to finish' : null,
-        onclick: function (e) { activateSetup(setup, e.currentTarget); },
+        class: 'btn btn-sm', type: 'button', 'data-switch': setup.id,
+        'aria-disabled': wait ? 'true' : null, title: wait || null,
+        onclick: function (e) { if (!isUnavailable(e.currentTarget)) activateSetup(setup, e.currentTarget); },
       }, icon('i-arrow-right', 'icon-sm'), el('span', null, 'Switch to this'));
       var deleteBtn = el('button', {
         class: 'btn btn-ghost-danger btn-sm', type: 'button', 'aria-label': 'Delete ' + (setup.name || 'setup'),
@@ -2387,26 +2532,37 @@
     var body = allowDowngrade ? { allow_downgrade: true } : {};
     return api('POST', '/api/setups/' + encodeURIComponent(setup.id) + '/activate', body).then(function (data) {
       if (data && data.already_active) { toast({ tone: 'info', title: 'Already active', text: '“' + (setup.name || 'That setup') + '” is the active setup.' }); loadSetups(true); return; }
-      acceptTask(data);
+      // The switch can still find a newer world once it knows the exact version.
+      acceptTask(data, {
+        world: setup.level_name,
+        retry: function () { return activateSetup(setup, null, { confirmed: true, allowDowngrade: true }); },
+        newWorld: function () { return moveSetupToNewWorld(setup, null); },
+      });
     });
   }
 
   // "Use a new world" for an existing setup: the user already chose to switch,
   // so create an empty world, point the setup at it and switch, with no second
   // question. If the switch can't start, put the setup back as it was.
-  function moveSetupToNewWorld(setup, button) {
+  // opts.start: the setup is the active one and the user asked to start the
+  // server, so start it (instead of switching) once it points at the new world.
+  function moveSetupToNewWorld(setup, button, opts) {
+    opts = opts || {};
     var name = uniqueWorldName((setup.level_name || 'world') + '-new');
     var previous = setup.level_name;
     var created = false, patched = false;
-    return runBusy(button, 'Switching…', function () {
+    return runBusy(button, opts.start ? 'Starting…' : 'Switching…', function () {
       return api('POST', '/api/worlds', { name: name }).then(function () {
         created = true;
         return api('PATCH', '/api/setups/' + encodeURIComponent(setup.id), { level_name: name });
       }).then(function () {
         patched = true;
-        return requestActivate(setup, false);
+        return opts.start ? api('POST', '/api/server/start', {}) : requestActivate(setup, false);
       }).then(function () {
-        toast({ tone: 'ok', title: 'Switching on a new world', text: '“' + (setup.name || 'The setup') + '” now uses the empty world “' + name + '”. “' + previous + '” is untouched.' });
+        toast({
+          tone: 'ok', title: opts.start ? 'Starting on a new world' : 'Switching on a new world',
+          text: '“' + (setup.name || 'The setup') + '” now uses the empty world “' + name + '”. “' + previous + '” is untouched.',
+        });
         loadSetups(true);
         loadWorlds(true);
       }).catch(function (err) {
@@ -2414,11 +2570,11 @@
         if (patched) undo = undo.then(function () { return api('PATCH', '/api/setups/' + encodeURIComponent(setup.id), { level_name: previous }); });
         if (created) undo = undo.then(function () { return api('DELETE', '/api/worlds/' + encodeURIComponent(name)); });
         return undo.catch(function () { /* best effort; the lists below show what's there */ }).then(function () {
-          toastError('Couldn\'t switch to a new world', err);
+          toastError(opts.start ? 'Couldn\'t start on a new world' : 'Couldn\'t switch to a new world', err);
           loadSetups(true);
           loadWorlds(true);
         });
-      });
+      }).finally(function () { if (opts.start) pollStatus(); });
     });
   }
 
@@ -2434,18 +2590,161 @@
     }).then(function (ok) {
       if (!ok) return;
       runBusy(button, '', function () {
-        return api('DELETE', '/api/setups/' + encodeURIComponent(setup.id)).then(function () {
-          toast({ tone: 'ok', title: 'Setup deleted', text: '“' + (setup.name || setupSummary(setup)) + '” is gone. Its world is still there.' });
+        return api('DELETE', '/api/setups/' + encodeURIComponent(setup.id)).then(function (data) {
+          var orphaned = orphanedItems(data);
+          toast({
+            tone: 'ok', title: 'Setup deleted',
+            text: '“' + (setup.name || setupSummary(setup)) + '” is gone. Its world is still there.' + orphanedText(orphaned),
+            actions: orphanActions(orphaned),
+          });
+          if (state.storage) loadStorage(true);
           return loadSetups(true);
         }, function (err) { toastError('Couldn\'t delete the setup', err); });
       });
     });
   }
 
-  function acceptTask(data) {
+  /* ---------------------------------------------------------------- downloaded files */
+
+  var STORAGE_TYPES = {
+    vanilla: { label: 'Minecraft server', glyph: 'vanilla', icon: 'i-cube' },
+    fabric: { label: 'Fabric', glyph: 'fabric', icon: 'i-feather' },
+    forge: { label: 'Forge', glyph: 'forge', icon: 'i-hammer' },
+    modpack: { label: 'Modpack', glyph: 'modpack', icon: 'i-package' },
+    other: { label: 'Other files', glyph: 'world', icon: 'i-file' },
+  };
+
+  function storageKindLabel(item) {
+    var type = (STORAGE_TYPES[item.type] || STORAGE_TYPES.other).label;
+    if (item.kind === 'jar') return item.type === 'fabric' ? 'Fabric installer' : item.type === 'vanilla' ? 'Minecraft server jar' : type + ' jar';
+    return item.type === 'modpack' ? 'Modpack install' : type + ' install';
+  }
+
+  function usedByNames(item) {
+    return (Array.isArray(item.used_by) ? item.used_by : []).map(function (u) { return u && typeof u === 'object' ? u.name || u.id : String(u); });
+  }
+
+  function loadStorage(quiet) {
+    var host = $('#storage-list');
+    if (!state.storage && !quiet) host.replaceChildren(el('li', null, skeletonRows(2)));
+    return api('GET', '/api/storage').then(function (data) {
+      state.storage = { items: Array.isArray(data.items) ? data.items : [], total: Number(data.total) || 0 };
+      renderStorage();
+    }, function (err) {
+      if (!state.storage) host.replaceChildren(el('li', null, errorState('Couldn\'t load the downloaded files', err, function () { loadStorage(); })));
+      else if (!quiet) toastError('Couldn\'t refresh the downloaded files', err);
+    });
+  }
+
+  function renderStorage() { keepFocus(['#storage-list'], renderStorageNow); }
+
+  function renderStorageNow() {
+    var host = $('#storage-list');
+    var data = state.storage || { items: [], total: 0 };
+    // Unused files first: they're the ones there is something to do about.
+    var items = data.items.slice().sort(function (a, b) {
+      var ua = usedByNames(a).length ? 1 : 0, ub = usedByNames(b).length ? 1 : 0;
+      return ua - ub || (Number(b.size) || 0) - (Number(a.size) || 0);
+    });
+    setText($('#storage-count'), items.length ? '(' + items.length + ')' : '');
+    var unused = items.filter(function (i) { return !usedByNames(i).length; });
+    var unusedBytes = unused.reduce(function (sum, i) { return sum + (Number(i.size) || 0); }, 0);
+    setText($('#storage-total'), items.length
+      ? formatBytes(data.total) + ' in total' + (unused.length ? ' · ' + formatBytes(unusedBytes) + ' unused' : '')
+      : '');
+    if (!items.length) {
+      host.replaceChildren(el('li', null, emptyState('i-disk', 'Nothing downloaded yet', 'Server files show up here once a setup has been installed.')));
+      return;
+    }
+    host.replaceChildren.apply(host, items.map(function (item) {
+      var type = STORAGE_TYPES[item.type] || STORAGE_TYPES.other;
+      var users = usedByNames(item);
+      var deleteBtn = el('button', {
+        class: 'btn btn-ghost-danger btn-sm', type: 'button', 'aria-label': 'Delete ' + item.name,
+        onclick: function (e) { deleteStorageItems([item], e.currentTarget); },
+      }, icon('i-trash', 'icon-sm'), el('span', null, 'Delete'));
+      return el('li', { class: 'row' },
+        el('span', { class: 'glyph t-' + type.glyph }, icon(type.icon)),
+        el('div', { class: 'row-main' },
+          el('p', { class: 'row-title' }, item.name,
+            users.length ? null : el('span', { class: 'badge badge-warn' }, 'Not used')),
+          el('p', { class: 'row-meta' }, metaParts([
+            el('span', null, storageKindLabel(item)),
+            el('span', null, icon('i-disk', 'icon-sm'), formatBytes(item.size)),
+          ]))),
+        el('div', { class: 'row-actions' }, users.length ? slotPlaceholder(deleteBtn) : deleteBtn),
+        users.length ? el('p', { class: 'row-note' }, 'Used by: ' + users.join(', ') + '. Delete those setups first to remove it.') : null);
+    }));
+  }
+
+  // The orphaned list of a setup or world delete: files no setup uses any more.
+  function orphanedItems(data) {
+    return data && Array.isArray(data.orphaned) ? data.orphaned.filter(function (i) { return i && i.kind && i.name; }) : [];
+  }
+
+  function orphanedText(items) {
+    if (!items.length) return '';
+    var bytes = items.reduce(function (sum, i) { return sum + (Number(i.size) || 0); }, 0);
+    return ' ' + plural(items.length, 'downloaded file', 'downloaded files') + ' (' + formatBytes(bytes) + ') ' +
+      (items.length === 1 ? 'isn\'t' : 'aren\'t') + ' used by any setup now.';
+  }
+
+  function orphanActions(items) {
+    return items.length ? [{ label: 'Delete unused files', run: function () { deleteStorageItems(items, null); } }] : [];
+  }
+
+  // Confirm, then delete one or more unused files. The server refuses (409
+  // in_use) anything a setup still uses, so the list is reloaded either way.
+  function deleteStorageItems(items, button) {
+    var bytes = items.reduce(function (sum, i) { return sum + (Number(i.size) || 0); }, 0);
+    var one = items.length === 1;
+    confirmDialog({
+      tone: 'danger', icon: 'i-trash',
+      title: one ? 'Delete “' + items[0].name + '”?' : 'Delete ' + items.length + ' unused files?',
+      body: [
+        one
+          ? el('p', null, storageKindLabel(items[0]) + ', ' + formatBytes(items[0].size) + '. No setup uses it.')
+          : el('div', null,
+            el('p', null, 'No setup uses these, and deleting them frees ' + formatBytes(bytes) + ':'),
+            el('ul', { class: 'used-by' }, items.map(function (i) { return el('li', null, i.name + ' (' + formatBytes(i.size) + ')'); }))),
+        el('p', null, 'Worlds and backups aren\'t touched. If you install this version or pack again later, it\'s downloaded again.'),
+      ],
+      confirmLabel: one ? 'Delete file' : 'Delete files', confirmIcon: 'i-trash',
+    }).then(function (ok) {
+      if (!ok) return;
+      runBusy(button, '', function () {
+        var freed = 0, failed = null;
+        var chain = Promise.resolve();
+        items.forEach(function (item) {
+          chain = chain.then(function () {
+            return api('DELETE', '/api/storage/' + encodeURIComponent(item.kind) + '/' + encodeURIComponent(item.name)).then(function (data) {
+              freed += Number(data.freed) || 0;
+              if (Array.isArray(data.items)) state.storage = { items: data.items, total: Number(data.total) || 0 };
+            }, function (err) { if (!failed) failed = { item: item, err: err }; });
+          });
+        });
+        return chain.then(function () {
+          if (freed) toast({ tone: 'ok', title: one && !failed ? 'File deleted' : 'Files deleted', text: formatBytes(freed) + ' freed on the volume.' });
+          if (failed) {
+            var users = failed.err.code === 'in_use' ? usedByNames({ used_by: failed.err.data && failed.err.data.used_by }) : [];
+            toast({
+              tone: 'bad', title: 'Couldn\'t delete “' + failed.item.name + '”',
+              text: users.length ? 'It\'s used by ' + users.join(', ') + '. Delete those setups first.' : failed.err.message,
+            });
+          }
+          if (state.storage) renderStorage();
+          return loadStorage(true).then(function () { if (state.backups || state.route.view === 'worlds') loadBackups(true); });
+        });
+      });
+    });
+  }
+
+  // request: how to send it again if it fails with world_downgrade (see state.taskRequests).
+  function acceptTask(data, request) {
     var task = data && data.task;
     if (task && task.id) {
       var ident = taskIdent(task);
+      rememberTaskRequest(task, request);
       state.watchedTasks[ident] = true;
       if (!state.taskFirstSeen[ident]) state.taskFirstSeen[ident] = Date.now();
       if (state.status) {
@@ -2745,7 +3044,7 @@
   function populateExistingWorlds() {
     var sel = $('#existing-world');
     var worlds = state.worlds || [];
-    var key = worlds.map(function (w) { return w.name + ':' + (w.last_version || '') + ':' + (w.active ? 1 : 0); }).join('|');
+    var key = worlds.map(function (w) { return w.name + ':' + (w.last_version || '') + ':' + (w.newest_version || '') + ':' + (w.active ? 1 : 0); }).join('|');
     if (sel.getAttribute('data-key') === key) return;
     sel.setAttribute('data-key', key);
     var previous = sel.value;
@@ -2793,6 +3092,12 @@
         tone = 'ok';
         text = '“' + world.name + '” was last played on this version.';
       }
+    }
+    // A world opened with an older version after a confirmation remembers the newer one.
+    var newest = world.newest_version;
+    if (form.type !== 'modpack' && newest && world.last_version && compareVersions(newest, world.last_version) > 0) {
+      text += ' It was played on ' + newest + ' before that, so an older version than ' + newest + ' may ask first.';
+      if (tone === 'ok') tone = 'info';
     }
     note.className = 'callout tone-' + tone;
     note.replaceChildren(icon(tone === 'ok' ? 'i-check-circle' : tone === 'info' ? 'i-info' : 'i-alert'), el('p', null, text));
@@ -2842,13 +3147,23 @@
     if (!form) return;
     var btn = $('#setup-submit');
     if (btn.getAttribute('aria-busy') === 'true') return;
-    var task = state.status && state.status.task;
-    var running = !!(task && task.state === 'running');
-    btn.disabled = form.submitting || running;
+    var task = runningTask();
+    var phase = state.status && state.status.phase;
+    // Only one upload at a time: a backup upload holds up a modpack upload.
+    var uploadWait = state.uploadingKind === 'backup' && form.type === 'modpack' && form.packSource === 'file'
+      ? 'Available when the backup upload finishes' : '';
+    btn.disabled = form.submitting;
+    markUnavailable(btn, worldOpsWait() || uploadWait);
     var summary = $('#setup-summary');
-    if (form.pendingTaskId && running && taskIdent(task) === form.pendingTaskId) setText(summary, 'Working on it. You can leave this page. Progress shows at the top.');
-    else if (running) setText(summary, 'Another task is running. You can create the setup when it finishes.');
-    else if (!form.pendingTaskId && summary.textContent.indexOf('Another task') === 0) setText(summary, '');
+    var waitText = '';
+    if (task) waitText = 'Another task is running. You can create the setup when it finishes.';
+    else if (phase === 'starting') waitText = 'The server is starting. You can create the setup once it\'s online.';
+    else if (phase === 'stopping') waitText = 'The server is stopping. You can create the setup once it has stopped.';
+    else if (uploadWait) waitText = 'A backup is uploading. You can upload the modpack when it finishes.';
+    if (form.pendingTaskId && task && taskIdent(task) === form.pendingTaskId) setText(summary, 'Working on it. You can leave this page. Progress shows at the top.');
+    else if (waitText) { setText(summary, waitText); summary.setAttribute('data-wait', ''); }
+    else if (!form.pendingTaskId && summary.hasAttribute('data-wait')) setText(summary, '');
+    if (!waitText) summary.removeAttribute('data-wait');
   }
 
   function resetSetupForm() {
@@ -2947,50 +3262,108 @@
   function submitSetup(allowDowngrade, packConfirmed) {
     var form = state.setupForm;
     if (form.submitting) return;
+    var btn = $('#setup-submit');
+    if (isUnavailable(btn)) {
+      setText($('#setup-summary'), btn.title || 'This can\'t start right now.');
+      return;
+    }
     if (!validateSetupForm()) return;
     var ready = packConfirmed ? Promise.resolve(true) : confirmPackReplace();
     form.submitting = true;
     ready.then(function (ok) {
       form.submitting = false;
-      if (ok) sendSetup(allowDowngrade);
+      if (ok) sendSetupRequest(setupRequest(), { allowDowngrade: allowDowngrade });
     });
   }
 
-  function sendSetup(allowDowngrade) {
+  // The form's request as data, so it can be sent again later (after a
+  // downgrade question) exactly as it was, even if the form has changed since.
+  function setupRequest() {
     var form = state.setupForm;
     var body = collectSetup();
-    if (allowDowngrade) body.allow_downgrade = true;
+    if (form.type !== 'modpack') {
+      return { kind: 'setup', body: body, world: body.level_name, worldBase: form.type + '-' + (selectedVersion() || 'world') };
+    }
+    var name = $('#pack-name').value.trim();
+    if (form.packSource === 'url') {
+      return { kind: 'url', body: { url: $('#pack-url').value.trim(), name: name, level_name: body.level_name }, world: body.level_name, worldBase: name };
+    }
+    return { kind: 'upload', name: name, world: body.level_name, worldBase: name, file: form.file };
+  }
+
+  // The same request on a new, empty world.
+  function onNewWorld(req) {
+    var next = Object.assign({}, req);
+    next.world = uniqueWorldName(req.worldBase || req.world || 'world');
+    if (req.body) {
+      next.body = Object.assign({}, req.body, { level_name: next.world });
+      if (req.kind === 'setup') next.body.create_world = true;
+    }
+    return next;
+  }
+
+  function packUploadQuery(req, allowDowngrade) {
+    // filename only tells the server whether this is a .mrpack or a .zip; it is percent-encoded so any name is safe.
+    return 'name=' + encodeURIComponent(req.name) + '&level_name=' + encodeURIComponent(req.world) +
+      '&filename=' + encodeURIComponent(req.file ? req.file.name : '') + (allowDowngrade ? '&allow_downgrade=1' : '');
+  }
+
+  // How a setup or modpack request carries on after a world_downgrade answer,
+  // whether it came back at once (409) or from the task. An upload the server
+  // kept (upload_token) is confirmed with an empty body instead of sent again.
+  function setupFollowUp(req) {
+    return {
+      world: req.world,
+      retry: function (data) {
+        return sendSetupRequest(req, { allowDowngrade: true, token: data && data.upload_token });
+      },
+      newWorld: function (data) {
+        var next = onNewWorld(req);
+        showNewWorldInForm(next.world);
+        return sendSetupRequest(next, { token: data && data.upload_token });
+      },
+    };
+  }
+
+  // Show the form's world step as "new world", named as the request now is.
+  function showNewWorldInForm(name) {
+    var form = state.setupForm;
+    $('#setup-form input[name="world-mode"][value="new"]').checked = true;
+    $('#new-world-wrap').hidden = false;
+    $('#existing-world-wrap').hidden = true;
+    $('#new-world-name').value = name;
+    form.worldNameTouched = true;
+    onSetupFormChange();
+  }
+
+  // opts.allowDowngrade: confirmed opening an older-version world (it's backed up first).
+  // opts.token: confirm a modpack upload the server kept, without uploading it again.
+  function sendSetupRequest(req, opts) {
+    opts = opts || {};
+    var form = state.setupForm;
+    var allow = !!opts.allowDowngrade;
     var btn = $('#setup-submit');
     form.submitting = true;
     setText($('#setup-summary'), '');
     var request;
-    if (form.type !== 'modpack') {
+    if (req.kind === 'setup') {
+      var body = Object.assign({}, req.body);
+      if (allow) body.allow_downgrade = true;
       request = runBusy(btn, 'Checking…', function () { return api('POST', '/api/setups', body); });
-    } else if (form.packSource === 'url') {
-      var mp = { url: $('#pack-url').value.trim(), name: $('#pack-name').value.trim(), level_name: body.level_name };
-      if (allowDowngrade) mp.allow_downgrade = true;
+    } else if (req.kind === 'url') {
+      var mp = Object.assign({}, req.body);
+      if (allow) mp.allow_downgrade = true;
       request = runBusy(btn, 'Checking…', function () { return api('POST', '/api/modpacks', mp); });
+    } else if (opts.token) {
+      var confirmPath = '/api/modpacks/upload?' + packUploadQuery(req, allow) + '&token=' + encodeURIComponent(opts.token);
+      request = runBusy(btn, 'Checking…', function () { return api('POST', confirmPath); });
     } else {
-      // filename only tells the server whether this is a .mrpack or a .zip; it is percent-encoded so any name is safe.
-      var q = 'name=' + encodeURIComponent($('#pack-name').value.trim()) + '&level_name=' + encodeURIComponent(body.level_name) +
-        '&filename=' + encodeURIComponent(form.file.name) + (allowDowngrade ? '&allow_downgrade=1' : '');
-      var bar = $('#upload-bar');
-      var wrap = $('#upload-progress');
-      wrap.hidden = false;
-      setUploadProgress(0, form.file.size);
-      request = runBusy(btn, 'Uploading…', function () {
-        state.uploading = uploadFile('/api/modpacks/upload?' + q, form.file, setUploadProgress);
-        return state.uploading;
-      });
-      request.catch(function () {}).then(function () {
-        state.uploading = null;
-        wrap.hidden = true;
-        bar.setAttribute('aria-valuenow', '0');
-      });
+      var path = '/api/modpacks/upload?' + packUploadQuery(req, allow);
+      request = runBusy(btn, 'Uploading…', function () { return startUpload('pack', path, req.file); });
     }
-    request.then(function (data) {
+    return request.then(function (data) {
       form.submitting = false;
-      var task = acceptTask(data);
+      var task = acceptTask(data, setupFollowUp(req));
       if (task) form.pendingTaskId = taskIdent(task);
       setText($('#setup-summary'), 'Working on it. You can leave this page. Progress shows at the top.');
       updateSetupSubmit();
@@ -3004,30 +3377,137 @@
         return;
       }
       if (err.code === 'world_downgrade') {
-        downgradeDialog(err, body.level_name).then(function (choice) {
-          if (choice === 'continue') submitSetup(true, true);
-          else if (choice === 'new') {
-            $('#setup-form input[name="world-mode"][value="new"]').checked = true;
-            $('#new-world-wrap').hidden = false;
-            $('#existing-world-wrap').hidden = true;
-            form.worldNameTouched = false;
-            onSetupFormChange();
-            submitSetup(false, true);
-          }
+        var follow = setupFollowUp(req);
+        var data = err.data || {};
+        downgradeDialog(err, req.world).then(function (choice) {
+          if (choice === 'continue') follow.retry(data);
+          else if (choice === 'new') follow.newWorld(data);
         });
         return;
       }
-      toastError(form.type === 'modpack' ? 'Couldn\'t install the modpack' : 'Couldn\'t create the setup', err);
+      if (err.code === 'upload_expired') { askUploadAgain(req, allow); return; }
+      if (req.kind === 'upload') {
+        setText($('#setup-summary'), 'Nothing was installed. Your details are still here.');
+        uploadErrorToast('Couldn\'t upload the modpack', err, function () { sendSetupRequest(req, { allowDowngrade: allow }); });
+        return;
+      }
+      toastError(req.kind === 'setup' ? 'Couldn\'t create the setup' : 'Couldn\'t install the modpack', err);
     });
   }
 
-  function setUploadProgress(loaded, total) {
+  // 410 upload_expired: the server kept the uploaded pack for an hour while
+  // waiting for an answer, and it's gone now.
+  function askUploadAgain(req, allowDowngrade) {
+    var hasFile = !!req.file;
+    setText($('#setup-summary'), 'Nothing was installed. The uploaded file is no longer on the server.');
+    confirmDialog({
+      icon: 'i-upload',
+      title: 'Upload the modpack again?',
+      body: [
+        el('p', null, 'The server keeps an uploaded pack for an hour while it waits for your answer, and this one has been removed since. Nothing was installed.'),
+        el('p', null, hasFile
+          ? ['This page still has ', el('strong', null, req.file.name), ', so it can be sent again with the same choices.']
+          : 'Choose the file again to install it.'),
+      ],
+      confirmLabel: hasFile ? 'Upload again' : 'Choose the file',
+      confirmIcon: 'i-upload',
+    }).then(function (ok) {
+      if (!ok) return;
+      if (hasFile) sendSetupRequest(req, { allowDowngrade: allowDowngrade });
+      else pickPackFileAgain();
+    });
+  }
+
+  function pickPackFileAgain() {
+    var modpack = $('#setup-form input[name="type"][value="modpack"]');
+    if (modpack && !modpack.checked) { modpack.checked = true; modpack.dispatchEvent(new Event('change')); }
+    var fileSource = $('#setup-form [data-pack-source="file"]');
+    if (fileSource && fileSource.getAttribute('aria-pressed') !== 'true') fileSource.click();
+    setPackFile(null);
+    window.location.hash = '#/setups';
+    $('#pack-file').click();
+  }
+
+  /* ---------------------------------------------------------------- uploads (modpacks and backups) */
+
+  // One upload at a time: the server refuses a second one with 409 busy.
+  var UPLOAD_UI = {
+    pack: { wrap: '#upload-progress', bar: '#upload-bar', pct: '#upload-pct', label: '#upload-label', done: 'Upload complete. Checking the pack…' },
+    backup: { wrap: '#backup-upload-progress', bar: '#backup-upload-bar', pct: '#backup-upload-pct', label: '#backup-upload-label', done: 'Upload complete. Checking the backup…' },
+  };
+
+  // Upload with progress in the matching progress row; the row's Cancel aborts it.
+  function startUpload(kind, path, file) {
+    var ui = UPLOAD_UI[kind];
+    $(ui.wrap).hidden = false;
+    setUploadProgress(kind, 0, file.size);
+    var upload = uploadFile(path, file, function (loaded, total) { setUploadProgress(kind, loaded, total); });
+    state.uploading = upload;
+    state.uploadingKind = kind;
+    updateUploadButtons();
+    upload.catch(function () {}).then(function () {
+      if (state.uploading === upload) { state.uploading = null; state.uploadingKind = null; }
+      $(ui.wrap).hidden = true;
+      $(ui.bar).setAttribute('aria-valuenow', '0');
+      updateUploadButtons();
+    });
+    return upload;
+  }
+
+  function setUploadProgress(kind, loaded, total) {
+    var ui = UPLOAD_UI[kind];
     var pct = total ? Math.min(100, Math.round((loaded / total) * 100)) : 0;
-    var bar = $('#upload-bar');
+    var bar = $(ui.bar);
     bar.setAttribute('aria-valuenow', String(pct));
     bar.firstElementChild.style.width = pct + '%';
-    setText($('#upload-pct'), pct + '%');
-    setText($('#upload-label'), pct >= 100 ? 'Upload complete. Checking the pack…' : 'Uploading ' + formatBytes(loaded) + ' of ' + formatBytes(total));
+    setText($(ui.pct), pct + '%');
+    setText($(ui.label), pct >= 100 ? ui.done : 'Uploading ' + formatBytes(loaded) + ' of ' + formatBytes(total));
+  }
+
+  // A file the server can't take, said before uploading it (the server checks too).
+  function uploadSizeProblem(file) {
+    var limit = uploadLimit();
+    if (limit && file.size > limit) {
+      return '“' + file.name + '” is ' + formatBytes(file.size) + ', and this server accepts uploads up to ' + formatBytes(limit) + '.';
+    }
+    if (state.disk && state.disk.free_bytes != null && file.size > Number(state.disk.free_bytes)) {
+      return '“' + file.name + '” is ' + formatBytes(file.size) + ', but the volume only has ' + formatBytes(state.disk.free_bytes) + ' free.';
+    }
+    return '';
+  }
+
+  // Plain words for the ways the server turns an upload down. again: retries it.
+  function uploadErrorToast(title, err, again) {
+    if (err && err.status === 401) return;
+    var retry = again ? [{ label: 'Try again', run: again }] : [];
+    var text = err && err.message ? err.message : 'Something went wrong.';
+    switch (err && err.code) {
+      case 'busy':
+        toast({ tone: 'warn', title: 'Another upload or task is running', text: text, actions: retry });
+        return;
+      case 'disk_full':
+        toast({
+          tone: 'bad', title: 'Not enough free space on the volume',
+          text: text + ' Delete old backups, worlds or downloaded files, then try again.',
+          actions: [{ label: 'Downloaded files', run: function () { window.location.hash = '#/setups/storage'; } }],
+        });
+        return;
+      case 'too_slow':
+        toast({ tone: 'bad', title: 'The upload was too slow', text: text + ' A steadier connection helps.', actions: retry });
+        return;
+      case 'incomplete_body':
+        toast({ tone: 'bad', title: 'The upload was cut off', text: text, actions: retry });
+        return;
+      case 'too_large':
+        toast({ tone: 'bad', title: 'That file is too large', text: text + ' Raise MAX_UPLOAD_MB in Railway to allow bigger uploads.' });
+        return;
+      default:
+        if (err && err.status === 413) {
+          toast({ tone: 'bad', title: 'That file is too large', text: text });
+          return;
+        }
+        toast({ tone: 'bad', title: title, text: text, actions: err && err.code === 'network' ? retry : [] });
+    }
   }
 
   /* ================================================================ worlds */
@@ -3059,10 +3539,17 @@
       host.replaceChildren(el('li', null, emptyState('i-world', 'No worlds yet', 'Minecraft creates one the first time a setup starts. You can also create an empty one above.')));
       return;
     }
-    var busy = !!(state.status && state.status.task && state.status.task.state === 'running');
+    var wait = worldOpsWait();
     host.replaceChildren.apply(host, worlds.map(function (w) {
       var meta = [];
-      meta.push(el('span', null, w.last_version ? 'Minecraft ' + w.last_version : 'Not played yet'));
+      meta.push(el('span', null, w.last_version ? 'Last opened on ' + w.last_version : 'Not played yet'));
+      // newest_version: the newest Minecraft that ever opened it. Anything older
+      // asks first (and takes a backup), even when the last run was older.
+      var newest = w.newest_version;
+      if (newest && newest !== w.last_version && (!w.last_version || compareVersions(newest, w.last_version) > 0)) {
+        meta.push(el('span', { title: 'Opening it with a version older than ' + newest + ' asks first and takes a backup.' },
+          icon('i-alert', 'icon-sm'), 'Opened on ' + newest + ' earlier'));
+      }
       if (w.last_played) meta.push(el('span', null, icon('i-clock', 'icon-sm'), 'Played ' + relativeTime(w.last_played)));
       meta.push(el('span', null, icon('i-disk', 'icon-sm'), formatBytes(w.size_bytes)));
       var used = Array.isArray(w.used_by) ? w.used_by : [];
@@ -3072,9 +3559,9 @@
       }, icon('i-trash', 'icon-sm'), el('span', null, 'Delete'));
       var actions = [
         el('button', {
-          class: 'btn btn-sm', type: 'button', disabled: busy || null, 'data-backup-world': w.name,
-          title: busy ? 'Wait for the current task to finish' : null,
-          onclick: function (e) { backupWorld(w.name, e.currentTarget); },
+          class: 'btn btn-sm', type: 'button', 'data-backup-world': w.name,
+          'aria-disabled': wait ? 'true' : null, title: wait || null, 'aria-label': 'Back up ' + w.name,
+          onclick: function (e) { if (!isUnavailable(e.currentTarget)) backupWorld(w.name, e.currentTarget); },
         }, icon('i-archive', 'icon-sm'), el('span', null, 'Back up')),
       ];
       // The active world can't be deleted; an invisible stand-in keeps the columns aligned.
@@ -3115,7 +3602,55 @@
       });
     });
     $('#world-name').addEventListener('input', function () { showFieldError($('#world-name'), $('#world-name-error'), ''); });
-    $('#backup-active').addEventListener('click', function (e) { backupWorld(null, e.currentTarget); });
+    $('#backup-active').addEventListener('click', function (e) { if (!isUnavailable(e.currentTarget)) backupWorld(null, e.currentTarget); });
+    var backupFile = $('#backup-file');
+    $('#backup-upload').addEventListener('click', function (e) {
+      if (isUnavailable(e.currentTarget)) return;
+      backupFile.click();
+    });
+    backupFile.addEventListener('change', function () {
+      var file = backupFile.files && backupFile.files[0];
+      backupFile.value = ''; // choosing the same file again still fires change
+      if (file) uploadBackup(file);
+    });
+    $('#backup-upload-cancel').addEventListener('click', function () { if (state.uploading) state.uploading.abort(); });
+  }
+
+  // Bring back a backup that was downloaded earlier (say, onto a new volume).
+  function uploadBackup(file) {
+    var btn = $('#backup-upload');
+    var problem = !/\.(tar\.gz|tgz)$/i.test(file.name)
+      ? '“' + file.name + '” isn\'t a .tar.gz file. Upload a backup downloaded from Railpowered, or a .tar.gz of one world folder.'
+      : uploadSizeProblem(file);
+    if (problem) {
+      toast({ tone: 'bad', title: 'Can\'t upload that file', text: problem });
+      return;
+    }
+    runBusy(btn, 'Uploading…', function () {
+      return startUpload('backup', '/api/backups/upload', file).then(function (data) {
+        if (Array.isArray(data.backups)) state.backups = data.backups;
+        renderBackups();
+        loadBackups(true);
+        var backup = data.backup || {};
+        var world = backup.world || '';
+        var exists = (state.worlds || []).some(function (w) { return w.name === world; });
+        toast({
+          tone: 'ok', title: 'Backup added',
+          text: (world ? 'A backup of “' + world + '”' : 'The backup') + ' is in the list now.' +
+            (world && !exists ? ' There\'s no world with that name yet, so restoring it adds one.' : ''),
+          actions: backup.name && !backup.damaged ? [{ label: 'Restore it', run: function () {
+            restoreBackup(backup, $('[data-restore="' + cssEscape(backup.name) + '"]'));
+          } }] : [],
+        });
+      }, function (err) {
+        if (err.code === 'aborted') { toast({ tone: 'info', title: 'Upload cancelled', text: 'Nothing was added.' }); return; }
+        if (err.code === 'invalid_backup') {
+          toast({ tone: 'bad', title: 'That isn\'t a backup Railpowered can use', text: err.message + ' Upload a backup downloaded from Railpowered, or a .tar.gz of one world folder.' });
+          return;
+        }
+        uploadErrorToast('Couldn\'t upload the backup', err, function () { uploadBackup(file); });
+      });
+    });
   }
 
   function deleteWorld(world, button) {
@@ -3152,7 +3687,14 @@
       runBusy(button, 'Deleting…', function () {
         return api('DELETE', '/api/worlds/' + encodeURIComponent(world.name)).then(function (data) {
           var removed = data && Array.isArray(data.removed_setups) ? data.removed_setups : [];
-          toast({ tone: 'ok', title: 'World deleted', text: '“' + world.name + '” is gone.' + (removed.length ? ' Also removed: ' + removed.join(', ') + '.' : '') });
+          var orphaned = orphanedItems(data);
+          toast({
+            tone: 'ok', title: 'World deleted',
+            text: '“' + world.name + '” is gone.' + (removed.length ? ' Also removed: ' + removed.join(', ') + '.' : '') +
+              orphanedText(orphaned),
+            actions: orphanActions(orphaned),
+          });
+          if (state.storage) loadStorage(true);
           return Promise.all([loadWorlds(true), state.setups ? loadSetups(true) : null]);
         }, function (err) { toastError('Couldn\'t delete the world', err); });
       });
@@ -3174,8 +3716,8 @@
     });
   }
 
-  // Railpowered's own copies: before a restore or before opening a world with an older version.
-  function isSafetyBackup(b) { return (b.kind && b.kind !== 'manual') || /-pre-(restore|downgrade)-/.test(String(b.name)); }
+  // Railpowered's own copies: before a restore, an upgrade, or opening a world with an older version.
+  function isSafetyBackup(b) { return (b.kind && b.kind !== 'manual') || /-pre-(restore|downgrade|upgrade)-/.test(String(b.name)); }
 
   function renderBackups() { keepFocus(['#backups-list'], renderBackupsNow); }
 
@@ -3191,7 +3733,7 @@
       host.replaceChildren(el('li', null, emptyState('i-archive', 'No backups yet', 'Back up a world before big changes like a version upgrade. It only takes a moment.')));
       return;
     }
-    var busy = !!(state.status && state.status.task && state.status.task.state === 'running');
+    var wait = worldOpsWait();
     host.replaceChildren.apply(host, list.map(function (b) {
       var when = formatDateTime(b.created_at);
       var meta = [];
@@ -3200,21 +3742,22 @@
       // The title has the date; the meta adds "2 hours ago" only while that says more.
       if (b.created_at && isRecent(b.created_at, 7)) meta.push(el('span', null, icon('i-clock', 'icon-sm'), relativeTime(b.created_at)));
       var damaged = !!b.damaged;
-      var restoreTitle = damaged ? 'This backup can\'t be read, so it can\'t be restored' : (busy ? 'Wait for the current task to finish' : null);
+      var restoreTitle = damaged ? 'This backup can\'t be read, so it can\'t be restored' : (wait || null);
       return el('li', { class: 'row' },
         el('span', { class: 'glyph t-backup' }, icon('i-archive')),
         el('div', { class: 'row-main' },
           el('p', { class: 'row-title' }, (b.world || 'Unknown world') + (when ? ' · ' + when : ''),
             damaged ? el('span', { class: 'badge badge-bad', title: 'The archive is damaged or incomplete. You can still download it.' }, icon('i-alert'), 'Damaged') : null,
-            isSafetyBackup(b) ? el('span', { class: 'badge badge-work', title: 'Taken automatically before a restore or before opening the world with an older version' }, 'Safety copy') : null),
+            isSafetyBackup(b) ? el('span', { class: 'badge badge-work', title: 'Taken automatically before a restore, before an upgrade, or before opening the world with an older version' }, 'Safety copy') : null),
           el('p', { class: 'row-meta' }, metaParts(meta))),
         el('div', { class: 'row-actions' },
           el('a', { class: 'btn btn-sm', href: '/api/backups/' + encodeURIComponent(b.name) + '/download', download: b.name, 'aria-label': 'Download backup ' + b.name },
             icon('i-download', 'icon-sm'), el('span', null, 'Download')),
           el('button', {
-            class: 'btn btn-sm', type: 'button', disabled: busy || damaged || null, 'data-restore': b.name, 'data-damaged': damaged ? '' : null,
+            class: 'btn btn-sm', type: 'button', disabled: damaged || null, 'data-restore': b.name, 'data-damaged': damaged ? '' : null,
+            'aria-disabled': !damaged && wait ? 'true' : null,
             title: restoreTitle, 'aria-label': 'Restore backup ' + b.name,
-            onclick: function (e) { restoreBackup(b, e.currentTarget); },
+            onclick: function (e) { if (!isUnavailable(e.currentTarget)) restoreBackup(b, e.currentTarget); },
           }, icon('i-rotate', 'icon-sm'), el('span', null, 'Restore')),
           el('button', {
             class: 'btn btn-ghost-danger btn-sm', type: 'button', 'aria-label': 'Delete backup ' + b.name,
@@ -3240,20 +3783,26 @@
     $('#disk-bar-wrap').setAttribute('aria-label', Math.round(pct) + '% of the volume is used');
   }
 
+  // Called on every status poll: what can start depends on the task and the phase.
   function updateBackupButtons() {
-    var busy = !!(state.status && state.status.task && state.status.task.state === 'running');
+    var wait = worldOpsWait();
     var btn = $('#backup-active');
     if (btn.getAttribute('aria-busy') !== 'true') {
-      btn.disabled = busy || !(state.status && state.status.setup);
-      btn.title = busy ? 'Wait for the current task to finish' : '';
+      btn.disabled = !(state.status && state.status.setup);
+      markUnavailable(btn, btn.disabled ? '' : wait);
     }
-    $$('[data-backup-world], [data-restore]').forEach(function (b) {
-      if (b.getAttribute('aria-busy') === 'true') return;
-      b.disabled = busy || b.hasAttribute('data-damaged');
+    $$('[data-backup-world], [data-restore]:not([data-damaged]), #setups-list [data-switch]:not(.slot-placeholder)').forEach(function (b) {
+      markUnavailable(b, wait);
     });
-    $$('#setups-list .row-actions .btn:not(.btn-ghost):not(.btn-ghost-danger):not(.slot-placeholder)').forEach(function (b) {
-      if (b.getAttribute('aria-busy') !== 'true') b.disabled = busy;
-    });
+    updateUploadButtons();
+  }
+
+  function updateUploadButtons() {
+    var btn = $('#backup-upload');
+    if (btn && btn.getAttribute('aria-busy') !== 'true') {
+      markUnavailable(btn, state.uploading ? (state.uploadingKind === 'pack' ? 'Available when the modpack upload finishes' : 'A backup is uploading') : '');
+    }
+    updateSetupSubmit();
   }
 
   function backupWorld(world, button) {
@@ -3270,6 +3819,11 @@
     // world is null when the archive doesn't say which world it holds; then
     // the only safe choice is a new world, since "replace" would be a guess.
     var world = backup.world || '';
+    var wait = worldOpsWait();
+    if (wait) {
+      toast({ tone: 'info', title: 'Restoring isn\'t possible right now', text: wait + '.' });
+      return Promise.resolve();
+    }
     var activeWorld = state.status && state.status.setup && state.status.setup.level_name;
     var running = !!(state.status && (RUNNING[state.status.phase] || state.status.phase === 'stopping'));
     var inUse = !!world && running && activeWorld === world;
@@ -3283,18 +3837,23 @@
     var nameWrap = el('div', { class: 'field field-indent', hidden: true },
       el('label', { class: 'field-label', for: 'restore-name' }, 'New world name'), newName, nameError);
     var label = world ? '“' + world + '”' : 'an unknown world';
+    // An uploaded backup (or one whose world was deleted) has no world to replace:
+    // restoring it under its own name brings that world back.
+    var missing = !!world && !!state.worlds && !state.worlds.some(function (w) { return w.name === world; });
     return openDialog({
       tone: 'primary', icon: 'i-rotate',
       title: 'Restore this backup?',
       body: [
         el('p', null, 'Backup of ', world ? el('strong', null, world) : 'a world whose name isn\'t recorded', backup.created_at ? ' from ' + formatDateTime(backup.created_at) : '', backup.minecraft_version ? ' (Minecraft ' + backup.minecraft_version + ')' : '', '.'),
         world ? el('label', { class: 'radio-line' }, replaceRadio, el('span', { class: 'radio-copy' },
-          el('span', null, 'Replace ' + label),
-          el('span', { class: 'field-help' }, 'Railpowered first saves the current ' + label + ' as a safety backup, so nothing is lost.'),
+          el('span', null, missing ? 'Restore as ' + label : 'Replace ' + label),
+          el('span', { class: 'field-help' }, missing
+            ? 'There\'s no world called ' + label + ' right now, so the backup becomes it.'
+            : 'Railpowered first saves the current ' + label + ' as a safety backup, so nothing is lost.'),
           inUse ? runningNote : null)) : null,
         el('label', { class: 'radio-line' }, newRadio, el('span', { class: 'radio-copy' },
-          el('span', null, 'Restore as a new world'),
-          el('span', { class: 'field-help' }, world ? 'Keeps ' + label + ' as it is and adds the backup next to it.' : 'The backup becomes a world of its own, and no existing world is touched.'))),
+          el('span', null, missing ? 'Restore under another name' : 'Restore as a new world'),
+          el('span', { class: 'field-help' }, world && !missing ? 'Keeps ' + label + ' as it is and adds the backup next to it.' : 'The backup becomes a world of its own, and no existing world is touched.'))),
         nameWrap,
         el('p', { class: 'subtle' }, 'Restoring changes only the world. Setups, settings and player lists stay as they are.'),
       ],

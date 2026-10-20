@@ -122,9 +122,14 @@
           <button type="button" data-theme-choice="light" aria-pressed="false" title="Light theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sun"/></svg><span>Light</span></button>
           <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-moon"/></svg><span>Dark</span></button>
         </div>
-        <button class="btn btn-ghost btn-block btn-start" type="button" id="logout">
-          <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span>Sign out</span>
-        </button>
+        <div class="signout-group">
+          <button class="btn btn-ghost btn-block btn-start" type="button" id="logout">
+            <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span>Sign out</span>
+          </button>
+          <button class="btn btn-ghost btn-block btn-start btn-sm signout-all" type="button" id="logout-all">
+            <svg class="icon icon-sm" aria-hidden="true"><use href="#i-shield"/></svg><span>Sign out everywhere</span>
+          </button>
+        </div>
         <p class="version-line" id="version-line">Railpowered</p>
       </div>
     </aside>
@@ -422,6 +427,15 @@
               </ol>
             </form>
           </section>
+
+          <section class="card" id="storage" aria-labelledby="storage-title">
+            <div class="card-head">
+              <h2 id="storage-title"><svg class="icon" aria-hidden="true"><use href="#i-disk"/></svg>Downloaded files <span class="count" id="storage-count"></span></h2>
+              <p class="head-note" id="storage-total"></p>
+            </div>
+            <p class="card-sub">The server files your setups run from: Minecraft server jars, Fabric and Forge installs, and modpacks. Files no setup uses can be deleted to free up space. A setup that needs them later downloads them again.</p>
+            <ul class="list list-ruled list-gap" id="storage-list" role="list"></ul>
+          </section>
         </section>
 
         <!-- ============================================================ Worlds -->
@@ -449,16 +463,27 @@
           <section class="card" aria-labelledby="backups-list-title">
             <div class="card-head">
               <h2 id="backups-list-title"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>Backups <span class="count" id="backups-count"></span></h2>
-              <button class="btn btn-primary btn-sm" type="button" id="backup-active"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-archive"/></svg><span>Back up active world</span></button>
+              <div class="head-actions">
+                <button class="btn btn-sm" type="button" id="backup-upload"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-upload"/></svg><span>Upload backup</span></button>
+                <button class="btn btn-primary btn-sm" type="button" id="backup-active"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-archive"/></svg><span>Back up active world</span></button>
+              </div>
+              <input type="file" id="backup-file" accept=".gz,.tgz,application/gzip" hidden>
             </div>
             <div class="card-body tight stack-sm">
               <div class="meter" id="disk-meter" hidden>
                 <div class="meter-legend"><span id="disk-used"></span><span id="disk-free"></span></div>
                 <div class="meter-bar" role="img" id="disk-bar-wrap"><span id="disk-bar"></span></div>
               </div>
+              <div class="field" id="backup-upload-progress" hidden>
+                <div class="meter-legend"><span id="backup-upload-label">Uploading…</span><span id="backup-upload-pct" class="tabular">0%</span></div>
+                <div class="upload-row">
+                  <div class="progress" role="progressbar" aria-labelledby="backup-upload-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="backup-upload-bar"><span></span></div>
+                  <button class="btn btn-ghost btn-sm" type="button" id="backup-upload-cancel"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-x"/></svg><span>Cancel upload</span></button>
+                </div>
+              </div>
               <div class="callout">
                 <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
-                <p>Backups live on the same Railway volume as your worlds. <strong>Download the ones you care about</strong> so a copy exists somewhere else too.</p>
+                <p>Backups live on the same Railway volume as your worlds. <strong>Download the ones you care about</strong> so a copy exists somewhere else too. To bring one back, for example onto a new volume, use <strong>Upload backup</strong>.</p>
               </div>
             </div>
             <ul class="list list-ruled" id="backups-list" role="list"></ul>
@@ -678,7 +703,8 @@
               </details>
               <details id="faq-crashed">
                 <summary>The server crashed<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
-                <div class="faq-body"><p>The Overview shows the last useful line Minecraft printed, and the <a href="#/console">Console</a> has the full log. Out-of-memory errors usually mean the modpack needs more RAM than your Railway plan gives the service. A crashed server still wakes up when someone joins.</p></div>
+                <div class="faq-body"><p>The Overview shows the last useful line Minecraft printed, and the <a href="#/console">Console</a> has the full log. Out-of-memory errors usually mean the modpack needs more RAM than your Railway plan gives the service.</p>
+                  <p>If Minecraft crashed after it was online, the next friend who joins wakes it again. If it failed while starting, joining doesn't wake it for 5 minutes. When a retry can't help (for example Java is missing, or the world was played on a newer version), joining doesn't wake it at all until you start it from the Overview, switch setups or restore a backup.</p></div>
               </details>
             </div>
           </section>

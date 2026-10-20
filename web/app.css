@@ -2126,6 +2126,11 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
 .log-empty.log-empty-sm { padding: 20px var(--space-4); }
 .dialog-body ul.used-by { margin-top: var(--space-1); }
 .card-head h2 img { border-radius: 4px; }
+.head-actions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.head-note { font-size: var(--text-sm); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.banner-text.banner-note { color: var(--text); }
+.signout-group { display: grid; gap: 2px; }
+.signout-all { color: var(--text-2); }
 
 .sk-address { width: 220px; }
 .sk-version { width: 80px; }
