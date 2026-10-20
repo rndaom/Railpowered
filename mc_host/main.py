@@ -1,78 +1,147 @@
-"""Process entry: signals, runtime prepare, sleep proxy, admin HTTP server."""
+"""Process entry: dashboard first, then the sleep proxy, then a background prepare.
+
+Boot order matters on Railway: /health must answer within the healthcheck
+window even when the first deploy downloads Forge, so the HTTP server starts
+before any runtime work, and preparing the server runs as the "prepare" task
+(the dashboard shows it, and the proxy answers joins with "updating").
+
+SIGTERM only sets a flag. The main thread notices it, saves and stops
+Minecraft (save-all flush, stop, up to STOP_TIMEOUT seconds), releases the
+port and exits, inside Railway's drainingSeconds window.
+"""
 
 from __future__ import annotations
 
 import signal
 import sys
 import threading
-
-from http.server import ThreadingHTTPServer
+import time
+from typing import Any
 
 import installer
 
-from .config import ADMIN_KEY, ADMIN_KEY_FROM_ENV, AUTO_START, MC_PUBLIC_ADDRESS, WEB_PORT
-from .panel import PanelHandler
-from .process import idle_checker, send_command, sleep_proxy, start_server
+from . import auth, config
+from . import installer_api as ix
+from .panel import PanelHandler, PanelServer
+from .process import controller, tasks
 from .state import state
 
+_flags = {"shutdown": False}
 
-def main():
-    def handle_signal(sig, frame):
-        state.add_log("Shutdown signal received.")
-        sleep_proxy.stop()
-        if state.running:
-            with state.lock:
-                state.stopping = True
-            try:
-                if state.process and state.process.stdin:
-                    state.process.stdin.write("stop\n")
-                    state.process.stdin.flush()
-                if state.process:
-                    state.process.wait(timeout=30)
-            except Exception:
-                if state.process:
-                    try:
-                        state.process.kill()
-                    except OSError:
-                        pass
-        sys.exit(0)
 
-    signal.signal(signal.SIGTERM, handle_signal)
-    signal.signal(signal.SIGINT, handle_signal)
+def _on_signal(signum: int, _frame: Any) -> None:
+    # No locks, no logging: this runs between bytecodes on the main thread.
+    _flags["shutdown"] = True
 
-    installer.ensure_layout()
+
+def request_shutdown() -> None:
+    _flags["shutdown"] = True
+
+
+def announce_admin_key() -> None:
+    key, source = config.admin_key_info()
+    path = config.admin_key_path()
+    if source == "generated":
+        # stdout only (never the dashboard log), and only on the boot that
+        # created the key.
+        rule = "=" * 68
+        print(
+            "\n".join(
+                [
+                    rule,
+                    "Railpowered created a dashboard key. It is shown only this once:",
+                    "",
+                    f"    {key}",
+                    "",
+                    f"It is saved on the volume at {path}.",
+                    "To choose your own key, set the ADMIN_KEY variable in Railway.",
+                    rule,
+                ]
+            ),
+            flush=True,
+        )
+        state.add_log(f"A new dashboard key was created and printed once to the deploy log ({path}).")
+    elif source == "volume":
+        state.add_log(
+            f"Dashboard key: the one saved at {path}. Set ADMIN_KEY in Railway to choose your own."
+        )
+    else:
+        state.add_log("Dashboard key: ADMIN_KEY from Railway Variables.")
+        if len(key) < config.MIN_RECOMMENDED_KEY_LENGTH:
+            state.add_log(
+                f"ADMIN_KEY is shorter than {config.MIN_RECOMMENDED_KEY_LENGTH} characters. "
+                "A longer key is much harder to guess.",
+                "warn",
+            )
+
+
+def _prepare_runtime() -> None:
     try:
-        installer.prepare_runtime()
-        state.add_log("Runtime files are ready")
+        setup_version = ix.active_setup().get("minecraft_version")
+    except Exception:
+        setup_version = None
+    spec = ix.prepare_runtime()
+    ix.remember_resolved(setup_version, getattr(spec, "version", None))
+    state.add_log(
+        f"Server files are ready: {getattr(spec, 'type', 'minecraft')} "
+        f"{getattr(spec, 'version', '')} on Java {getattr(spec, 'java_major', '?')}."
+    )
+
+
+def _auto_start(_task: Any) -> None:
+    try:
+        controller.start(reason="AUTO_START")
     except Exception as exc:
-        state.add_log(f"Runtime prepare warning: {exc}")
+        state.add_log(f"Automatic start did not happen: {exc}", "warn")
 
-    threading.Thread(target=idle_checker, daemon=True).start()
-    if AUTO_START:
-        start_server()
-    else:
-        sleep_proxy.start()
 
-    ThreadingHTTPServer.allow_reuse_address = True
-    http = ThreadingHTTPServer(("0.0.0.0", WEB_PORT), PanelHandler)
-    if ADMIN_KEY_FROM_ENV:
-        state.add_log("Log in with ADMIN_KEY from Railway Variables")
-    else:
-        state.add_log(f"Dashboard key (saved on the volume): {ADMIN_KEY}")
-    if MC_PUBLIC_ADDRESS:
-        state.add_log(f"Join address: {MC_PUBLIC_ADDRESS}")
-    else:
-        state.add_log("Join address appears when Railway TCP proxy 25565 is attached")
-    state.add_log(f"Dashboard on port {WEB_PORT}")
+def main() -> None:
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+
+    for warning in config.CONFIG_WARNINGS:
+        state.add_log(warning, "warn")
+    installer.ensure_layout()
+    announce_admin_key()
+    auth.ensure_session_secret()
 
     try:
-        http.serve_forever()
-    except (KeyboardInterrupt, SystemExit):
-        sleep_proxy.stop()
-        if state.running and state.process:
-            try:
-                send_command("stop")
-                state.process.wait(timeout=15)
-            except Exception:
-                pass
-        http.shutdown()
+        http = PanelServer(("0.0.0.0", config.WEB_PORT), PanelHandler)
+    except OSError as exc:
+        state.add_log(f"Could not open the dashboard port {config.WEB_PORT}: {exc}", "error")
+        sys.exit(1)
+    threading.Thread(target=http.serve_forever, name="dashboard", daemon=True).start()
+    state.add_log(f"Dashboard listening on port {config.WEB_PORT}.")
+    if config.MC_PUBLIC_ADDRESS:
+        state.add_log(f"Join address: {config.MC_PUBLIC_ADDRESS}")
+    else:
+        state.add_log("The join address appears once a Railway TCP proxy points at port 25565.")
+    idle = config.IDLE_TIMEOUT
+    state.add_log(
+        f"Heap {config.MIN_MEMORY}-{config.MAX_MEMORY}; default sleep timer "
+        + (f"{idle // 60} min" if idle else "off")
+        + f"; stop grace {config.STOP_TIMEOUT}s."
+    )
+
+    controller.ensure_listener()
+    threading.Thread(target=controller.idle_loop, name="idle", daemon=True).start()
+
+    try:
+        auto_start = bool(ix.railpowered_settings().get("auto_start"))
+    except Exception:
+        auto_start = config.AUTO_START
+    tasks.submit(
+        "prepare",
+        "Preparing the server files",
+        lambda _ctx: _prepare_runtime(),
+        on_success=_auto_start if auto_start else None,
+    )
+
+    while not _flags["shutdown"]:
+        time.sleep(0.5)
+
+    state.add_log("Shutdown requested; saving the world and stopping Minecraft…")
+    controller.shutdown()
+    http.shutdown()
+    http.server_close()
+    state.add_log("Railpowered stopped.")
