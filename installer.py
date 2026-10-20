@@ -2995,7 +2995,21 @@ def _unescape(value: str) -> str:
                 return token
         return {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}.get(token, token)
 
-    return re.sub(r"\\(u[0-9a-fA-F]{4}|.)", repl, value)
+    text = re.sub(r"\\(u[0-9a-fA-F]{4}|.)", repl, value)
+    if any(0xD800 <= ord(ch) <= 0xDFFF for ch in text):
+        # Join 😀-style surrogate pairs back into one character.
+        text = text.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return text
+
+
+def _unicode_escape(ch: str) -> str:
+    """\\uXXXX for one character; characters beyond the BMP become a UTF-16
+    surrogate pair, as Java's Properties expects."""
+    code = ord(ch)
+    if code <= 0xFFFF:
+        return f"\\u{code:04x}"
+    code -= 0x10000
+    return f"\\u{0xD800 + (code >> 10):04x}\\u{0xDC00 + (code & 0x3FF):04x}"
 
 
 def _escape(value: str) -> str:
@@ -3004,7 +3018,7 @@ def _escape(value: str) -> str:
         if ch == "\\":
             out.append("\\\\")
         elif ord(ch) > 126 or ord(ch) < 32:
-            out.append(f"\\u{ord(ch):04x}")
+            out.append(_unicode_escape(ch))
         else:
             out.append(ch)
     text = "".join(out)
@@ -3020,10 +3034,18 @@ class _Properties:
     @classmethod
     def load(cls, path: str) -> "_Properties":
         try:
-            with open(path, encoding="latin-1") as handle:
-                return cls(handle.read().splitlines())
+            with open(path, "rb") as handle:
+                raw = handle.read()
         except FileNotFoundError:
             return cls()
+        # Minecraft 1.20+ rewrites server.properties as UTF-8 (e.g. a MOTD
+        # with "é"); older servers and our own writer use ISO-8859-1 with
+        # \uXXXX escapes, which is plain ASCII. Try UTF-8 first.
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw.decode("latin-1")
+        return cls(text.splitlines())
 
     def _index(self, key: str) -> int | None:
         for index, line in enumerate(self.lines):
@@ -3055,7 +3077,12 @@ class _Properties:
         return values
 
     def dump(self) -> str:
-        return "\n".join(self.lines) + "\n"
+        """ASCII text (non-ASCII as \\uXXXX) that every Minecraft version reads
+        the same way, even for lines Minecraft itself wrote in UTF-8."""
+        text = "\n".join(self.lines) + "\n"
+        if text.isascii():
+            return text
+        return "".join(ch if ord(ch) < 128 else _unicode_escape(ch) for ch in text)
 
 
 def read_properties(path: str | None = None) -> dict[str, str]:

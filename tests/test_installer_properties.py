@@ -95,6 +95,23 @@ class ManagedKeysTests(PropertiesTestCase):
         self.assertIn("\\u00e9", self.read("server.properties"))
         self.assertEqual(self.props()["motd"], "Café \u2615 \\o/")
 
+    def test_utf8_file_written_by_minecraft_reads_correctly(self):
+        # Minecraft 1.20+ rewrites server.properties as UTF-8 on start.
+        with open(self.path("server.properties"), "wb") as handle:
+            handle.write("#Minecraft server properties\nmotd=Café SMP\nlevel-type=minecraft\\:normal\n".encode())
+        self.assertEqual(self.props()["motd"], "Café SMP")
+        installer.write_properties({"pvp": "false"})
+        with open(self.path("server.properties"), "rb") as handle:
+            raw = handle.read()
+        self.assertTrue(raw.isascii(), raw)  # readable as ISO-8859-1 and UTF-8 alike
+        self.assertIn(b"motd=Caf\\u00e9 SMP", raw)
+        self.assertEqual(self.props()["motd"], "Café SMP")
+
+    def test_characters_beyond_the_bmp_use_surrogate_pairs(self):
+        installer.write_properties({"motd": "Pick \U0001F4A5"})
+        self.assertIn("\\ud83d\\udca5", self.read("server.properties"))
+        self.assertEqual(self.props()["motd"], "Pick \U0001F4A5")
+
 
 class SettingsApiTests(PropertiesTestCase):
     def test_shape_and_schema(self):
@@ -200,6 +217,22 @@ class SettingsApiTests(PropertiesTestCase):
         result = installer.update_settings({"pvp": False})
         self.assertTrue(result["restart_required"])
         self.assertTrue(installer.get_settings()["restart_required"])
+
+    def test_minecraft_rewriting_the_file_is_not_a_change(self):
+        self.vanilla_jar("1.20.1")
+        self.set_version("1.20.1")
+        installer.update_settings({"motd": "Café"})
+        installer.prepare_runtime()
+        # What the server does on boot: rewrite every key, in UTF-8, with ':' escaped.
+        props = installer.read_properties()
+        text = "#Minecraft server properties\n" + "".join(
+            f"{k}={v.replace(':', chr(92) + ':')}\n" for k, v in props.items()
+        )
+        with open(self.path("server.properties"), "wb") as handle:
+            handle.write(text.encode("utf-8"))
+        self.assertFalse(installer.get_settings()["restart_required"])
+        installer.set_whitelist_enabled(True)  # applied live with `whitelist on`
+        self.assertFalse(installer.get_settings()["restart_required"])
 
     def test_whitelist_toggle_writes_both_keys(self):
         installer.set_whitelist_enabled(True)
