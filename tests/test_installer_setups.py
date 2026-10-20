@@ -224,7 +224,8 @@ class DowngradeTests(SetupTestCase):
         installer.check_downgrade("old", "1.20.1")
         with self.assertRaises(installer.InstallError) as ctx:
             installer.check_downgrade("old", "1.19.2")
-        self.assertEqual(ctx.exception.data["last_version"], "1.21.1")
+        self.assertEqual(ctx.exception.data["last_version"], "1.20.1")
+        self.assertEqual(ctx.exception.data["newest_version"], "1.21.1")
         # A newer version opening it starts the history over.
         installer.record_world_version("old", "26.3", "vanilla")
         meta = installer.world_meta("old")

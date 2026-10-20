@@ -1698,12 +1698,20 @@ def check_downgrade(level_name: str, version: str) -> None:
     version that has opened the world (and wasn't confirmed before)."""
     newest = _downgrade_from(level_name, version)
     if newest:
+        # last_version: what opened it last (older than newest after a
+        # confirmed downgrade); newest_version: what the guard compares with.
+        last = world_meta(level_name).get("last_version")
         raise InstallError(
             f"World '{level_name}' has been played on Minecraft {newest}. Opening it with "
             f"{version} can damage or delete parts of it. Pick {newest} or newer, use a new "
             "world, or confirm to take a backup and open it anyway.",
             code="world_downgrade",
-            data={"world": level_name, "last_version": newest, "newest_version": newest, "version": version},
+            data={
+                "world": level_name,
+                "last_version": last if isinstance(last, str) and last else newest,
+                "newest_version": newest,
+                "version": version,
+            },
         )
 
 

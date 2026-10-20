@@ -533,6 +533,8 @@ class LifecycleGuardTests(ControllerTestCase):
             self.controller.start()
         self.assertEqual(self.state.last_exit["setup_id"], None)
         self.assertTrue(self.controller.wake_blocked())
+        exit_info = self.controller.snapshot()["last_exit"]
+        self.assertEqual((exit_info["wake"], exit_info["wake_at"]), ("manual", None))
         self.assertEqual(self.controller.proxy_info()["mode"], "crashed")
         self.assertFalse(self.controller.request_wake("Steve"))
         self.assertTrue(self.controller.clear_crash("Switched setups."))
@@ -547,6 +549,9 @@ class LifecycleGuardTests(ControllerTestCase):
             self.controller.start()
         self.assertTrue(self.controller.wake_blocked())
         self.assertFalse(self.controller.wake_blocked(now=time.time() + 301))
+        exit_info = self.controller.snapshot()["last_exit"]
+        self.assertEqual(exit_info["wake"], "later")
+        self.assertAlmostEqual(exit_info["wake_at"], time.time() + 300, delta=5)
 
     def test_crash_after_being_online_still_wakes(self):
         proc = self.start_online()
@@ -554,6 +559,7 @@ class LifecycleGuardTests(ControllerTestCase):
         self.assertTrue(wait_for(lambda: self.state.phase == "crashed"))
         self.assertFalse(self.controller.wake_blocked())
         self.assertEqual(self.controller.proxy_info()["mode"], "sleeping")
+        self.assertEqual(self.controller.snapshot()["last_exit"]["wake"], "join")
 
     def test_whitelist_gate_fails_closed(self):
         self.ix["read_properties"].return_value = {"white-list": "True"}

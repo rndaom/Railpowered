@@ -1020,6 +1020,9 @@ class PanelHandler(BaseHTTPRequestHandler):
         # token: confirm a held upload (409 world_downgrade) without resending it.
         token = ((self.query.get("token") or [""])[0]).strip().lower()
         _require_idle_tasks()
+        # Refuse before reading a possibly huge body: the install task would
+        # be refused anyway while the server is starting or stopping.
+        controller.ensure_quiet()
         if not _upload_lock.acquire(blocking=False):
             self.close_connection = True
             raise ApiError(409, "busy", "Another modpack upload is in progress. Wait for it to finish.")
@@ -1211,6 +1214,8 @@ class PanelHandler(BaseHTTPRequestHandler):
     def api_upload_backup(self) -> None:
         """Bring a downloaded backup (.tar.gz) back, e.g. onto a new volume.
         The body is the file; it's checked and listed like any backup."""
+        # Not during a task: a restore or prune is reading and pruning backups/.
+        _require_idle_tasks()
         if not _upload_lock.acquire(blocking=False):
             self.close_connection = True
             raise ApiError(409, "busy", "Another upload is in progress. Wait for it to finish.")

@@ -158,6 +158,10 @@
   function crashKind(s) {
     var exit = s && s.last_exit;
     if (!exit) return '';
+    // The backend says it directly (last_exit.wake); the rest is for older servers.
+    if (exit.wake === 'join') return 'runtime';
+    if (exit.wake === 'later') return 'starting';
+    if (exit.wake === 'manual') return 'start';
     if (exit.code == null) return 'start';
     if (/^Crashed while starting|didn't finish starting/.test(String(exit.reason || ''))) return 'starting';
     return 'runtime';
@@ -2482,9 +2486,12 @@
     } else {
       var world = (state.worlds || []).filter(function (w) { return w.name === setup.level_name; })[0];
       var target = setupTargetVersion(setup);
-      if (world && world.last_version && isConcreteVersion(target) && compareVersions(target, world.last_version) < 0) {
+      // The backend guards against the newest version that ever opened the
+      // world (newest_version), not only the last one.
+      var guard = world && (world.newest_version || world.last_version);
+      if (guard && isConcreteVersion(target) && compareVersions(target, guard) < 0) {
         decide = downgradeDialog({
-          message: '“' + setup.level_name + '” was last played on Minecraft ' + world.last_version + '. “' +
+          message: '“' + setup.level_name + '” has been played on Minecraft ' + guard + '. “' +
             (setup.name || setupSummary(setup)) + '” runs ' + target + ', and opening the world with an older version can damage it.',
           data: { world: setup.level_name },
         }, setup.level_name, crowd);

@@ -325,6 +325,20 @@ class ServerController:
         now = time.time() if now is None else now
         return code in PERSISTENT_START_FAILURES or now - at < WAKE_BACKOFF
 
+    def _wake_info(self, now: float) -> dict[str, Any]:
+        """How a join treats the crashed server (see wake_blocked), for the
+        dashboard: wake "join" (a join starts it), "later" (not before
+        wake_at) or "manual" (only a start from the dashboard helps)."""
+        failed = self._failed_start
+        if failed is None:
+            return {"wake": "join", "wake_at": None}
+        at, code = failed
+        if code in PERSISTENT_START_FAILURES:
+            return {"wake": "manual", "wake_at": None}
+        if now - at < WAKE_BACKOFF:
+            return {"wake": "later", "wake_at": int(at + WAKE_BACKOFF)}
+        return {"wake": "join", "wake_at": None}
+
     def _active_setup_id(self) -> str | None:
         return self._active_setup_field("id")
 
@@ -1002,6 +1016,8 @@ class ServerController:
             start_time = self.state.start_time
             last_exit = dict(self.state.last_exit) if self.state.last_exit else None
             runtime = self.state.runtime if self.state.process is not None else None
+        if last_exit is not None:
+            last_exit.update(self._wake_info(now))
         return {
             "phase": phase,
             "players": players,

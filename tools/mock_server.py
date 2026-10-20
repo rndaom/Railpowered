@@ -686,7 +686,8 @@ class Mock:
         message = (f"World '{world}' has been played on Minecraft {newest}. Opening it with "
                    f"{version} can damage or delete parts of it. Pick {newest} or newer, use a new "
                    "world, or confirm to take a backup and open it anyway.")
-        return message, {"world": world, "last_version": newest, "newest_version": newest, "version": version}
+        return message, {"world": world, "last_version": w.get("last_version") or newest,
+                         "newest_version": newest, "version": version}
 
     def check_downgrade(self, world, version, allow=False):
         info = None if allow else self.downgrade_info(world, version)
@@ -846,7 +847,8 @@ class Mock:
             self.phase = "crashed"
             self.online_since = None
             self.empty_since = None
-            self.last_exit = {"code": 1, "at": int(now), "reason": "java.lang.OutOfMemoryError: Java heap space"}
+            self.last_exit = {"code": 1, "at": int(now), "reason": "java.lang.OutOfMemoryError: Java heap space",
+                              "wake": "join", "wake_at": None}
             self.last_exit_setup = self.active
         elif phase == "starting":
             self.phase = "sleeping"
@@ -1083,7 +1085,8 @@ class Mock:
         if info:
             message, data = info
             self.phase = "crashed"
-            self.last_exit = {"code": None, "at": int(time.time()), "reason": message}
+            # A blocked downgrade is a failure a retry can't fix: joins don't wake it.
+            self.last_exit = {"code": None, "at": int(time.time()), "reason": message, "wake": "manual", "wake_at": None}
             self.last_exit_setup = self.active
             self.panel(f"Could not start Minecraft: {message}", "error")
             raise ApiError(409, message, "world_downgrade", **data)

@@ -726,7 +726,10 @@ class ServerControlTests(PanelTestCase):
                                   "level_name": "other"})
         installer.save_config(other)
         status = self.api("GET", "/api/status")[1]
-        self.assertEqual(status["last_exit"], {"code": 1, "at": 1, "reason": "Old setup broke"})
+        self.assertEqual(
+            status["last_exit"],
+            {"code": 1, "at": 1, "reason": "Old setup broke", "wake": "join", "wake_at": None},
+        )
         with mock.patch.object(ix, "activate_setup"):
             self.assertEqual(self.api("POST", "/api/setups/other/activate", {})[0], 202)
             tasks.wait_idle(5)
@@ -1123,6 +1126,13 @@ class ModpackRouteTests(PanelTestCase):
         self.assertEqual((status, payload["code"]), (409, "busy"))
         self.assertEqual(self._modpack_files(), [])
 
+    def test_upload_is_refused_before_the_body_while_starting_or_stopping(self):
+        from mc_host.process import ServerBusy
+        with mock.patch.object(controller, "ensure_quiet", side_effect=ServerBusy("The server is stopping.")):
+            status, payload = self.api("POST", "/api/modpacks/upload?name=pack", body=self._zip_bytes())
+        self.assertEqual((status, payload["code"]), (409, "busy"))
+        self.assertEqual(self._modpack_files(), [])
+
     def test_running_out_of_space_mid_upload_is_disk_full(self):
         real_open = open
 
@@ -1227,6 +1237,16 @@ class WorldBackupRouteTests(PanelTestCase):
         self.assertEqual((status, payload["code"]), (400, "invalid_backup"))
         hidden = [n for n in os.listdir(installer.paths()["backups"]) if n.startswith(".")]
         self.assertEqual(hidden, [])
+
+    def test_backup_upload_waits_for_running_tasks(self):
+        release = threading.Event()
+        tasks.submit("restore", "Restoring world", lambda _ctx: release.wait(5))
+        try:
+            status, payload = self.api("POST", "/api/backups/upload", body=bytes([0x1f, 0x8b]) + b" not read")
+        finally:
+            release.set()
+            tasks.wait_idle(5)
+        self.assertEqual((status, payload["code"]), (409, "busy"))
 
     def test_backup_list_download_and_delete(self):
         level = os.path.join(installer.world_path("world"), "level.dat")
