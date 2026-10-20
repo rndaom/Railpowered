@@ -94,6 +94,7 @@ BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.tar\.gz\Z")
 SETUP_NAME_MAX = 48
 RESERVED_INSTANCE_PREFIXES = ("fabric-", "forge-")
 
+IDLE_MAX_MINUTES = 1440  # sleep timer limit (one day), shared with config.py
 MANIFEST_TTL = 600  # seconds a version list counts as fresh
 FABRIC_TTL = 3600
 NETWORK_RETRY_AFTER = 60  # seconds before retrying a host that just failed
@@ -1186,7 +1187,33 @@ def _sanitize_settings(raw: Any) -> dict[str, Any]:
     saved = raw.get("legacy_saved_online_mode")
     if saved in ("true", "false"):
         clean["legacy_saved_online_mode"] = saved
+    pending = _clean_pending(raw.get(PENDING_PROPERTIES))
+    if pending:
+        clean[PENDING_PROPERTIES] = pending
     return clean
+
+
+# Settings saved from the dashboard since the server last started. Vanilla
+# runs in DATA_DIR, so its server.properties is the live file, and Minecraft
+# writes its in-memory copy back over it on `whitelist on|off` (from the
+# dashboard or typed in game). These are re-applied after such a toggle, when
+# the server stops and before the next start, so a saved setting never
+# silently reverts.
+PENDING_PROPERTIES = "pending_properties"
+
+
+def _clean_pending(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: value
+        for key, value in raw.items()
+        if key in PROPERTY_DEFAULTS
+        and key not in _LIVE_PROPERTIES
+        and isinstance(value, str)
+        and len(value) <= 256
+        and not any(ch in value for ch in "\r\n")
+    }
 
 
 def _fingerprint(setup: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -1439,7 +1466,9 @@ def railpowered_settings(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = cfg if cfg is not None else load_config()
     settings = cfg.get("settings") or {}
     idle_seconds = _env_int("IDLE_TIMEOUT", 600, minimum=0)
-    default_minutes = 0 if idle_seconds == 0 else max(1, math.ceil(idle_seconds / 60))
+    # The dashboard allows 0-1440 minutes; a larger Railway value would make
+    # every Settings save fail validation, so it is capped (config.py warns).
+    default_minutes = 0 if idle_seconds == 0 else min(IDLE_MAX_MINUTES, max(1, math.ceil(idle_seconds / 60)))
     return {
         "idle_timeout_minutes": settings.get("idle_timeout_minutes", default_minutes),
         "auto_start": settings.get("auto_start", _env_bool("AUTO_START", False)),
@@ -1694,7 +1723,7 @@ def create_setup(
                 candidate["profiles"] = [s for s in candidate["profiles"] if s["id"] != setup["id"]]
                 candidate["profiles"].append(dict(setup))
                 candidate["active_profile"] = setup["id"]
-                spec = prepare_runtime(candidate, persist=False, allow_downgrade=bool(previous))
+                spec = _prepare_candidate(candidate, allow_downgrade=bool(previous))
             else:
                 spec = _install_runtime(setup, version)
         except BaseException:
@@ -1722,7 +1751,7 @@ def activate_setup(setup_id: str, allow_downgrade: bool = False) -> RuntimeSpec:
         _sync_back_quietly(cfg)
         candidate = copy.deepcopy(cfg)
         candidate["active_profile"] = setup_id
-        spec = prepare_runtime(candidate, persist=False, allow_downgrade=bool(previous))
+        spec = _prepare_candidate(candidate, allow_downgrade=bool(previous))
         resolved = spec.version or version
 
         def apply(fresh: dict[str, Any]) -> None:
@@ -2380,6 +2409,8 @@ def prepare_runtime(
         spec = _install_runtime(setup, version)
         spec.jvm_args.extend(_log4j_args(version))
         _sync_back_quietly(cfg, setup)
+        if persist:
+            apply_pending_properties()
         _write_eula(spec.cwd)
         _apply_managed_properties(version, level, spec.cwd)
         if spec.cwd != DATA_DIR:
@@ -2393,6 +2424,57 @@ def prepare_runtime(
                         item["resolved_version"] = version
             _mutate_config(apply)
         return spec
+
+
+def _prepare_candidate(cfg: dict[str, Any], allow_downgrade: bool = False) -> RuntimeSpec:
+    """prepare_runtime(persist=False) for a setup that isn't active yet.
+
+    Preparing writes the shared server.properties (level-name, online-mode,
+    value formats), the legacy online-mode memory in manager.json and the
+    canonical player lists. If it fails, those are put back the way the
+    still-active setup needs them, so a failed switch changes nothing."""
+    path = paths()["properties"]
+    try:
+        with open(path, "rb") as handle:
+            saved_text: bytes | None = handle.read()
+    except OSError:
+        saved_text = None
+    saved_legacy = (load_config().get("settings") or {}).get("legacy_saved_online_mode")
+    try:
+        return prepare_runtime(cfg, persist=False, allow_downgrade=allow_downgrade)
+    except BaseException:
+        try:
+            _restore_after_failed_prepare(path, saved_text, saved_legacy)
+        except Exception as exc:  # never hide the original error
+            _say(f"Couldn't fully undo the failed preparation: {exc}")
+        raise
+
+
+def _restore_after_failed_prepare(path: str, saved_text: bytes | None, saved_legacy: str | None) -> None:
+    with _CONFIG_LOCK:
+        if saved_text is None:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        else:
+            _atomic_write(path, saved_text)
+        # Settings saved from the dashboard while the switch ran stay saved.
+        pending = _pending_properties()
+        if pending:
+            write_properties(pending)
+
+        def legacy(c: dict[str, Any]) -> None:
+            if saved_legacy is None:
+                c["settings"].pop("legacy_saved_online_mode", None)
+            else:
+                c["settings"]["legacy_saved_online_mode"] = saved_legacy
+
+        _mutate_config(legacy)
+        # The lists may have been converted to the candidate's online mode;
+        # render them for the active setup again (no network: cached UUIDs).
+        cfg = load_config()
+        _render_to_active(cfg, _active_version(cfg))
 
 
 # ---------------------------------------------------------------------------
@@ -3222,6 +3304,8 @@ PROPERTY_DEFAULTS = {
     "white-list": "false",
     "enforce-whitelist": "false",
 }
+# Applied live with `whitelist on|off`; never part of a pending restart.
+_LIVE_PROPERTIES = ("white-list", "enforce-whitelist")
 # Written when missing so new servers start with modest load.
 _SEED_KEYS = ("motd", "view-distance", "simulation-distance", "spawn-protection", "online-mode", "white-list")
 
@@ -3267,12 +3351,39 @@ def _apply_managed_properties(version: str, level: str, run_dir: str) -> None:
 _prepared_digest: str | None = None
 
 
+def _pending_properties(cfg: dict[str, Any] | None = None) -> dict[str, str]:
+    cfg = cfg if cfg is not None else load_config()
+    return dict((cfg.get("settings") or {}).get(PENDING_PROPERTIES) or {})
+
+
+def _saved_properties(cfg: dict[str, Any] | None = None) -> dict[str, str]:
+    """server.properties as the owner saved it: the file plus any saved
+    settings Minecraft has since written over (see PENDING_PROPERTIES)."""
+    return {**read_properties(), **_pending_properties(cfg)}
+
+
+def apply_pending_properties(clear: bool = True) -> bool:
+    """Write saved-but-overwritten settings back into server.properties.
+    ``clear`` forgets them afterwards (only once Minecraft is down, since a
+    running server can overwrite the file again). Returns True if any."""
+    with _CONFIG_LOCK:
+        pending = _pending_properties()
+        if not pending:
+            return False
+        current = read_properties()
+        changed = {k: v for k, v in pending.items() if current.get(k) != v}
+        if changed:
+            write_properties(changed)
+        if clear:
+            _mutate_config(lambda c: c["settings"].pop(PENDING_PROPERTIES, None))
+        return True
+
+
 def _user_properties_digest() -> str:
-    values = read_properties()
+    values = _saved_properties()
     # The whitelist switch is applied live with `whitelist on|off`, so it
     # never needs a restart.
-    live = ("white-list", "enforce-whitelist")
-    relevant = {k: values.get(k) for k in PROPERTY_DEFAULTS if k not in live}
+    relevant = {k: values.get(k) for k in PROPERTY_DEFAULTS if k not in _LIVE_PROPERTIES}
     return hashlib.sha1(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
 
 
@@ -3311,7 +3422,7 @@ def get_settings() -> dict[str, Any]:
     cfg = load_config()
     version = _active_version(cfg)
     schema = copy.deepcopy(settings_schema(version))
-    raw = read_properties()
+    raw = _saved_properties(cfg)
     values = {}
     for key, item in schema.items():
         values[key] = _typed(item, key, raw.get(key))
@@ -3408,8 +3519,16 @@ def update_settings(
             run = _active_run_dir(cfg)
             if run and os.path.isfile(os.path.join(run, "server.properties")):
                 write_properties(updates, os.path.join(run, "server.properties"))
-        if rp_updates:
-            _mutate_config(lambda c: c["settings"].update(rp_updates))
+
+        def apply(c: dict[str, Any]) -> None:
+            c["settings"].update(rp_updates)
+            if updates:
+                pending = dict(c["settings"].get(PENDING_PROPERTIES) or {})
+                pending.update(updates)
+                c["settings"][PENDING_PROPERTIES] = pending
+
+        if updates or rp_updates:
+            _mutate_config(apply)
     return {"ok": True, "restart_required": restart_required()}
 
 
@@ -4208,14 +4327,22 @@ def _render_to_active(cfg: dict[str, Any], version: str) -> None:
         _render_access_lists(version, run_dir, network=False)
 
 
-def set_whitelist_enabled(enabled: bool) -> bool:
-    """Turn whitelist enforcement on/off (white-list + enforce-whitelist)."""
+def set_whitelist_enabled(enabled: bool, keep: dict[str, str] | None = None) -> bool:
+    """Turn whitelist enforcement on/off (white-list + enforce-whitelist).
+
+    ``keep`` is server.properties as read just before Minecraft handled
+    `whitelist on|off`; Minecraft wrote its in-memory copy over the file, so
+    every other key that changed is put back, as are saved settings."""
     if not isinstance(enabled, bool):
         raise InstallError("Whitelist must be on or off.", code="invalid_setting")
     value = "true" if enabled else "false"
     updates = {"white-list": value, "enforce-whitelist": value}
     with _CONFIG_LOCK:
         cfg = load_config()
+        current = read_properties()
+        restore = {k: v for k, v in (keep or {}).items() if k not in _LIVE_PROPERTIES}
+        restore.update(_pending_properties(cfg))
+        updates = {**{k: v for k, v in restore.items() if current.get(k) != v}, **updates}
         write_properties(updates)
         run = _active_run_dir(cfg)
         if run and os.path.isfile(os.path.join(run, "server.properties")):

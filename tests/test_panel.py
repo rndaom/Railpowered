@@ -780,7 +780,7 @@ class PlayersAndSettingsTests(PanelTestCase):
         self.assertEqual(self.api("DELETE", "/api/players/ops/Notch%0A")[0], 400)
         add.assert_called_once_with("ops", "Steve")
         remove.assert_called_once_with("whitelist", "Alex")
-        toggle.assert_called_once_with(True)
+        self.assertEqual(toggle.call_args.args, (True,))
         self.assertEqual(
             [call.args[0] for call in send.call_args_list],
             ["op Steve", "whitelist remove Alex", "whitelist on"],

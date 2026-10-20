@@ -286,7 +286,8 @@ WEB_PORT = resolve_web_port()
 MAX_MEMORY = resolve_max_memory()
 MIN_MEMORY = resolve_min_memory(MAX_MEMORY)
 # Seconds without players before an online server is stopped. 0 = never sleep.
-IDLE_TIMEOUT = env_int("IDLE_TIMEOUT", 600, minimum=0, maximum=7 * 24 * 3600)
+# At most one day, the same limit as the dashboard's sleep timer (1440 minutes).
+IDLE_TIMEOUT = env_int("IDLE_TIMEOUT", 600, minimum=0, maximum=installer.IDLE_MAX_MINUTES * 60)
 if 0 < IDLE_TIMEOUT < 60:
     _warn(f"IDLE_TIMEOUT={IDLE_TIMEOUT} is very short; using 60 seconds.")
     IDLE_TIMEOUT = 60

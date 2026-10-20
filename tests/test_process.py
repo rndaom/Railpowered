@@ -61,6 +61,7 @@ class ControllerTestCase(RuntimeTestCase):
             ),
             "record_world_version": mock.Mock(),
             "sync_access_lists_from_runtime": mock.Mock(),
+            "apply_pending_properties": mock.Mock(return_value=False),
             "railpowered_settings": mock.Mock(
                 side_effect=lambda cfg=None: {"idle_timeout_minutes": self.idle_minutes,
                                               "auto_start": False}
@@ -522,7 +523,7 @@ class WhitelistTests(ControllerTestCase):
         self.addCleanup(patcher.stop)
         self.seen_at_write: list[list[str]] = []
 
-    def _record_write(self, enabled):
+    def _record_write(self, enabled, keep=None):
         self.seen_at_write.append([e["text"] for e in self.state.logs_after()["lines"]])
 
     def test_properties_are_written_after_minecraft_confirms(self):
@@ -531,21 +532,22 @@ class WhitelistTests(ControllerTestCase):
         proc = self.start_online()
         self.controller.set_whitelist(True)
         self.assertEqual(proc.commands, ["whitelist on"])
-        self.write.assert_called_once_with(True)
+        # The properties as they were before Minecraft rewrote the file.
+        self.write.assert_called_once_with(True, keep={"motd": "Hi", "max-players": "8"})
         self.assertTrue(any(t.endswith("Whitelist is now turned on") for t in self.seen_at_write[0]))
 
     def test_stopped_server_only_writes_the_file(self):
         started = time.monotonic()
         self.controller.set_whitelist(False)
         self.assertLess(time.monotonic() - started, 1)
-        self.write.assert_called_once_with(False)
+        self.assertEqual(self.write.call_args.args, (False,))
         self.assertEqual(self.processes, [])
 
     def test_missing_confirmation_still_writes_with_a_warning(self):
         proc = self.start_online()
         with mock.patch.object(proc, "on_command", side_effect=proc.commands.append):
             self.controller.set_whitelist(True, timeout=0.1)
-        self.write.assert_called_once_with(True)
+        self.assertEqual(self.write.call_args.args, (True,))
         self.assertTrue(any("didn't confirm the whitelist" in e["text"]
                             for e in self.state.logs_after()["lines"]))
 

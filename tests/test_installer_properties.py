@@ -3,6 +3,7 @@
 
 import os
 import unittest
+from unittest import mock
 
 from test_installer_base import InstallerTestCase, installer
 
@@ -233,6 +234,86 @@ class SettingsApiTests(PropertiesTestCase):
         self.assertFalse(installer.get_settings()["restart_required"])
         installer.set_whitelist_enabled(True)  # applied live with `whitelist on`
         self.assertFalse(installer.get_settings()["restart_required"])
+
+    def test_railway_sleep_timer_is_capped_to_what_the_dashboard_accepts(self):
+        os.environ["IDLE_TIMEOUT"] = str(2 * 24 * 3600)
+        current = installer.get_settings()["railpowered"]
+        self.assertEqual(current["idle_timeout_minutes"], installer.IDLE_MAX_MINUTES)
+        # Saving the form unchanged (it sends every field) must go through.
+        self.assertTrue(installer.update_settings({"motd": "x"}, current)["ok"])
+
+    def test_whitelist_toggle_puts_back_what_minecraft_wrote_over(self):
+        self.vanilla_jar("1.20.1")
+        self.set_version("1.20.1")
+        self.write("server.properties", "motd=Old\npvp=true\nhand-edited=1\n")
+        installer.prepare_runtime()
+        at_start = installer.read_properties()  # what the running server holds
+        installer.update_settings({"motd": "New"})
+        self.write("server.properties", "hand-edited=2\n")
+        keep = installer.read_properties()  # read just before `whitelist on`
+        # Vanilla stores its in-memory properties while handling the command.
+        installer.write_properties({**at_start, "white-list": "true"})
+        installer.set_whitelist_enabled(True, keep=keep)
+        props = self.props()
+        self.assertEqual((props["motd"], props["hand-edited"]), ("New", "2"))
+        self.assertEqual((props["white-list"], props["enforce-whitelist"]), ("true", "true"))
+        self.assertTrue(installer.get_settings()["restart_required"])
+
+    def test_in_game_whitelist_toggle_cannot_lose_saved_settings(self):
+        self.vanilla_jar("1.20.1")
+        self.set_version("1.20.1")
+        installer.prepare_runtime()
+        installer.update_settings({"motd": "New", "pvp": False})
+        # An op types /whitelist on: Minecraft rewrites the file from memory.
+        installer.write_properties({"motd": "A Railpowered Minecraft server", "pvp": "true",
+                                    "white-list": "true"})
+        settings = installer.get_settings()
+        self.assertEqual(settings["properties"]["motd"], "New")
+        self.assertIs(settings["properties"]["pvp"], False)
+        self.assertTrue(settings["restart_required"])
+        self.assertTrue(installer.apply_pending_properties())  # the server stopped
+        props = self.props()
+        self.assertEqual((props["motd"], props["pvp"], props["white-list"]), ("New", "false", "true"))
+        self.assertNotIn(installer.PENDING_PROPERTIES, installer.load_config()["settings"])
+        self.assertFalse(installer.apply_pending_properties())
+
+    def test_next_start_applies_saved_settings(self):
+        self.vanilla_jar("1.20.1")
+        self.set_version("1.20.1")
+        installer.update_settings({"motd": "Saved"})
+        installer.write_properties({"motd": "Clobbered"})
+        installer.prepare_runtime()
+        self.assertEqual(self.props()["motd"], "Saved")
+        self.assertNotIn(installer.PENDING_PROPERTIES, installer.load_config()["settings"])
+        self.assertFalse(installer.get_settings()["restart_required"])
+
+    def test_pending_settings_are_sanitized(self):
+        cfg = installer.load_config()
+        cfg["settings"][installer.PENDING_PROPERTIES] = {
+            "motd": "ok", "level-name": "elsewhere", "white-list": "true", "pvp": "a\nb", "max-players": 5,
+        }
+        installer.save_config(cfg)
+        installer._reset_caches()
+        self.assertEqual(installer.load_config()["settings"][installer.PENDING_PROPERTIES], {"motd": "ok"})
+
+    def test_failed_switch_leaves_shared_settings_as_they_were(self):
+        self.vanilla_jar("1.20.1")
+        self.vanilla_jar("1.2.5")
+        self.set_version("1.20.1")
+        self.write("server.properties", "online-mode=true\nmotd=Keep\ndifficulty=hard\n")
+        installer.prepare_runtime()
+        before = self.read("server.properties")
+        cfg = installer.load_config()
+        cfg["profiles"].append({"id": "old", "name": "Old", "type": "vanilla", "minecraft_version": "1.2.5",
+                                "level_name": "old", "instance": None})
+        installer.save_config(cfg)
+        # Preparing a pre-1.7 setup forces offline mode and numeric enums, then fails late.
+        with mock.patch.object(installer, "_remember_prepared_properties", side_effect=OSError("disk")):
+            with self.assertRaises(OSError):
+                installer.activate_setup("old")
+        self.assertEqual(self.read("server.properties"), before)
+        self.assertNotIn("legacy_saved_online_mode", installer.load_config()["settings"])
+        self.assertEqual(installer.load_config()["active_profile"], "default")
 
     def test_whitelist_toggle_writes_both_keys(self):
         installer.set_whitelist_enabled(True)

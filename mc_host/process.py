@@ -411,6 +411,11 @@ class ServerController:
             ix.sync_access_lists_from_runtime()
         except Exception as exc:
             self.log(f"Could not sync the op and whitelist files: {exc}", "warn")
+        try:
+            # Settings saved while it ran, in case Minecraft wrote over them.
+            ix.apply_pending_properties()
+        except Exception as exc:
+            self.log(f"Could not re-apply saved settings: {exc}", "warn")
         self._info_cache = (0.0, {})
         self.ensure_listener()
 
@@ -457,7 +462,10 @@ class ServerController:
         Minecraft saves its in-memory server.properties while it handles
         `whitelist on|off`, which would overwrite keys written just before
         (enforce-whitelist went back to false). So the command goes first and
-        the installer writes the file once Minecraft has confirmed."""
+        the installer writes the file once Minecraft has confirmed, putting
+        back every other key Minecraft overwrote (settings saved since the
+        server started)."""
+        keep = ix.read_properties()
         waiter = self.expect(WHITELIST_RE)
         try:
             if self.send_command("whitelist on" if enabled else "whitelist off"):
@@ -465,7 +473,7 @@ class ServerController:
                     self.log("Minecraft didn't confirm the whitelist change; saving it anyway.", "warn")
         finally:
             self._forget(waiter)
-        ix.set_whitelist_enabled(enabled)
+        ix.set_whitelist_enabled(enabled, keep=keep)
 
     def expect(self, regex: re.Pattern[str]) -> _Waiter:
         waiter = _Waiter(regex)

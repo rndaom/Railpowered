@@ -212,8 +212,12 @@ def remove_player(kind: str, name: str) -> bool:
     return installer.remove_player(kind, name)
 
 
-def set_whitelist_enabled(enabled: bool) -> bool:
-    return installer.set_whitelist_enabled(enabled)
+def set_whitelist_enabled(enabled: bool, keep: dict[str, str] | None = None) -> bool:
+    return installer.set_whitelist_enabled(enabled, keep=keep)
+
+
+def apply_pending_properties() -> bool:
+    return installer.apply_pending_properties()
 
 
 def sync_access_lists_from_runtime() -> Any:
