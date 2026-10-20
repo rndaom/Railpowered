@@ -834,7 +834,7 @@ class Mock:
             return
         if vcmp(version, w["last_version"]) < 0:
             raise ApiError(409, f"“{world}” was last played on Minecraft {w['last_version']}. Opening it with {version} could damage it.",
-                           "world_downgrade", world=world, last_version=w["last_version"], target_version=version)
+                           "world_downgrade", world=world, last_version=w["last_version"], version=version)
 
     def create_setup(self, body):
         stype = body.get("type")

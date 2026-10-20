@@ -2596,7 +2596,8 @@
     });
   }
 
-  function isSafetyBackup(b) { return /-pre-restore-/.test(String(b.name)); }
+  // Railpowered's own copies: before a restore or before opening a world with an older version.
+  function isSafetyBackup(b) { return (b.kind && b.kind !== 'manual') || /-pre-(restore|downgrade)-/.test(String(b.name)); }
 
   function renderBackups() { keepFocus(['#backups-list'], renderBackupsNow); }
 
@@ -2623,7 +2624,7 @@
         el('span', { class: 'glyph t-backup' }, icon('i-archive')),
         el('div', { class: 'row-main' },
           el('p', { class: 'row-title' }, (b.world || 'World') + (when ? ' · ' + when : ''),
-            isSafetyBackup(b) ? el('span', { class: 'badge badge-work', title: 'Taken automatically before a restore' }, 'Safety copy') : null),
+            isSafetyBackup(b) ? el('span', { class: 'badge badge-work', title: 'Taken automatically before a restore or before opening the world with an older version' }, 'Safety copy') : null),
           el('p', { class: 'row-meta' }, meta)),
         el('div', { class: 'row-actions' },
           el('a', { class: 'btn btn-sm', href: '/api/backups/' + encodeURIComponent(b.name) + '/download', download: b.name, 'aria-label': 'Download backup ' + b.name },
