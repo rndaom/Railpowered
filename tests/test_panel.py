@@ -7,6 +7,7 @@ import http.client
 import io
 import json
 import os
+import select
 import socket
 import tarfile
 import threading
@@ -206,13 +207,53 @@ class PagesAndAuthTests(PanelTestCase):
         response = self.login(TEST_KEY, headers={"X-Forwarded-For": "6.6.6.6, 10.0.0.10"})
         self.assertEqual(response.getheader("Location"), "/")
 
-    def test_global_failure_ceiling(self):
-        limiter = auth.RateLimiter(per_ip=100, global_limit=3)
+    def test_global_ceiling_slows_logins_but_never_locks_the_owner_out(self):
+        limiter = auth.RateLimiter(per_ip=100, global_limit=3, slow_delay=0.3)
         with mock.patch.object(auth, "limiter", limiter):
             for index in range(3):
                 self.login("bad", headers={"X-Forwarded-For": f"9.9.9.{index}"})
+            started = time.monotonic()
             response = self.login(TEST_KEY, headers={"X-Forwarded-For": "8.8.8.8"})
+            self.assertGreaterEqual(time.monotonic() - started, 0.3)  # waited in the slow lane
+            self.assertEqual(response.getheader("Location"), "/")
+            response = self.login("bad", headers={"X-Forwarded-For": "7.7.7.7"})
+            self.assertEqual(response.getheader("Location"), "/login?error=1")
+
+    def test_slow_lane_timeout_is_a_rate_error_that_costs_no_attempt(self):
+        limiter = auth.RateLimiter(per_ip=100, global_limit=0, slow_delay=0, slow_wait=0.05)
+        with mock.patch.object(auth, "limiter", limiter):
+            self.assertTrue(limiter._slow.acquire())
+            try:
+                response = self.login(TEST_KEY, headers={"X-Forwarded-For": "8.8.8.8"})
+            finally:
+                limiter._slow.release()
         self.assertEqual(response.getheader("Location"), "/login?error=rate")
+        self.assertEqual(len(limiter._all), 0)
+
+    def test_https_login_uses_a_host_prefixed_cookie_and_hsts(self):
+        response = self.login(headers={"X-Forwarded-Proto": "https"})
+        cookies = response.headers.get_all("Set-Cookie")
+        self.assertTrue(cookies[0].startswith("__Host-rp_session=v1."))
+        for flag in ("Secure", "Path=/", "HttpOnly"):
+            self.assertIn(flag, cookies[0])
+        self.assertNotIn("Domain", cookies[0])
+        self.assertTrue(cookies[1].startswith("rp_session=;") and "Max-Age=0" in cookies[1])
+        self.assertEqual(response.getheader("Strict-Transport-Security"), "max-age=31536000")
+        token = cookies[0].split(";", 1)[0].split("=", 1)[1]
+        response, _ = self.request("GET", "/api/status", cookie=False,
+                                   headers={"Cookie": f"rp_session=junk; __Host-rp_session={token}"})
+        self.assertEqual(response.status, 200)
+        response, _ = self.request("GET", "/health")
+        self.assertIsNone(response.getheader("Strict-Transport-Security"))  # plain http
+
+    def test_public_host_gets_a_secure_cookie_even_without_the_proto_header(self):
+        response = self.login(headers={"Host": "mc.example.com"})
+        self.assertTrue(response.getheader("Set-Cookie").startswith("__Host-rp_session="))
+        self.assertTrue(auth.is_local_host("192.168.1.20:8080"))
+        self.assertTrue(auth.is_local_host("[::1]:8080"))
+        self.assertTrue(auth.is_local_host("localhost"))
+        self.assertFalse(auth.is_local_host("mc.example.com"))
+        self.assertFalse(auth.is_local_host("8.8.8.8"))
 
     def test_tampered_or_foreign_cookies_are_rejected(self):
         self.login()
@@ -251,6 +292,30 @@ class PagesAndAuthTests(PanelTestCase):
         self.cookie = token
         self.assertEqual(self.api("GET", "/api/status")[0], 401)
 
+    def test_logout_survives_a_restart(self):
+        self.login()
+        token = self.cookie
+        self.assertEqual(self.request("POST", "/logout")[0].status, 303)
+        restarted = auth.SessionManager()
+        self.assertFalse(restarted.validate(token))
+        self.assertTrue(restarted.validate(restarted.issue()))
+
+    def test_sign_out_everywhere(self):
+        self.login()
+        first = self.cookie
+        self.login()
+        second = self.cookie
+        status, payload = self.api("POST", "/api/sessions/revoke-all", {})
+        self.assertEqual((status, payload), (200, {"ok": True}))
+        for token in (first, second):
+            self.cookie = token
+            self.assertEqual(self.api("GET", "/api/status")[0], 401)
+            self.assertFalse(auth.SessionManager().validate(token))  # and after a restart
+        self.login()  # right away, in the same second
+        self.assertEqual(self.api("GET", "/api/status")[0], 200)
+        self.cookie = None
+        self.assertEqual(self.api("POST", "/api/sessions/revoke-all", {})[0], 401)
+
     def test_logout_form_post_from_same_origin(self):
         self.login()
         response, _ = self.request(
@@ -265,6 +330,135 @@ class PagesAndAuthTests(PanelTestCase):
         self.assertEqual(response.status, 302)
         self.assertIsNone(response.getheader("Set-Cookie"))
         self.assertEqual(self.api("GET", "/api/status")[0], 200)
+
+
+class RateLimiterTests(unittest.TestCase):
+    def test_reservations_are_atomic(self):
+        limiter = auth.RateLimiter(per_ip=3, global_limit=100)
+        tickets = [limiter.begin("1.1.1.1") for _ in range(3)]
+        self.assertEqual([v for v, _ in tickets], ["ok"] * 3)
+        self.assertEqual(limiter.begin("1.1.1.1"), ("limited", None))  # in flight counts
+        limiter.cancel("1.1.1.1", tickets[0][1])
+        self.assertEqual(limiter.begin("1.1.1.1")[0], "ok")
+        limiter.succeed("1.1.1.1", tickets[1][1])
+        self.assertFalse(limiter.limited("1.1.1.1"))
+
+    def test_global_ceiling_turns_into_the_slow_lane(self):
+        limiter = auth.RateLimiter(per_ip=10, global_limit=2, slow_delay=0)
+        limiter.begin("1.1.1.1")
+        limiter.begin("2.2.2.2")
+        verdict, _ticket = limiter.begin("3.3.3.3")
+        self.assertEqual(verdict, "slow")
+        self.assertTrue(limiter.slow_lane(lambda: True))
+
+
+class HardeningTests(PanelTestCase):
+    def raw(self, data: bytes, wait: float = 10) -> tuple[bytes, float]:
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=wait)
+        self.addCleanup(sock.close)
+        started = time.monotonic()
+        sock.sendall(data)
+        reply = b""
+        try:
+            while chunk := sock.recv(4096):
+                reply += chunk
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass
+        return reply, time.monotonic() - started
+
+    def test_framework_errors_carry_the_security_headers(self):
+        for request, status in (
+            (b"OPTIONS /api/status HTTP/1.0\r\n\r\n", b" 405 "),
+            (b"BREW /pot HTTP/1.0\r\n\r\n", b" 501 "),
+            (b"GET /" + b"a" * 70000 + b" HTTP/1.0\r\n\r\n", b" 414 "),
+            (b"GET / HTTP/1.0\r\n" + b"X-A: b\r\n" * 120 + b"\r\n", b" 431 "),
+        ):
+            reply, _ = self.raw(request)
+            head = reply.split(b"\r\n\r\n", 1)[0]
+            self.assertIn(status, head.split(b"\r\n", 1)[0], request[:20])
+            self.assertIn(b"Content-Security-Policy:", head)
+            self.assertIn(b"X-Content-Type-Options: nosniff", head)
+            self.assertIn(b"Server: Railpowered\r\n", head + b"\r\n")
+            self.assertNotIn(b"text/html", head)
+
+    def test_csp_needs_nothing_from_other_sites(self):
+        response, _ = self.request("GET", "/login")
+        csp = response.getheader("Content-Security-Policy")
+        self.assertNotIn("unsafe-inline", csp)
+        self.assertNotIn("googleapis", csp)
+        self.assertIn("object-src 'none'", csp)
+        self.assertEqual(response.getheader("Cross-Origin-Opener-Policy"), "same-origin")
+
+    def test_slow_headers_and_bodies_are_cut_off(self):
+        with mock.patch.object(panel, "REQUEST_DEADLINE", 0.4):
+            _, took = self.raw(b"GET /health HTTP/1.0\r\nX-Slow: 1\r\n")  # never finishes
+            self.assertLess(took, 3)
+            reply, took = self.raw(b"POST /login HTTP/1.0\r\nContent-Length: 4000\r\n\r\nk")
+            self.assertLess(took, 3)
+        status, payload = self.api("GET", "/health", cookie=False)
+        self.assertEqual(status, 200)
+
+    def test_uploads_must_keep_moving(self):
+        self.login()
+        sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
+        self.addCleanup(sock.close)
+        with mock.patch.object(panel, "UPLOAD_WINDOW", 0.3), \
+                mock.patch.object(panel, "UPLOAD_MIN_BYTES", 10_000):
+            sock.sendall(
+                b"POST /api/modpacks/upload?name=pack HTTP/1.0\r\nContent-Length: 50000\r\n"
+                + f"Cookie: rp_session={self.cookie}\r\nX-Railpowered: 1\r\n\r\n".encode()
+            )
+            reply = b""
+            try:
+                for _ in range(80):  # a byte every 50 ms, until the server answers
+                    readable, _, _ = select.select([sock], [], [], 0.05)
+                    if readable:
+                        break
+                    sock.sendall(b"P")
+            except OSError:
+                pass
+            try:
+                while chunk := sock.recv(4096):
+                    reply += chunk
+            except OSError:
+                pass
+        self.assertIn(b" 408 ", reply.split(b"\r\n", 1)[0])
+        self.assertEqual(os.listdir(installer.paths()["modpacks"]), [])
+
+    def test_health_has_slots_of_its_own(self):
+        class Small(PanelServer):
+            max_connections = 2
+            health_slots = 1
+
+        server = Small(("127.0.0.1", 0), PanelHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        port = server.server_address[1]
+        idle = socket.create_connection(("127.0.0.1", port), timeout=10)  # holds the general slot
+        self.addCleanup(idle.close)
+        time.sleep(0.2)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/api/status")
+        self.assertEqual(conn.getresponse().status, 503)
+        conn.close()
+        time.sleep(0.1)
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        conn.request("GET", "/health")
+        self.assertEqual(conn.getresponse().status, 200)
+        conn.close()
+
+    def test_one_client_can_hold_only_so_many_requests(self):
+        self.server.per_client = 2
+        self.assertTrue(self.server.client_enter("1.1.1.1"))
+        self.assertTrue(self.server.client_enter("1.1.1.1"))
+        self.assertFalse(self.server.client_enter("1.1.1.1"))
+        self.assertTrue(self.server.client_enter("2.2.2.2"))
+        self.server.client_exit("1.1.1.1")
+        self.assertTrue(self.server.client_enter("1.1.1.1"))
+        response, _ = self.request("GET", "/health", headers={"X-Forwarded-For": "1.1.1.1"})
+        self.assertEqual(response.status, 503)
+        self.assertEqual(self.api("GET", "/health")[0], 200)
 
 
 class ApiBasicsTests(PanelTestCase):

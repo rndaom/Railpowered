@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import shutil
+import socket
 import threading
 import time
 import traceback
@@ -34,6 +35,14 @@ LOGIN_LIMIT = 4 * 1024
 CHUNK = 64 * 1024
 CONSOLE_MAX = 1000
 GENERIC_500 = "Something went wrong on the server. The log has the details."
+# A request gets this long for its request line, headers and (non-upload)
+# body; past it the connection is shut. Uploads instead must keep moving at
+# least UPLOAD_MIN_BYTES per UPLOAD_WINDOW seconds.
+REQUEST_DEADLINE = 15.0
+HEALTH_DEADLINE = 5.0  # connections on the slots kept for /health
+UPLOAD_WINDOW = 20.0
+UPLOAD_MIN_BYTES = 64 * 1024
+HSTS = "max-age=31536000"  # no includeSubDomains: custom domains may have siblings
 # An uploaded pack that hit the world-downgrade guard is kept this long as
 # modpacks/.held-<token><ext>, so confirming doesn't mean uploading it again.
 HELD_UPLOAD_TTL = installer.HELD_UPLOAD_TTL
@@ -71,32 +80,76 @@ _BACKUP_WORLD = re.compile(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.g
 
 
 class PanelServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer with a cap on concurrent connections."""
+    """ThreadingHTTPServer with a cap on concurrent connections.
+
+    The last ``health_slots`` connections only serve /health (with a short
+    deadline), so a flood of slow requests can't fail Railway's health
+    check; one client (last X-Forwarded-For hop) can have at most
+    ``per_client`` requests in progress."""
 
     daemon_threads = True
     allow_reuse_address = os.name != "nt"
     request_queue_size = 64
     max_connections = 64
+    health_slots = 8
+    per_client = 16
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._slots = threading.BoundedSemaphore(self.max_connections)
+        self._slots = threading.BoundedSemaphore(self.max_connections - self.health_slots)
+        self._health = threading.BoundedSemaphore(self.health_slots)
+        self._reserved: set[int] = set()
+        self._clients: dict[str, int] = {}
+        self._clients_lock = threading.Lock()
 
     def process_request(self, request: Any, client_address: Any) -> None:
-        if not self._slots.acquire(blocking=False):
+        if self._slots.acquire(blocking=False):
+            reserved = False
+        elif self._health.acquire(blocking=False):
+            reserved = True
+        else:
             self.shutdown_request(request)
             return
+        with self._clients_lock:
+            if reserved:
+                self._reserved.add(id(request))
         try:
             super().process_request(request, client_address)
         except Exception:
-            self._slots.release()
+            self._release(request)
             raise
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self._slots.release()
+            self._release(request)
+
+    def _release(self, request: Any) -> None:
+        with self._clients_lock:
+            reserved = id(request) in self._reserved
+            self._reserved.discard(id(request))
+        (self._health if reserved else self._slots).release()
+
+    def health_only(self, request: Any) -> bool:
+        with self._clients_lock:
+            return id(request) in self._reserved
+
+    def client_enter(self, ip: str) -> bool:
+        with self._clients_lock:
+            count = self._clients.get(ip, 0)
+            if count >= self.per_client:
+                return False
+            self._clients[ip] = count + 1
+            return True
+
+    def client_exit(self, ip: str) -> None:
+        with self._clients_lock:
+            count = self._clients.get(ip, 0) - 1
+            if count > 0:
+                self._clients[ip] = count
+            else:
+                self._clients.pop(ip, None)
 
 
 _versions_cache: dict[str, Any] = {"at": 0.0, "data": None, "ttl": 0.0}
@@ -249,9 +302,75 @@ class PanelHandler(BaseHTTPRequestHandler):
     sys_version = ""
     protocol_version = "HTTP/1.0"
     timeout = 30
+    _head = False
+    _headers_sent = False
+    _deadline: threading.Timer | None = None
+    _expired = False
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass
+
+    def version_string(self) -> str:
+        return self.server_version
+
+    # -- deadlines -------------------------------------------------------------
+    def handle_one_request(self) -> None:
+        health_only = getattr(self.server, "health_only", None)
+        self._health_only = bool(health_only and health_only(self.request))
+        self._arm(HEALTH_DEADLINE if self._health_only else REQUEST_DEADLINE)
+        try:
+            super().handle_one_request()
+        except OSError:
+            if not self._expired:
+                raise
+            self.close_connection = True  # cut off by the deadline (some systems raise)
+        finally:
+            self._disarm()
+
+    def _arm(self, seconds: float) -> None:
+        """Shut the connection if the client hasn't sent everything in time
+        (a per-recv timeout alone lets a byte every 29 s hold a slot forever)."""
+        self._disarm()
+        timer = threading.Timer(seconds, self._expire)
+        timer.daemon = True
+        self._deadline = timer
+        timer.start()
+
+    def _disarm(self) -> None:
+        timer, self._deadline = self._deadline, None
+        if timer is not None:
+            timer.cancel()
+
+    def _expire(self) -> None:
+        self._expired = True
+        self.close_connection = True
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    # -- framework errors go through _send (headers, no HTML template) --------
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        self.close_connection = True
+        self._disarm()
+        if self._headers_sent:
+            return
+        text = message or self.responses.get(code, ("Error",))[0]
+        self._head = getattr(self, "command", "") == "HEAD"
+        try:
+            if str(getattr(self, "path", "") or "").startswith("/api/"):
+                self._json({"error": text, "code": f"http_{code}"}, code)
+            else:
+                self._send(code, text.encode("utf-8", "replace"), "text/plain; charset=utf-8")
+        except OSError:
+            pass
+
+    def do_OPTIONS(self) -> None:
+        self._disarm()
+        self._head = False
+        self._headers_sent = False
+        path = urlsplit(self.path).path or "/"
+        self._fail(path.startswith("/api/"), 405, "method_not_allowed", "That method isn't supported here.")
 
     # -- dispatch ------------------------------------------------------------
     def do_GET(self) -> None:
@@ -273,6 +392,9 @@ class PanelHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        # Headers are in; bodies are read under their own deadline (_body) or
+        # throughput floor (_receive_file).
+        self._disarm()
         self._head = method == "HEAD"
         self._headers_sent = False
         effective = "GET" if self._head else method
@@ -280,6 +402,23 @@ class PanelHandler(BaseHTTPRequestHandler):
         path = url.path or "/"
         self.query = parse_qs(url.query, keep_blank_values=True)
         is_api = path.startswith("/api/")
+        if getattr(self, "_health_only", False) and path != "/health":
+            self.close_connection = True
+            self._fail(is_api, 503, "busy", "The dashboard is busy. Try again in a moment.")
+            return
+        ip = self._client_ip()
+        enter = getattr(self.server, "client_enter", None)
+        if enter is not None and not enter(ip):
+            self.close_connection = True
+            self._fail(is_api, 503, "busy", "Too many requests from this address at once. Try again in a moment.")
+            return
+        try:
+            self._route(method, effective, path, is_api)
+        finally:
+            if enter is not None:
+                self.server.client_exit(ip)
+
+    def _route(self, method: str, effective: str, path: str, is_api: bool) -> None:
         try:
             if is_api and path != "/api/login" and path != "/api/logout":
                 self._api(effective, path)
@@ -300,6 +439,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             )
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
+        except OSError:
+            if not self._expired:
+                raise
+            self.close_connection = True  # the deadline shut the connection
         except Exception as exc:
             print(traceback.format_exc(), flush=True)
             state.add_log(
@@ -341,13 +484,22 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     # -- auth helpers ----------------------------------------------------------
     def _token(self) -> str | None:
-        return auth.cookie_value(self.headers.get("Cookie"))
+        return auth.session_token(self.headers.get("Cookie"))
 
     def _authed(self) -> bool:
         return auth.sessions.validate(self._token())
 
     def _secure(self) -> bool:
-        return self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https"
+        """The request reached Railway's edge over https."""
+        headers = getattr(self, "headers", None)
+        if headers is None:
+            return False
+        return headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https"
+
+    def _cookie_secure(self) -> bool:
+        """Secure (and __Host-) cookies unless this is plain http on a local
+        or private address, where the browser couldn't keep them."""
+        return self._secure() or not auth.is_local_host(self.headers.get("Host"))
 
     def _client_ip(self) -> str:
         return auth.client_ip(self.client_address[0], self.headers.get("X-Forwarded-For"))
@@ -395,7 +547,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         length = self._content_length(limit)
         if length == 0:
             return b""
-        data = self.rfile.read(length)
+        self._arm(REQUEST_DEADLINE)
+        try:
+            data = self.rfile.read(length)
+        except OSError:
+            data = b""
+        finally:
+            self._disarm()
         if len(data) != length:
             self.close_connection = True
             raise ApiError(400, "incomplete_body", "The request body was cut off.")
@@ -421,6 +579,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         content_type: str,
         cache: str = "no-store",
         headers: dict[str, str] | None = None,
+        cookies: list[str] | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -428,8 +587,12 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache)
         for key, value in web.SECURITY_HEADERS.items():
             self.send_header(key, value)
+        if self._secure():
+            self.send_header("Strict-Transport-Security", HSTS)
         for key, value in (headers or {}).items():
             self.send_header(key, value)
+        for cookie in cookies or ():
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self._headers_sent = True
         if not self._head and body:
@@ -442,11 +605,8 @@ class PanelHandler(BaseHTTPRequestHandler):
     def _html(self, text: str, status: int = 200) -> None:
         self._send(status, text.encode("utf-8"), "text/html; charset=utf-8")
 
-    def _redirect(self, location: str, status: int = 302, cookie: str | None = None) -> None:
-        headers = {"Location": location}
-        if cookie:
-            headers["Set-Cookie"] = cookie
-        self._send(status, b"", "text/plain; charset=utf-8", headers=headers)
+    def _redirect(self, location: str, status: int = 302, cookies: list[str] | None = None) -> None:
+        self._send(status, b"", "text/plain; charset=utf-8", headers={"Location": location}, cookies=cookies)
 
     # -- pages -----------------------------------------------------------------
     def _pages(self, method: str, path: str) -> None:
@@ -511,13 +671,33 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         form = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
         key = (form.get("key") or [""])[0]
-        if key and auth.sessions.check_key(key):
-            auth.limiter.reset(ip)
+        # Reserve the attempt (after the body: a slow body holds no reservation).
+        verdict, ticket = auth.limiter.begin(ip)
+        if verdict == "limited":
+            self._redirect("/login?error=rate", 303)
+            return
+
+        def check() -> bool:
+            return bool(key) and auth.sessions.check_key(key)
+
+        if verdict == "slow":
+            ok = auth.limiter.slow_lane(check)
+            if ok is None:
+                auth.limiter.cancel(ip, ticket)
+                self._redirect("/login?error=rate", 303)
+                return
+        else:
+            ok = check()
+        if ok:
+            auth.limiter.succeed(ip, ticket)
             token = auth.sessions.issue()
             state.add_log(f"Dashboard login from {ip}")
-            self._redirect("/", 303, auth.sessions.cookie_header(token, self._secure()))
+            secure = self._cookie_secure()
+            cookies = [auth.sessions.cookie_header(token, secure)]
+            if secure:  # the pre-__Host- cookie, if any, goes
+                cookies.append(f"{auth.COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure")
+            self._redirect("/", 303, cookies)
             return
-        auth.limiter.record_failure(ip)
         state.add_log(f"Failed dashboard login from {ip}", "warn")
         target = "/login?error=rate" if auth.limiter.limited(ip) else "/login?error=1"
         self._redirect(target, 303)
@@ -535,7 +715,19 @@ class PanelHandler(BaseHTTPRequestHandler):
         if origin is False or (origin is None and self.headers.get("X-Railpowered") != "1"):
             raise ApiError(403, "csrf", "Log out from the dashboard.")
         auth.sessions.revoke(self._token())
-        self._redirect("/login", 303, auth.sessions.clear_cookie_header(self._secure()))
+        self._redirect("/login", 303, auth.sessions.clear_cookie_headers(self._cookie_secure()))
+
+    @route("POST", "/api/sessions/revoke-all")
+    def api_revoke_all_sessions(self) -> None:
+        """Sign out every browser, this one included (kept across restarts)."""
+        self._json_body()
+        auth.sessions.revoke_all()
+        state.add_log(f"All dashboard sessions were signed out from {self._client_ip()}.", "warn")
+        body = json.dumps({"ok": True}).encode("utf-8")
+        self._send(
+            200, body, "application/json; charset=utf-8",
+            cookies=auth.sessions.clear_cookie_headers(self._cookie_secure()),
+        )
 
     # -- status, logs, tasks ---------------------------------------------------
     @route("GET", "/api/status")
@@ -907,16 +1099,39 @@ class PanelHandler(BaseHTTPRequestHandler):
         return stage
 
     def _receive_file(self, path: str, length: int) -> None:
+        """Stream the body to ``path``. No fixed deadline (big files take
+        a while), but at least UPLOAD_MIN_BYTES must arrive in every
+        UPLOAD_WINDOW seconds."""
         remaining = length
+        window_start, window_bytes = time.monotonic(), 0
+        try:
+            self.connection.settimeout(UPLOAD_WINDOW)
+        except OSError:
+            pass
         try:
             with open(path, "wb") as handle:
                 while remaining > 0:
-                    chunk = self.rfile.read(min(CHUNK, remaining))
+                    try:
+                        # read1: one recv at most, so the floor is checked
+                        # even when bytes trickle in.
+                        chunk = self.rfile.read1(min(CHUNK, remaining))
+                    except TimeoutError:
+                        chunk = None
+                    if chunk is None:
+                        self.close_connection = True
+                        raise ApiError(408, "too_slow", "The upload stalled and was stopped. Try again.")
                     if not chunk:
                         self.close_connection = True
                         raise ApiError(400, "incomplete_body", "The upload was cut off. Try again.")
                     handle.write(chunk)
                     remaining -= len(chunk)
+                    window_bytes += len(chunk)
+                    now = time.monotonic()
+                    if now - window_start >= UPLOAD_WINDOW:
+                        if window_bytes < UPLOAD_MIN_BYTES and remaining > 0:
+                            self.close_connection = True
+                            raise ApiError(408, "too_slow", "The upload was too slow and was stopped. Try again.")
+                        window_start, window_bytes = now, 0
         except OSError as exc:
             if exc.errno == errno.ENOSPC:
                 self.close_connection = True
