@@ -164,6 +164,52 @@ def install_modpack_archive(
     )
 
 
+# A modpack install in steps, so the dashboard can keep the server running
+# while the pack downloads and roll it back if the new setup won't activate:
+# stage_* -> (stop) -> commit_modpack -> create_setup -> finalize_modpack,
+# or rollback_modpack when create_setup fails; discard_staged always.
+StagedModpack = installer.StagedModpack
+ModpackSwap = installer.ModpackSwap
+
+
+def stage_modpack_from_url(
+    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> Any:
+    return installer.stage_modpack_from_url(
+        url, name, level_name=level_name, allow_downgrade=allow_downgrade
+    )
+
+
+def stage_modpack_archive(
+    path: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> Any:
+    """Stage an uploaded pack. The caller still owns (and deletes) ``path``."""
+    return installer.stage_modpack_archive(
+        path, name, level_name=level_name, allow_downgrade=allow_downgrade
+    )
+
+
+def commit_modpack(staged: Any) -> Any:
+    return installer.commit_modpack(staged)
+
+
+def rollback_modpack(swap: Any) -> None:
+    installer.rollback_modpack(swap)
+
+
+def finalize_modpack(swap: Any) -> None:
+    installer.finalize_modpack(swap)
+
+
+def discard_staged(staged: Any) -> None:
+    installer.discard_staged(staged)
+
+
+def peek_pack_version(path: str) -> str | None:
+    """Minecraft version an archive declares, without unpacking (or None)."""
+    return installer.peek_pack_version(path)
+
+
 def create_world(name: str) -> str:
     return installer.create_world(name)
 

@@ -3040,7 +3040,12 @@ def _pick_mrpack_url(urls: list[Any]) -> str | None:
     return None
 
 
-def _install_mrpack(unpacked: str, staging: str) -> PackInfo:
+def _install_mrpack(
+    unpacked: str, staging: str, before_downloads: Callable[[PackInfo], None] | None = None
+) -> PackInfo:
+    """Download an unpacked .mrpack's files into ``staging``. ``before_downloads``
+    sees the pack's version first and may refuse it (the downgrade guard), so
+    a pack that can't be used doesn't download hundreds of mods first."""
     index = _read_json(os.path.join(unpacked, "modrinth.index.json"))
     if not isinstance(index, dict):
         raise InstallError("This .mrpack is missing modrinth.index.json.", code="invalid_archive")
@@ -3076,15 +3081,24 @@ def _install_mrpack(unpacked: str, staging: str) -> PackInfo:
             raise InstallError(f"The .mrpack has no checksum for {parts[-1]}.", code="invalid_archive")
         size = entry.get("fileSize")
         jobs.append((url, os.path.join(staging, *parts), sha1, sha512, size if isinstance(size, int) and size > 0 else None, parts[-1]))
+    if before_downloads is not None:
+        before_downloads(info)
     if jobs:
         _say(f"Downloading {len(jobs)} modpack files...")
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        pool = ThreadPoolExecutor(max_workers=4)
+        try:
             futures = [
                 pool.submit(download_file, url, dest, sha1, sha512=sha512, max_bytes=size, label=label)
                 for url, dest, sha1, sha512, size, label in jobs
             ]
             for future in futures:
                 future.result()
+        except BaseException:
+            # One file failed: don't fetch the rest into a folder that is
+            # about to be deleted (downloads already under way finish).
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
     for folder in ("overrides", "server-overrides"):
         source = os.path.join(unpacked, folder)
         if os.path.isdir(source):
@@ -3092,109 +3106,256 @@ def _install_mrpack(unpacked: str, staging: str) -> PackInfo:
     return info
 
 
-def install_modpack_archive(
+@dataclass
+class StagedModpack:
+    """A modpack installed into a hidden staging folder, not in use yet.
+
+    commit_modpack() swaps it in; discard_staged() throws it away."""
+
+    name: str
+    level_name: str
+    staging: str
+    minecraft_version: str
+    loader: str | None
+    label: str
+    fields: dict[str, Any]
+
+
+@dataclass
+class ModpackSwap:
+    """What commit_modpack() changed, so rollback_modpack() can undo it."""
+
+    name: str
+    minecraft_version: str
+    old: str | None  # the previous instance, kept as instances/.old-* until finalized
+    versions: dict[str, tuple[Any, Any]]  # setup id -> previous (minecraft_version, resolved_version)
+
+
+def _pack_world_guard(level: str, allow_downgrade: bool) -> Callable[[PackInfo], None]:
+    def guard(info: PackInfo) -> None:
+        if not allow_downgrade and info.minecraft_version and os.path.isdir(world_path(level)):
+            check_downgrade(level, str(info.minecraft_version))
+
+    return guard
+
+
+def stage_modpack_archive(
     archive_path: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
-) -> dict[str, Any]:
-    """Install a .mrpack or server zip as instances/<name>. Everything happens
-    in a staging folder; the old instance is replaced only on success.
-    Returns setup fields for create_setup (the archive file is left alone)."""
+) -> StagedModpack:
+    """Unpack and install a .mrpack or server zip into a staging folder.
+
+    Nothing in use changes: instances/<name>, manager.json and the worlds are
+    left alone, so a running server can keep running meanwhile. The world
+    downgrade guard runs as soon as the pack's version is known (before the
+    .mrpack downloads or the loader install). The archive is left alone."""
     name = _validate_pack_name(name)
     level = validate_name(level_name or name, "world")
+    ensure_layout()
+    instances = paths()["instances"]
+    staging = tempfile.mkdtemp(prefix=f".staging-{name}-", dir=instances)
+    unpacked = tempfile.mkdtemp(prefix=f".unpack-{name}-", dir=instances)
+    guard = _pack_world_guard(level, allow_downgrade)
+    try:
+        _safe_extract_zip(archive_path, unpacked)
+        if os.path.isfile(os.path.join(unpacked, "modrinth.index.json")):
+            info = _install_mrpack(unpacked, staging, before_downloads=guard)
+        else:
+            os.rmdir(staging)
+            os.replace(unpacked, staging)
+            os.makedirs(unpacked)
+            _hoist_single_folder(staging)
+            info = _detect_pack(staging)
+            if info.curseforge_client and not _has_mod_jars(staging) and not _has_mod_jars(os.path.join(staging, "overrides")):
+                raise InstallError(
+                    "This is a CurseForge client pack: it lists mods by ID instead of including "
+                    "them. Download the pack's server pack from CurseForge and upload that.",
+                    code="unsupported_pack",
+                )
+            if not info.minecraft_version:
+                raise InstallError(
+                    "Couldn't tell which Minecraft version this pack is for. Use a Modrinth "
+                    ".mrpack or a server-pack zip that includes its server or loader files.",
+                    code="unsupported_pack",
+                )
+            guard(info)
+        _install_loader(staging, info)
+        mc = str(info.minecraft_version)
+        _modpack_launch(staging, mc)  # must be startable before it can be swapped in
+        deps = {"minecraft": mc}
+        if info.loader == "fabric":
+            deps["fabric-loader"] = info.loader_version or ""
+        elif info.loader == "forge":
+            deps["forge"] = info.loader_version or ""
+        _atomic_write_json(
+            os.path.join(staging, PACK_META_FILE),
+            {
+                "name": info.name or name,
+                "minecraft_version": mc,
+                "loader": info.loader,
+                "loader_version": info.loader_version,
+                "source": info.source,
+                "installed_at": _iso(),
+                "dependencies": deps,
+            },
+        )
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(unpacked, ignore_errors=True)
+    label = info.name or name
+    return StagedModpack(
+        name=name,
+        level_name=level,
+        staging=staging,
+        minecraft_version=mc,
+        loader=info.loader,
+        label=str(label),
+        fields={
+            "type": "modpack",
+            "minecraft_version": mc,
+            "level_name": level,
+            "instance": name,
+            "name": _clean_setup_name(info.name) or name,
+            "loader": info.loader,
+        },
+    )
+
+
+def discard_staged(staged: StagedModpack | None) -> None:
+    """Delete a staged pack that wasn't committed (no-op after a commit)."""
+    if staged is not None and staged.staging and os.path.isdir(staged.staging):
+        shutil.rmtree(staged.staging, ignore_errors=True)
+    if staged is not None:
+        staged.staging = ""
+
+
+def _remove_instance_tree(path: str) -> None:
+    """rmtree an instance folder; its worlds link points at the shared worlds
+    and is removed as a link first, never followed."""
+    link = os.path.join(path, "worlds")
+    if os.path.islink(link):
+        os.unlink(link)
+    _rmtree_child(os.path.dirname(path), os.path.basename(path))
+
+
+def commit_modpack(staged: StagedModpack) -> ModpackSwap:
+    """Swap a staged pack in as instances/<name> and point that instance's
+    setups at its Minecraft version. The previous instance is kept (as
+    instances/.old-*) until finalize_modpack(); rollback_modpack() undoes
+    both. The caller must make sure the instance isn't running."""
     with _RUNTIME_LOCK:
-        ensure_layout()
+        if not staged.staging or not os.path.isdir(staged.staging):
+            raise InstallError("The prepared modpack files are gone. Install it again.", code="install_failed")
+        name, mc = staged.name, staged.minecraft_version
         instances = paths()["instances"]
-        staging = tempfile.mkdtemp(prefix=f".staging-{name}-", dir=instances)
-        unpacked = tempfile.mkdtemp(prefix=f".unpack-{name}-", dir=instances)
+        final = instance_path(name)
+        old = None
+        if os.path.lexists(final):
+            old = os.path.join(instances, f".old-{name}-{secrets.token_hex(4)}")
+            os.replace(final, old)
         try:
-            _safe_extract_zip(archive_path, unpacked)
-            if os.path.isfile(os.path.join(unpacked, "modrinth.index.json")):
-                info = _install_mrpack(unpacked, staging)
-            else:
-                os.rmdir(staging)
-                os.replace(unpacked, staging)
-                os.makedirs(unpacked)
-                _hoist_single_folder(staging)
-                info = _detect_pack(staging)
-                if info.curseforge_client and not _has_mod_jars(staging) and not _has_mod_jars(os.path.join(staging, "overrides")):
-                    raise InstallError(
-                        "This is a CurseForge client pack: it lists mods by ID instead of including "
-                        "them. Download the pack's server pack from CurseForge and upload that.",
-                        code="unsupported_pack",
-                    )
-                if not info.minecraft_version:
-                    raise InstallError(
-                        "Couldn't tell which Minecraft version this pack is for. Use a Modrinth "
-                        ".mrpack or a server-pack zip that includes its server or loader files.",
-                        code="unsupported_pack",
-                    )
-            _install_loader(staging, info)
-            mc = str(info.minecraft_version)
-            _modpack_launch(staging, mc)  # must be startable before we swap it in
-            if os.path.isdir(world_path(level)):
-                previous = _downgrade_from(level, mc)
-                if previous and not allow_downgrade:
-                    check_downgrade(level, mc)
-            deps = {"minecraft": mc}
-            if info.loader == "fabric":
-                deps["fabric-loader"] = info.loader_version or ""
-            elif info.loader == "forge":
-                deps["forge"] = info.loader_version or ""
-            _atomic_write_json(
-                os.path.join(staging, PACK_META_FILE),
-                {
-                    "name": info.name or name,
-                    "minecraft_version": mc,
-                    "loader": info.loader,
-                    "loader_version": info.loader_version,
-                    "source": info.source,
-                    "installed_at": _iso(),
-                    "dependencies": deps,
-                },
-            )
-            final = instance_path(name)
-            old = None
-            if os.path.lexists(final):
-                old = os.path.join(instances, f".old-{name}-{secrets.token_hex(4)}")
-                os.replace(final, old)
-            try:
-                os.replace(staging, final)
-            except OSError:
-                if old:
-                    os.replace(old, final)
-                raise
-            staging = ""
+            os.replace(staged.staging, final)
+        except OSError:
+            if old:
+                os.replace(old, final)
+            raise
+        staged.staging = ""
+        swap = ModpackSwap(name=name, minecraft_version=mc, old=old, versions={})
+        try:
             if old:
                 local_worlds = os.path.join(old, "worlds")
                 if os.path.isdir(local_worlds) and not os.path.islink(local_worlds):
                     _rescue_instance_worlds(local_worlds, name)
-                _rmtree_child(instances, os.path.basename(old))
-        finally:
-            for leftover in (staging, unpacked):
-                if leftover and os.path.isdir(leftover):
-                    shutil.rmtree(leftover, ignore_errors=True)
 
-    def retarget(cfg: dict[str, Any]) -> None:
-        for setup in cfg["profiles"]:
-            if setup["type"] == "modpack" and setup.get("instance") == name:
-                setup["minecraft_version"] = mc
-                setup["resolved_version"] = mc
+            def retarget(cfg: dict[str, Any]) -> None:
+                for setup in cfg["profiles"]:
+                    if setup["type"] == "modpack" and setup.get("instance") == name:
+                        swap.versions[setup["id"]] = (setup.get("minecraft_version"), setup.get("resolved_version"))
+                        setup["minecraft_version"] = mc
+                        setup["resolved_version"] = mc
 
-    _mutate_config(retarget)
-    _say(f"Installed modpack {info.name or name} (Minecraft {mc}, {info.loader or 'vanilla'}).")
-    return {
-        "type": "modpack",
-        "minecraft_version": mc,
-        "level_name": level,
-        "instance": name,
-        "name": _clean_setup_name(info.name) or name,
-        "loader": info.loader,
-    }
+            _mutate_config(retarget)
+        except BaseException:
+            rollback_modpack(swap)
+            raise
+    _say(f"Installed modpack {staged.label} (Minecraft {mc}, {staged.loader or 'vanilla'}).")
+    return swap
 
 
-def install_modpack_from_url(
-    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+def rollback_modpack(swap: ModpackSwap) -> None:
+    """Undo commit_modpack(): the previous instance and setup versions come
+    back (a first install is removed again)."""
+    with _RUNTIME_LOCK:
+        name = swap.name
+        errors: list[str] = []
+
+        def restore(cfg: dict[str, Any]) -> None:
+            for setup in cfg["profiles"]:
+                if setup["id"] in swap.versions and setup.get("instance") == name:
+                    setup["minecraft_version"], setup["resolved_version"] = swap.versions[setup["id"]]
+
+        if swap.versions:
+            try:
+                _mutate_config(restore)
+            except Exception as exc:  # keep going: the files matter most
+                errors.append(f"setups: {exc}")
+        instances = paths()["instances"]
+        final = instance_path(name)
+        try:
+            failed = None
+            if os.path.lexists(final):
+                failed = os.path.join(instances, f".trash-{name}-{secrets.token_hex(4)}")
+                os.replace(final, failed)
+            if swap.old and os.path.lexists(swap.old):
+                os.replace(swap.old, final)
+            swap.old = None
+            if failed:
+                _remove_instance_tree(failed)
+        except OSError as exc:
+            errors.append(f"files: {exc}")
+        try:
+            cfg = load_config()
+            _render_to_active(cfg, _active_version(cfg))
+        except Exception as exc:  # noqa: BLE001 - best effort
+            errors.append(f"player lists: {exc}")
+    if errors:
+        _say(f"Couldn't fully undo the modpack install of {name}: {'; '.join(errors)}")
+    else:
+        _say(f"Put modpack {name} back the way it was.")
+
+
+def finalize_modpack(swap: ModpackSwap) -> None:
+    """The new pack is in use: delete the previous instance."""
+    if not swap.old:
+        return
+    old, swap.old = swap.old, None
+    try:
+        _remove_instance_tree(old)
+    except OSError as exc:  # the boot sweep removes it later
+        _say(f"Couldn't remove the previous copy of {swap.name}: {exc}")
+
+
+def install_modpack_archive(
+    archive_path: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
 ) -> dict[str, Any]:
-    """Download a .mrpack/.zip (fresh every time) and install it."""
+    """Install a .mrpack or server zip as instances/<name> right away (stage,
+    commit, finalize). Returns setup fields for create_setup (the archive file
+    is left alone). The dashboard stages and commits separately so a failed
+    activation can be rolled back."""
+    staged = stage_modpack_archive(archive_path, name, level_name, allow_downgrade)
+    try:
+        swap = commit_modpack(staged)
+    finally:
+        discard_staged(staged)
+    finalize_modpack(swap)
+    return dict(staged.fields)
+
+
+def stage_modpack_from_url(
+    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> StagedModpack:
+    """Download a .mrpack/.zip (fresh every time) and stage it."""
     name = _validate_pack_name(name)
     if level_name is not None:
         validate_name(level_name, "world")
@@ -3213,12 +3374,132 @@ def install_modpack_from_url(
                 "link of a version's .mrpack file.",
                 code="invalid_archive",
             )
-        return install_modpack_archive(tmp, name, level_name, allow_downgrade)
+        return stage_modpack_archive(tmp, name, level_name, allow_downgrade)
     finally:
         try:
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def install_modpack_from_url(
+    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> dict[str, Any]:
+    """Download a .mrpack/.zip (fresh every time) and install it right away."""
+    staged = stage_modpack_from_url(url, name, level_name, allow_downgrade)
+    try:
+        swap = commit_modpack(staged)
+    finally:
+        discard_staged(staged)
+    finalize_modpack(swap)
+    return dict(staged.fields)
+
+
+_PEEK_JSON_LIMIT = 4 * MIB
+
+
+def peek_pack_version(archive_path: str) -> str | None:
+    """The Minecraft version a pack archive declares, read without unpacking
+    it (the same clues _detect_pack uses, minus jar contents). None when it
+    can't tell; the install then finds out after unpacking."""
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            return _peek_version(archive)
+    except (zipfile.BadZipFile, OSError, ValueError, RuntimeError, EOFError, zlib.error):
+        return None
+
+
+def _peek_version(archive: zipfile.ZipFile) -> str | None:
+    names = [i.filename.replace("\\", "/") for i in archive.infolist() if not i.is_dir()]
+    if len(names) > MAX_ZIP_ENTRIES:
+        return None
+
+    def read_json(name: str) -> Any:
+        try:
+            info = archive.getinfo(name)
+        except KeyError:
+            return None
+        if info.file_size > _PEEK_JSON_LIMIT:
+            return None
+        try:
+            return json.loads(archive.read(info).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
+            return None
+
+    def valid(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text if text and VERSION_RE.match(text) else None
+
+    if "modrinth.index.json" in names:
+        index = read_json("modrinth.index.json")
+        deps = index.get("dependencies") if isinstance(index, dict) else None
+        return valid(deps.get("minecraft")) if isinstance(deps, dict) else None
+    # Server packs often sit in one top-level folder (see _hoist_single_folder).
+    kept = [n for n in names if n.split("/", 1)[0] not in _JUNK]
+    tops = {n.split("/", 1)[0] for n in kept}
+    prefix = ""
+    if len(tops) == 1:
+        only = next(iter(tops))
+        if all("/" in n for n in kept) and only.lower() not in _CONTENT_DIRS:
+            prefix = only + "/"
+    local = [n[len(prefix):] for n in kept if n.startswith(prefix)]
+
+    meta = read_json(prefix + PACK_META_FILE)
+    if isinstance(meta, dict):
+        deps = meta.get("dependencies") if isinstance(meta.get("dependencies"), dict) else {}
+        found = valid(meta.get("minecraft_version")) or valid(deps.get("minecraft"))
+        if found:
+            return found
+    manifest = read_json(prefix + "manifest.json")
+    if isinstance(manifest, dict) and isinstance(manifest.get("minecraft"), dict):
+        found = valid(manifest["minecraft"].get("version"))
+        if found:
+            return found
+    try:
+        info = archive.getinfo(prefix + "variables.txt")
+        if info.file_size <= _PEEK_JSON_LIMIT:
+            for line in archive.read(info).decode("utf-8", "replace").splitlines():
+                if "=" in line and not line.lstrip().startswith("#"):
+                    key, value = line.split("=", 1)
+                    if key.strip().upper() == "MINECRAFT_VERSION":
+                        found = valid(value.strip().strip('"'))
+                        if found:
+                            return found
+    except (KeyError, zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
+        pass
+    intermediary: list[str] = []
+    for rel in local:
+        parts = rel.split("/")
+        if len(parts) == 1:
+            match = re.fullmatch(r"fabric-server-mc\.(.+?)-loader\.(.+?)-launcher\..+\.jar", rel)
+            if match and valid(match.group(1)):
+                return match.group(1)
+        if parts[:4] == ["libraries", "net", "fabricmc", "intermediary"] and len(parts) > 5 and valid(parts[4]):
+            intermediary.append(parts[4])
+    if intermediary:
+        return _newest(intermediary)
+    for rel in local:
+        parts = rel.split("/")
+        if parts[:2] == [".fabric", "server"] and len(parts) == 3:
+            match = re.fullmatch(r"(.+)-server\.jar", parts[2])
+            if match and valid(match.group(1)):
+                return match.group(1)
+    for rel in sorted(local):
+        parts = rel.split("/")
+        if parts[:4] == ["libraries", "net", "minecraftforge", "forge"] and len(parts) > 5 and "-" in parts[4]:
+            found = valid(parts[4].split("-", 1)[0])
+            if found:
+                return found
+    for rel in sorted(local):
+        if "/" in rel:
+            continue
+        match = re.fullmatch(r"forge-(\d[\w.]*?)-(\d[\w.\-]*?)(-universal|-installer|-server)?\.jar", rel)
+        if match and valid(match.group(1)):
+            return match.group(1)
+        match = re.fullmatch(r"minecraft_server\.(.+)\.jar", rel)
+        if match and valid(match.group(1)):
+            return match.group(1)
+    return None
 
 
 # ---------------------------------------------------------------------------

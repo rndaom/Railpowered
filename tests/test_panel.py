@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import http.client
 import io
 import json
@@ -662,12 +663,56 @@ class ModpackRouteTests(PanelTestCase):
     def setUp(self) -> None:
         super().setUp()
         self.login()
+        self.calls: list[tuple] = []
 
-    def _zip_bytes(self) -> bytes:
+    def _zip_bytes(self, minecraft: str | None = None) -> bytes:
         buffer = io.BytesIO()
+        index = {"dependencies": {"minecraft": minecraft}} if minecraft else {}
         with zipfile.ZipFile(buffer, "w") as archive:
-            archive.writestr("modrinth.index.json", "{}")
+            archive.writestr("modrinth.index.json", json.dumps(index))
         return buffer.getvalue()
+
+    def _staged(self, level="pack", version="1.20.1"):
+        fields = {"type": "modpack", "minecraft_version": version, "level_name": level,
+                  "instance": "pack", "name": "pack"}
+        return installer.StagedModpack(
+            name="pack", level_name=level, staging="", minecraft_version=version,
+            loader="fabric", label="pack", fields=fields,
+        )
+
+    def _patch_flow(self, create_error=None):
+        """Mock the steps after staging and record their order."""
+        swap = installer.ModpackSwap(name="pack", minecraft_version="1.20.1", old=None, versions={})
+
+        def record(name, result=None, error=None):
+            def call(*args, **kwargs):
+                self.calls.append((name, args, kwargs))
+                if error is not None:
+                    raise error
+                return result
+            return call
+
+        patches = [
+            mock.patch.object(ix, "commit_modpack", side_effect=record("commit", swap)),
+            mock.patch.object(ix, "create_setup", side_effect=record("create", None, create_error)),
+            mock.patch.object(ix, "finalize_modpack", side_effect=record("finalize")),
+            mock.patch.object(ix, "rollback_modpack", side_effect=record("rollback")),
+            mock.patch.object(ix, "discard_staged", side_effect=record("discard")),
+        ]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return swap
+
+    def _task(self):
+        return self.api("GET", "/api/tasks/current")[1]["task"]
+
+    def _modpack_files(self):
+        return sorted(os.listdir(installer.paths()["modpacks"]))
+
+    def _newer_world(self, name="packworld", newest="1.21.4"):
+        os.makedirs(installer.world_path(name), exist_ok=True)
+        installer._write_world_meta(name, {"newest_version": newest, "last_version": newest})
 
     def test_url_validation(self):
         for body in (
@@ -679,27 +724,28 @@ class ModpackRouteTests(PanelTestCase):
         ):
             self.assertEqual(self.api("POST", "/api/modpacks", body)[0], 400, body)
 
-    def test_url_install_task(self):
-        fields = {"type": "modpack", "minecraft_version": "1.20.1", "level_name": "pack",
-                  "instance": "pack"}
-        with mock.patch.object(ix, "install_modpack_from_url", return_value=fields) as install, \
-                mock.patch.object(ix, "create_setup") as create:
+    def test_url_install_stages_then_commits_and_activates(self):
+        staged = self._staged()
+        swap = self._patch_flow()
+        with mock.patch.object(ix, "stage_modpack_from_url", return_value=staged) as stage:
             status, payload = self.api(
                 "POST", "/api/modpacks", {"url": "https://cdn.modrinth.com/x.mrpack", "name": "pack"}
             )
             self.assertEqual((status, payload["task"]["kind"]), (202, "modpack"))
             tasks.wait_idle(5)
-        install.assert_called_once_with(
+        stage.assert_called_once_with(
             "https://cdn.modrinth.com/x.mrpack", "pack", level_name="pack", allow_downgrade=False
         )
-        self.assertEqual(create.call_args[0][0]["name"], "pack")
-        self.assertEqual(create.call_args[1], {"allow_downgrade": False, "activate": True})
+        self.assertEqual([c[0] for c in self.calls], ["commit", "create", "finalize", "discard"])
+        self.assertIs(self.calls[0][1][0], staged)
+        self.assertEqual(self.calls[1][1][0]["name"], "pack")
+        self.assertEqual(self.calls[1][2], {"allow_downgrade": False, "activate": True})
+        self.assertIs(self.calls[2][1][0], swap)
+        self.assertEqual(self._task()["state"], "done")
 
     def test_url_install_passes_allow_downgrade(self):
-        fields = {"type": "modpack", "minecraft_version": "1.20.1", "level_name": "world",
-                  "instance": "pack"}
-        with mock.patch.object(ix, "install_modpack_from_url", return_value=fields) as install, \
-                mock.patch.object(ix, "create_setup") as create:
+        self._patch_flow()
+        with mock.patch.object(ix, "stage_modpack_from_url", return_value=self._staged("world")) as stage:
             status, _ = self.api(
                 "POST", "/api/modpacks",
                 {"url": "https://cdn.modrinth.com/x.mrpack", "name": "pack", "level_name": "world",
@@ -707,8 +753,36 @@ class ModpackRouteTests(PanelTestCase):
             )
             self.assertEqual(status, 202)
             tasks.wait_idle(5)
-        self.assertTrue(install.call_args[1]["allow_downgrade"])
-        self.assertTrue(create.call_args[1]["allow_downgrade"])
+        self.assertTrue(stage.call_args[1]["allow_downgrade"])
+        self.assertTrue(self.calls[1][2]["allow_downgrade"])
+
+    def test_failed_activation_puts_the_previous_pack_back(self):
+        swap = self._patch_flow(
+            create_error=installer.InstallError("Java 21 is missing", code="java_missing")
+        )
+        with mock.patch.object(ix, "stage_modpack_from_url", return_value=self._staged()):
+            self.api("POST", "/api/modpacks", {"url": "https://cdn.modrinth.com/x.mrpack", "name": "pack"})
+            tasks.wait_idle(5)
+        self.assertEqual([c[0] for c in self.calls], ["commit", "create", "rollback", "discard"])
+        self.assertIs(self.calls[2][1][0], swap)
+        task = self._task()
+        self.assertEqual((task["state"], task["code"]), ("failed", "java_missing"))
+
+    def test_downgrade_found_while_staging_fails_the_task_with_its_data(self):
+        self._patch_flow()
+        error = installer.InstallError(
+            "World 'pack' has been played on Minecraft 1.21.4.", code="world_downgrade",
+            data={"world": "pack", "last_version": "1.21.4", "newest_version": "1.21.4",
+                  "version": "1.20.1"},
+        )
+        with mock.patch.object(ix, "stage_modpack_from_url", side_effect=error), \
+                mock.patch.object(controller, "stop") as stop:
+            self.api("POST", "/api/modpacks", {"url": "https://cdn.modrinth.com/x.mrpack", "name": "pack"})
+            tasks.wait_idle(5)
+        task = self._task()
+        self.assertEqual((task["code"], task["data"]["newest_version"]), ("world_downgrade", "1.21.4"))
+        self.assertEqual(self.calls, [])  # nothing committed or created
+        stop.assert_not_called()  # the server kept running while the pack was staged
 
     def test_upload_requires_length_and_limits_size(self):
         sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
@@ -733,22 +807,21 @@ class ModpackRouteTests(PanelTestCase):
         self.assertEqual((status, payload["code"]), (400, "invalid_name"))
         status, payload = self.api("POST", "/api/modpacks/upload?name=pack", body=b"not a zip")
         self.assertEqual((status, payload["code"]), (400, "invalid_archive"))
-        leftovers = os.listdir(installer.paths()["modpacks"])
-        self.assertEqual(leftovers, [])
+        self.assertEqual(self._modpack_files(), [])
 
     def test_upload_streams_to_disk_and_installs(self):
         seen = {}
 
-        def install(path, name, level_name=None, allow_downgrade=False):
+        def stage(path, name, level_name=None, allow_downgrade=False):
             with open(path, "rb") as handle:
                 seen["data"] = handle.read()
+            seen["path"] = os.path.basename(path)
             seen["args"] = (name, level_name, allow_downgrade)
-            return {"type": "modpack", "minecraft_version": "1.20.1", "level_name": level_name,
-                    "instance": name}
+            return self._staged(level_name)
 
+        self._patch_flow()
         data = self._zip_bytes()
-        with mock.patch.object(ix, "install_modpack_archive", side_effect=install), \
-                mock.patch.object(ix, "create_setup"):
+        with mock.patch.object(ix, "stage_modpack_archive", side_effect=stage):
             status, payload = self.api(
                 "POST",
                 "/api/modpacks/upload?name=pack&level_name=packworld&filename=My%20Pack.mrpack"
@@ -759,7 +832,116 @@ class ModpackRouteTests(PanelTestCase):
             tasks.wait_idle(5)
         self.assertEqual(seen["data"], data)
         self.assertEqual(seen["args"], ("pack", "packworld", True))
-        self.assertEqual(os.listdir(installer.paths()["modpacks"]), [])
+        # A unique hidden name: same-name uploads can't replace each other's file.
+        self.assertRegex(seen["path"], r"^\.pack-[0-9a-f]{8}\.upload\.mrpack$")
+        self.assertEqual(self._modpack_files(), [])
+
+    def test_upload_into_a_newer_world_is_refused_before_the_task_and_kept(self):
+        self._newer_world()
+        self._patch_flow()
+        data = self._zip_bytes("1.20.1")
+        with mock.patch.object(ix, "stage_modpack_archive") as stage:
+            status, payload = self.api(
+                "POST", "/api/modpacks/upload?name=pack&level_name=packworld&filename=p.mrpack",
+                body=data,
+            )
+        self.assertEqual((status, payload["code"]), (409, "world_downgrade"))
+        self.assertEqual((payload["newest_version"], payload["version"]), ("1.21.4", "1.20.1"))
+        token = payload["upload_token"]
+        self.assertEqual(self._modpack_files(), [f".held-{token}.mrpack"])
+        stage.assert_not_called()
+        self.assertIsNone(tasks.running())
+
+        # Confirming reuses the kept archive: no second upload.
+        seen = {}
+
+        def confirmed(path, name, level_name=None, allow_downgrade=False):
+            with open(path, "rb") as handle:
+                seen["data"] = handle.read()
+            seen["allow"] = allow_downgrade
+            return self._staged(level_name, "1.20.1")
+
+        with mock.patch.object(ix, "stage_modpack_archive", side_effect=confirmed):
+            status, payload = self.api(
+                "POST",
+                f"/api/modpacks/upload?name=pack&level_name=packworld&allow_downgrade=1&token={token}",
+                body=b"",
+            )
+            self.assertEqual(status, 202, payload)
+            tasks.wait_idle(5)
+        self.assertEqual((seen["data"], seen["allow"]), (data, True))
+        self.assertEqual(self._modpack_files(), [])
+        # The token is single-use.
+        status, payload = self.api(
+            "POST", f"/api/modpacks/upload?name=pack&allow_downgrade=1&token={token}", body=b""
+        )
+        self.assertEqual((status, payload["code"]), (410, "upload_expired"))
+
+    def test_downgrade_found_in_the_task_keeps_the_upload_too(self):
+        self._patch_flow()
+        error = installer.InstallError("older", code="world_downgrade", data={"world": "packworld"})
+        with mock.patch.object(ix, "stage_modpack_archive", side_effect=error):
+            status, _ = self.api(
+                "POST", "/api/modpacks/upload?name=pack&level_name=packworld", body=self._zip_bytes()
+            )
+            self.assertEqual(status, 202)
+            tasks.wait_idle(5)
+        task = self._task()
+        self.assertEqual(task["code"], "world_downgrade")
+        token = task["data"]["upload_token"]
+        self.assertEqual(self._modpack_files(), [f".held-{token}.zip"])
+
+    def test_held_uploads_expire(self):
+        modpacks = installer.paths()["modpacks"]
+        os.makedirs(modpacks, exist_ok=True)
+        held = os.path.join(modpacks, ".held-" + "a" * 32 + ".zip")
+        with open(held, "wb") as handle:
+            handle.write(b"PK\x03\x04")
+        old = time.time() - panel.HELD_UPLOAD_TTL - 5
+        os.utime(held, (old, old))
+        status, payload = self.api(
+            "POST", "/api/modpacks/upload?name=pack&allow_downgrade=1&token=" + "a" * 32, body=b""
+        )
+        self.assertEqual((status, payload["code"]), (410, "upload_expired"))
+        self.assertEqual(self._modpack_files(), [])
+        status, payload = self.api("POST", "/api/modpacks/upload?name=pack&token=../x", body=b"")
+        self.assertEqual((status, payload["code"]), (400, "invalid"))
+
+    def test_only_one_upload_streams_at_a_time(self):
+        self.assertTrue(panel._upload_lock.acquire(blocking=False))
+        try:
+            status, payload = self.api("POST", "/api/modpacks/upload?name=pack", body=self._zip_bytes())
+        finally:
+            panel._upload_lock.release()
+        self.assertEqual((status, payload["code"]), (409, "busy"))
+        self.assertEqual(self._modpack_files(), [])
+
+    def test_running_out_of_space_mid_upload_is_disk_full(self):
+        real_open = open
+
+        class Full:
+            def __init__(self, handle):
+                self.handle = handle
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.handle.close()
+
+            def write(self, _data):
+                raise OSError(errno.ENOSPC, "No space left on device")
+
+        def failing_open(path, mode="r", *args, **kwargs):
+            handle = real_open(path, mode, *args, **kwargs)
+            if "w" in mode and str(path).endswith(".part"):
+                return Full(handle)
+            return handle
+
+        with mock.patch("builtins.open", side_effect=failing_open):
+            status, payload = self.api("POST", "/api/modpacks/upload?name=pack", body=self._zip_bytes())
+        self.assertEqual((status, payload["code"]), (507, "disk_full"))
+        self.assertEqual(self._modpack_files(), [])
 
 
 class WorldBackupRouteTests(PanelTestCase):

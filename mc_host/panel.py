@@ -8,6 +8,7 @@ generic 500 whose traceback goes to stdout (Railway logs) only.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
@@ -33,6 +34,14 @@ LOGIN_LIMIT = 4 * 1024
 CHUNK = 64 * 1024
 CONSOLE_MAX = 1000
 GENERIC_500 = "Something went wrong on the server. The log has the details."
+# An uploaded pack that hit the world-downgrade guard is kept this long as
+# modpacks/.held-<token><ext>, so confirming doesn't mean uploading it again.
+HELD_UPLOAD_TTL = 3600
+_HELD_TOKEN_RE = re.compile(r"[0-9a-f]{32}")
+_HELD_EXTENSIONS = (".mrpack", ".zip")
+# One upload streams at a time: same-name uploads can't trip over each other
+# and the free-space check isn't shared by several streams at once.
+_upload_lock = threading.Lock()
 
 
 class ApiError(Exception):
@@ -135,6 +144,67 @@ def _require_idle_tasks() -> None:
     task = tasks.running()
     if task is not None:
         raise ApiError(409, "busy", f"Wait for “{task.label}” to finish first.")
+
+
+def _remove_quietly(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _hold_upload(path: str) -> str:
+    """Keep an uploaded archive for a confirmation; returns its token."""
+    token = secrets.token_hex(16)
+    extension = os.path.splitext(path)[1].lower()
+    if extension not in _HELD_EXTENSIONS:
+        extension = ".zip"
+    held = os.path.join(os.path.dirname(path), f".held-{token}{extension}")
+    os.replace(path, held)
+    try:
+        os.utime(held)
+    except OSError:
+        pass
+    return token
+
+
+def _claim_held(modpacks: str, token: str, name: str) -> str:
+    """Move a held upload back to a fresh upload name for a new install."""
+    if not _HELD_TOKEN_RE.fullmatch(token):
+        raise ApiError(400, "invalid", "That upload token isn't valid.")
+    for extension in _HELD_EXTENSIONS:
+        held = os.path.join(modpacks, f".held-{token}{extension}")
+        if os.path.isfile(held):
+            final = os.path.join(modpacks, f".{name}-{secrets.token_hex(4)}.upload{extension}")
+            os.replace(held, final)
+            return final
+    raise ApiError(
+        410, "upload_expired", "That upload is no longer kept. Upload the modpack again."
+    )
+
+
+def purge_held_uploads(now: float | None = None) -> int:
+    """Delete held uploads older than HELD_UPLOAD_TTL; returns how many."""
+    modpacks = installer.paths()["modpacks"]
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        names = os.listdir(modpacks)
+    except OSError:
+        return 0
+    for entry in names:
+        if not entry.startswith(".held-"):
+            continue
+        path = os.path.join(modpacks, entry)
+        try:
+            if now - os.path.getmtime(path) > HELD_UPLOAD_TTL:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
 
 
 def _restart_note(exc: ServerError) -> Exception:
@@ -681,23 +751,35 @@ class PanelHandler(BaseHTTPRequestHandler):
     def _modpack_task(
         self,
         label: str,
-        install: Callable[[], dict[str, Any]],
+        stage: Callable[[], Any],
         name: str,
         allow_downgrade: bool,
     ) -> None:
-        def activate(fields: dict[str, Any]) -> Any:
-            fields = dict(fields)
-            fields.setdefault("name", name)
-            return ix.create_setup(fields, allow_downgrade=allow_downgrade, activate=True)
+        """Install a pack as a task: stage it while the server keeps running
+        (downloads, loader, the downgrade guard), then stop, swap it in and
+        activate its setup. If activation fails the previous pack and setup
+        versions are put back before the previous setup starts again."""
 
         def run(_ctx: Any) -> None:
-            if controller.running_instance() == name:
-                # Reinstalling the pack that is running: its files are about
-                # to be swapped, so stop it before the install, not after.
-                _run_with_restart(lambda: activate(install()), restart=True, reason=f"updating {name}")
-                return
-            fields = install()
-            _run_with_restart(lambda: activate(fields), restart=True, reason=f"switching to {name}")
+            staged = stage()
+            try:
+                def change() -> Any:
+                    swap = ix.commit_modpack(staged)
+                    try:
+                        fields = dict(staged.fields)
+                        fields.setdefault("name", name)
+                        spec = ix.create_setup(fields, allow_downgrade=allow_downgrade, activate=True)
+                    except BaseException:
+                        ix.rollback_modpack(swap)
+                        raise
+                    ix.finalize_modpack(swap)
+                    return spec
+
+                updating = controller.running_instance() == name
+                reason = f"updating {name}" if updating else f"switching to {name}"
+                _run_with_restart(change, restart=True, reason=reason)
+            finally:
+                ix.discard_staged(staged)
 
         task = tasks.submit("modpack", label, run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
@@ -715,9 +797,12 @@ class PanelHandler(BaseHTTPRequestHandler):
         _check_name(level)
         allow_downgrade = _bool(data, "allow_downgrade", False)
         _require_idle_tasks()
+        # The version is known only after the download; the guard runs then,
+        # before the pack's own files are fetched. A world_downgrade failure
+        # carries code and data on the task; resubmit with allow_downgrade.
         self._modpack_task(
             f"Installing modpack {name}",
-            lambda: ix.install_modpack_from_url(
+            lambda: ix.stage_modpack_from_url(
                 url, name, level_name=level, allow_downgrade=allow_downgrade
             ),
             name,
@@ -733,17 +818,48 @@ class PanelHandler(BaseHTTPRequestHandler):
         extension = ".mrpack" if filename.lower().endswith(".mrpack") else ".zip"
         flag = ((self.query.get("allow_downgrade") or [""])[0]).strip().lower()
         allow_downgrade = flag in ("1", "true", "yes")
+        # token: confirm a held upload (409 world_downgrade) without resending it.
+        token = ((self.query.get("token") or [""])[0]).strip().lower()
         _require_idle_tasks()
+        if not _upload_lock.acquire(blocking=False):
+            self.close_connection = True
+            raise ApiError(409, "busy", "Another modpack upload is in progress. Wait for it to finish.")
+        try:
+            modpacks = installer.paths()["modpacks"]
+            os.makedirs(modpacks, exist_ok=True)
+            purge_held_uploads()
+            if token:
+                if self._content_length(JSON_LIMIT) != 0:
+                    self.close_connection = True
+                    raise ApiError(400, "invalid", "Send no file when confirming a kept upload.")
+                final = _claim_held(modpacks, token, name)
+            else:
+                final = self._receive_upload(modpacks, name, extension)
+            try:
+                if not allow_downgrade:
+                    self._precheck_pack(final, level)
+                self._modpack_task(
+                    f"Installing modpack {name}",
+                    self._stage_upload(final, name, level, allow_downgrade),
+                    name,
+                    allow_downgrade,
+                )
+            except BaseException:
+                _remove_quietly(final)
+                raise
+        finally:
+            _upload_lock.release()
+
+    def _receive_upload(self, modpacks: str, name: str, extension: str) -> str:
+        """Stream the body to a unique hidden file; returns its path."""
         limit = installer.max_upload_bytes()
         length = self._content_length(limit, required=True)
-        modpacks = installer.paths()["modpacks"]
-        os.makedirs(modpacks, exist_ok=True)
         free = shutil.disk_usage(modpacks).free
         if free < length * 3 + 64 * 1024 * 1024:
             self.close_connection = True
             raise ApiError(507, "disk_full", "There isn't enough free space on the volume for this pack.")
         partial = os.path.join(modpacks, f".upload-{secrets.token_hex(6)}.part")
-        final = os.path.join(modpacks, f"{name}.upload{extension}")
+        final = os.path.join(modpacks, f".{name}-{secrets.token_hex(4)}.upload{extension}")
         try:
             self._receive_file(partial, length)
             with open(partial, "rb") as handle:
@@ -752,43 +868,61 @@ class PanelHandler(BaseHTTPRequestHandler):
                 raise ApiError(400, "invalid_archive", "That file isn't a .mrpack or .zip modpack.")
             os.replace(partial, final)
         except BaseException:
-            try:
-                os.remove(partial)
-            except OSError:
-                pass
+            _remove_quietly(partial)
             raise
+        return final
 
-        def install() -> dict[str, Any]:
-            # The installer leaves the archive alone; the upload is ours to delete.
-            try:
-                return ix.install_modpack_archive(
-                    final, name, level_name=level, allow_downgrade=allow_downgrade
-                )
-            finally:
-                try:
-                    os.remove(final)
-                except OSError:
-                    pass
-
+    @staticmethod
+    def _precheck_pack(path: str, level: str) -> None:
+        """409 world_downgrade before any task when the archive says which
+        version it is. The archive is kept and the error carries
+        upload_token, so the confirmation doesn't upload it again."""
+        version = ix.peek_pack_version(path)
+        if not version or not ix.world_exists(level):
+            return
         try:
-            self._modpack_task(f"Installing modpack {name}", install, name, allow_downgrade)
-        except TaskBusy:
-            try:
-                os.remove(final)
-            except OSError:
-                pass
+            ix.check_downgrade(level, version)
+        except installer.InstallError as exc:
+            if ix.error_code(exc) == "world_downgrade":
+                exc.data["upload_token"] = _hold_upload(path)
             raise
+
+    @staticmethod
+    def _stage_upload(path: str, name: str, level: str, allow_downgrade: bool) -> Callable[[], Any]:
+        def stage() -> Any:
+            # The installer leaves the archive alone; the upload is ours to
+            # delete, or to keep when the owner has to confirm a downgrade.
+            try:
+                return ix.stage_modpack_archive(
+                    path, name, level_name=level, allow_downgrade=allow_downgrade
+                )
+            except installer.InstallError as exc:
+                if ix.error_code(exc) == "world_downgrade" and os.path.isfile(path):
+                    exc.data["upload_token"] = _hold_upload(path)
+                raise
+            finally:
+                _remove_quietly(path)
+
+        return stage
 
     def _receive_file(self, path: str, length: int) -> None:
         remaining = length
-        with open(path, "wb") as handle:
-            while remaining > 0:
-                chunk = self.rfile.read(min(CHUNK, remaining))
-                if not chunk:
-                    self.close_connection = True
-                    raise ApiError(400, "incomplete_body", "The upload was cut off. Try again.")
-                handle.write(chunk)
-                remaining -= len(chunk)
+        try:
+            with open(path, "wb") as handle:
+                while remaining > 0:
+                    chunk = self.rfile.read(min(CHUNK, remaining))
+                    if not chunk:
+                        self.close_connection = True
+                        raise ApiError(400, "incomplete_body", "The upload was cut off. Try again.")
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                self.close_connection = True
+                raise ApiError(
+                    507, "disk_full", "The volume ran out of space during the upload."
+                ) from exc
+            raise
 
     # -- worlds ---------------------------------------------------------------------
     @route("GET", "/api/worlds")
