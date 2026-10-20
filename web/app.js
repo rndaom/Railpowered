@@ -1412,6 +1412,15 @@
     $$('[data-bind="version"]', fr).forEach(function (n) {
       setText(n, setup ? 'Java Edition ' + (setup.resolved_version || setup.minecraft_version) : 'Java Edition');
     });
+    var privateKey = s.whitelist_enabled ? 'on' : 'off';
+    var privateTip = $('#firstrun-private');
+    if (privateTip.getAttribute('data-key') !== privateKey) {
+      privateTip.setAttribute('data-key', privateKey);
+      setText($('#firstrun-private-title'), s.whitelist_enabled ? 'It\'s private' : 'Make it private');
+      fill(privateTip, s.whitelist_enabled
+        ? ['Only players on the whitelist can join. Add your friends in ', el('a', { href: '#/players' }, 'Players'), '.']
+        : ['Turn on the whitelist in ', el('a', { href: '#/players' }, 'Players'), ' so only your friends can get in.']);
+    }
   }
 
   function fact(label, value) {
