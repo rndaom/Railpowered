@@ -770,8 +770,8 @@ class Mock:
         if len(rest) == 1 and method == "PATCH":
             if "name" in body:
                 name = str(body.get("name") or "").strip()
-                if not name or len(name) > 60:
-                    raise ApiError(400, "Give the setup a name of up to 60 characters.", "bad_request")
+                if not name or len(name) > 48:
+                    raise ApiError(400, "Setup names are 1-48 characters.", "invalid_name")
                 setup["name"] = name
             if "level_name" in body:
                 level = str(body.get("level_name") or "")
@@ -785,7 +785,7 @@ class Mock:
             return 200, {"ok": True}
         if len(rest) == 1 and method == "DELETE":
             if sid == self.active:
-                raise ApiError(409, "That's the active setup. Switch to another one before deleting it.", "conflict")
+                raise ApiError(409, "That's the active setup. Switch to another one before deleting it.", "active_setup")
             self.setups = [s for s in self.setups if s["id"] != sid]
             return 200, {"ok": True}
         if len(rest) == 2 and rest[1] == "activate" and method == "POST":
@@ -828,7 +828,7 @@ class Mock:
             raise ApiError(400, "World names: " + NAME_RULE, "bad_request")
         create = bool(body.get("create_world"))
         if create and level in self.worlds:
-            raise ApiError(409, f"There's already a world called “{level}”. Pick another name.", "conflict")
+            raise ApiError(409, f"There's already a world called “{level}”. Pick another name.", "world_exists")
         if not create and level not in self.worlds:
             raise ApiError(400, f"There's no world called “{level}”.", "bad_request")
         resolved = LATEST if version == "latest" else version
@@ -836,6 +836,8 @@ class Mock:
             self.check_downgrade(level, resolved, body.get("allow_downgrade"))
         kind = {"vanilla": "Vanilla", "fabric": "Fabric", "forge": "Forge"}[stype]
         name = str(body.get("name") or "").strip() or f"{kind} {resolved}"
+        if len(name) > 48:
+            raise ApiError(400, "Setup names are at most 48 characters.", "invalid_name")
         fail = None
         if "fail" in name.lower():
             fail = f"Couldn't download {kind} for Minecraft {resolved}: the download server answered 503. Try again in a few minutes."
@@ -865,7 +867,7 @@ class Mock:
     def modpack_url(self, body):
         url = str(body.get("url") or "").strip()
         name = str(body.get("name") or "").strip()
-        if not re.match(r"^https?://\S+$", url):
+        if not re.match(r"^https://\S+$", url):
             raise ApiError(400, "The modpack link should start with https://", "bad_request")
         if not NAME_RE.match(name):
             raise ApiError(400, "Pack names: " + NAME_RULE, "bad_request")
