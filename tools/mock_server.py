@@ -338,7 +338,7 @@ class Mock:
         self.pack_version = "1.21.1"
         self.latest_known = True
         self.storage = {}
-        self.join_address = "shuttle.proxy.rlwy.net:28415"
+        self.join_address = "example.proxy.rlwy.net:12345"
         self.friends = ["TheRealZoe", "pixel_pete", "Marrowbone"]
         self.properties = {
             "motd": "Friends only. Be nice!", "difficulty": "normal", "gamemode": "survival",
@@ -980,6 +980,7 @@ class Mock:
             "product": "Railpowered",
             "app_version": "2.0.0",
             "max_upload_bytes": self.max_upload,
+            "admin_key_warning": None,
         }
 
     def online_mode(self):

@@ -46,7 +46,7 @@ into the Deploy form as they are.
 
 | Variable | Default | Description |
 |---|---|---|
-| `ADMIN_KEY` | *(required, no default)* | Dashboard password. Use a long passphrase (four or more random words, or 20+ characters): anyone who has it controls your server. |
+| `ADMIN_KEY` | `${{secret(32)}}` | Dashboard password, generated for you. Find it in the service's Variables after deploying, or replace it with your own long passphrase (20+ characters). Weak keys are refused. Anyone who has it controls your server. |
 | `PORT` | `8080` | Dashboard port. Keep 8080 so Railway's health check and HTTP domain reach the dashboard. |
 | `MINECRAFT_VERSION` | `latest` | First deploy only: the Minecraft version to start with (`latest`, or a version such as `1.21.1`). Change versions later from the dashboard. |
 | `SERVER_TYPE` | `vanilla` | First deploy only: `vanilla`, `fabric` or `forge` (Forge needs `MINECRAFT_VERSION` set to 1.16.5, 1.12.2 or 1.7.10). Add modpacks or other versions later from the dashboard. |
@@ -57,9 +57,15 @@ into the Deploy form as they are.
 
 About `ADMIN_KEY`:
 
-- Mark it required with an empty default, so every deployer chooses their own
-  key on the Deploy form. Do not use `${{secret()}}`: a generated value is one
-  the owner never sees, so they could not log in.
+- Give it the default `${{secret(32)}}` and keep it required. Railway fills in
+  a random 32-character key at deploy time; the owner reads it in the
+  service's **Variables** (or types their own on the Deploy form). This is the
+  recommended default: a key people pick by hand is often short or reused.
+- Railpowered refuses a weak `ADMIN_KEY` at boot (shorter than 12 characters,
+  fewer than 5 different characters, or a well-known password). It then uses
+  the key saved on the volume, says so loudly in the deploy log, and shows a
+  banner in the dashboard until the key is fixed. `ALLOW_WEAK_ADMIN_KEY=1`
+  turns the check off.
 - If a service runs without `ADMIN_KEY` (for example one deployed straight from
   the GitHub repo), Railpowered generates a key, saves it on the volume and
   prints it in the deploy logs. Setting `ADMIN_KEY` later replaces it.
@@ -71,7 +77,8 @@ Use this (or something close) as the template's overview text:
 
 > A Minecraft Java server that sleeps when nobody is online and wakes up when a
 > friend joins, with a web dashboard for versions, worlds, backups and players.
-> Set `ADMIN_KEY` to a long passphrase; it is your dashboard password.
+> Your dashboard password is `ADMIN_KEY`: a random one is generated for you
+> and shown in the service's Variables.
 >
 > By deploying, you agree to the Minecraft EULA
 > (https://www.minecraft.net/eula). Railpowered accepts it for you so the
@@ -89,7 +96,7 @@ You need a Railway account with access to this GitHub repository.
 4. Deploy once and check that the dashboard opens and `/health` returns
    `{"status": "ok"}`.
 5. Project settings → **Generate Template from Project**.
-6. In the template editor, make `ADMIN_KEY` required with an empty default,
+6. In the template editor, make `ADMIN_KEY` required with the default `${{secret(32)}}`,
    paste the variable descriptions and the template description, and publish.
 7. Put the new `https://railway.com/new/template/<code>` URL on the Deploy
    button in `README.md` and at the top of this file.

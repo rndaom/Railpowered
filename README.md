@@ -113,7 +113,7 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 ## Quick start
 
 1. **Click [Deploy on Railway](https://railway.com/new/template/AGX0Mu?utm_medium=integration&utm_source=button&utm_campaign=railpowered).**
-2. **Set `ADMIN_KEY`** on the Deploy form. This is your dashboard password, so make it a long passphrase (four or more random words, or 20+ characters). Anyone who has it controls the server.
+2. **Keep or replace `ADMIN_KEY`** on the Deploy form. This is your dashboard password. The template fills in a random 32-character key (you can read it later in the service's Variables); if you type your own, make it a long passphrase (four or more random words, or 20+ characters). Anyone who has it controls the server.
 3. **Deploy.** The template creates one service with a volume at `/server/data`, a TCP proxy for Minecraft and a public HTTPS domain for the dashboard. The dashboard comes up within seconds, and the first Minecraft download runs in the background.
 4. **Open the service's public URL** and sign in with your `ADMIN_KEY`.
 5. **Copy the join address** from the Overview (it comes from Railway's TCP proxy and looks like `something.proxy.rlwy.net:12345`) and send it to your friends.
@@ -212,7 +212,8 @@ Most settings live in the dashboard and are stored on the volume. Railway variab
 
 | Variable | Default | What it does |
 |---|---|---|
-| `ADMIN_KEY` | *required* | Dashboard password. Use a long passphrase. Changing it signs everyone out. If it's unset, a random key is generated, saved on the volume (`.admin-key`) and printed **once** in the deploy log. A key shorter than 12 characters triggers a warning. |
+| `ADMIN_KEY` | *required* | Dashboard password. Use a long passphrase. Changing it signs everyone out. If it's unset, a random key is generated, saved on the volume (`.admin-key`) and printed **once** in the deploy log. A weak key (shorter than 12 characters, fewer than 5 different characters, or a well-known password) is refused: the key on the volume is used instead, the deploy log says so loudly and the dashboard shows a banner until you fix it. |
+| `ALLOW_WEAK_ADMIN_KEY` | `false` | `1` accepts a weak `ADMIN_KEY` anyway (not recommended). |
 | `PORT` | `8080` | Dashboard port. Keep `8080` so Railway's health check and HTTP domain reach it. Ignored if it equals 25565. |
 | `MINECRAFT_VERSION` | `latest` | **First boot only:** the version of the first setup (`latest`, or a version such as `1.21.1`). After that, change versions from the Setups page. A later change is noted in the log and otherwise ignored. |
 | `SERVER_TYPE` | `vanilla` | **First boot only:** `vanilla`, `fabric` or `forge`. Forge needs `MINECRAFT_VERSION` set to `1.16.5`, `1.12.2` or `1.7.10`. Add modpacks from the dashboard. |

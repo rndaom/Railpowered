@@ -1462,7 +1462,20 @@ def build_status() -> dict[str, Any]:
         "product": installer.APP_NAME,
         "app_version": config.APP_VERSION,
         "max_upload_bytes": installer.max_upload_bytes(),
+        "admin_key_warning": _admin_key_warning(),
     }
+
+
+def _admin_key_warning() -> str | None:
+    """Shown as a banner on every dashboard page while ADMIN_KEY is refused."""
+    refused = config.refused_admin_key()
+    if not refused:
+        return None
+    return (
+        f"The ADMIN_KEY variable is being ignored because {refused}, so you're signed in "
+        "with the key saved on the volume. Set ADMIN_KEY to a long random value in the "
+        "service's Variables on Railway (the template's ${{secret(32)}} works) and redeploy."
+    )
 
 
 def cached_versions() -> dict[str, Any]:

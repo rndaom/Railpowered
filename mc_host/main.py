@@ -41,6 +41,30 @@ def request_shutdown() -> None:
 def announce_admin_key() -> None:
     key, source = config.admin_key_info()
     path = config.admin_key_path()
+    refused = config.refused_admin_key()
+    if refused:
+        rule = "!" * 68
+        print(
+            "\n".join(
+                [
+                    rule,
+                    f"ADMIN_KEY WAS REFUSED: {refused}.",
+                    "Anyone who guesses the dashboard key controls this server, so",
+                    "Railpowered is using the key saved on the volume instead"
+                    + (" (printed below)." if source == "generated" else f" ({path})."),
+                    "Fix: set ADMIN_KEY to a long random value, for example Railway's",
+                    "${{secret(32)}}, then redeploy. To keep a weak key anyway, set",
+                    "ALLOW_WEAK_ADMIN_KEY=1.",
+                    rule,
+                ]
+            ),
+            flush=True,
+        )
+        state.add_log(
+            f"ADMIN_KEY was refused ({refused}); the key saved on the volume is used instead. "
+            "Set a longer, random ADMIN_KEY in Railway and redeploy.",
+            "error",
+        )
     if source == "generated":
         # stdout only (never the dashboard log), and only on the boot that
         # created the key.
@@ -67,10 +91,11 @@ def announce_admin_key() -> None:
         )
     else:
         state.add_log("Dashboard key: ADMIN_KEY from Railway Variables.")
-        if len(key) < config.MIN_RECOMMENDED_KEY_LENGTH:
+        weak = config.weak_key_reason(key)
+        if weak:
             state.add_log(
-                f"ADMIN_KEY is shorter than {config.MIN_RECOMMENDED_KEY_LENGTH} characters. "
-                "A longer key is much harder to guess.",
+                f"ADMIN_KEY is weak ({weak}) and kept only because ALLOW_WEAK_ADMIN_KEY is set. "
+                "A longer, random key is much harder to guess.",
                 "warn",
             )
 

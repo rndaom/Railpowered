@@ -30,7 +30,7 @@ from mc_host.state import state
 STATUS_KEYS = {
     "phase", "task", "players", "player_count", "max_players", "uptime", "idle",
     "join_address", "setup", "java", "online_mode", "whitelist_enabled", "legacy",
-    "last_exit", "product", "app_version", "max_upload_bytes",
+    "last_exit", "product", "app_version", "max_upload_bytes", "admin_key_warning",
 }
 
 
@@ -684,6 +684,39 @@ class ApiBasicsTests(PanelTestCase):
     def test_admin_key_never_reaches_the_dashboard_log(self):
         texts = " ".join(line["text"] for line in state.logs_after()["lines"])
         self.assertNotIn(TEST_KEY, texts)
+
+    def test_weak_admin_key_is_refused_with_a_banner_and_a_loud_log(self):
+        import contextlib
+        from mc_host import main
+
+        os.environ["ADMIN_KEY"] = "hunter2"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            main.announce_admin_key()
+        volume_key = config.get_admin_key()
+        self.assertNotEqual(volume_key, "hunter2")
+        self.assertIn("ADMIN_KEY WAS REFUSED", out.getvalue())
+        self.assertIn(volume_key, out.getvalue())  # newly generated: printed once
+        self.assertIn("ALLOW_WEAK_ADMIN_KEY=1", out.getvalue())
+        self.assertTrue(any("ADMIN_KEY was refused" in line["text"] for line in state.logs_after()["lines"]))
+        self.assertNotIn(volume_key, " ".join(line["text"] for line in state.logs_after()["lines"]))
+
+        self.cookie = None
+        self.assertEqual(self.login("hunter2").getheader("Location"), "/login?error=1")
+        self.assertEqual(self.login(volume_key).getheader("Location"), "/")
+        status, payload = self.api("GET", "/api/status")
+        self.assertEqual(status, 200)
+        self.assertIn("shorter than 12 characters", payload["admin_key_warning"])
+
+        os.environ["ALLOW_WEAK_ADMIN_KEY"] = "1"
+        self.addCleanup(os.environ.pop, "ALLOW_WEAK_ADMIN_KEY", None)
+        self.cookie = None
+        self.assertEqual(self.login("hunter2").getheader("Location"), "/")
+        self.assertIsNone(self.api("GET", "/api/status")[1]["admin_key_warning"])
+
+    def test_strong_admin_key_shows_no_banner(self):
+        self.login()
+        self.assertIsNone(self.api("GET", "/api/status")[1]["admin_key_warning"])
 
 
 class StaticTests(PanelTestCase):

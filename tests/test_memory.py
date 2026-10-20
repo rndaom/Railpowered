@@ -107,10 +107,39 @@ class AdminKeyTests(unittest.TestCase):
             self.assertEqual(source, "generated")
             self.assertGreaterEqual(len(key), 20)
             self.assertEqual(load_or_create_admin_key(tmp, {}), (key, "volume"))
-            self.assertEqual(load_or_create_admin_key(tmp, {"ADMIN_KEY": " mine "}), ("mine", "env"))
+            self.assertEqual(
+                load_or_create_admin_key(tmp, {"ADMIN_KEY": " mine-and-long-enough "}),
+                ("mine-and-long-enough", "env"),
+            )
             if os.name == "posix":
                 mode = os.stat(os.path.join(tmp, config.ADMIN_KEY_FILE)).st_mode & 0o777
                 self.assertEqual(mode, 0o600)
+
+    def test_weak_keys_are_refused_for_the_volume_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stored, _ = load_or_create_admin_key(tmp, {})
+            for weak, reason in (
+                ("hunter2", "shorter than 12"),
+                ("aaaaaaaaaaaaaaaa", "fewer than 5 different"),
+                ("Password1234", "common password"),
+                ("minecraftserver", "common password"),
+            ):
+                env = {"ADMIN_KEY": weak}
+                self.assertIn(reason, config.refused_admin_key(env))
+                self.assertEqual(load_or_create_admin_key(tmp, env), (stored, "volume"))
+                env["ALLOW_WEAK_ADMIN_KEY"] = "1"
+                self.assertIsNone(config.refused_admin_key(env))
+                self.assertEqual(load_or_create_admin_key(tmp, env), (weak, "env"))
+            self.assertIsNone(config.refused_admin_key({"ADMIN_KEY": "x7-Qp2-correct-ferret-lamp"}))
+            self.assertIsNone(config.refused_admin_key({}))
+            self.assertIsNone(config.refused_admin_key({"ADMIN_KEY": "${{secret(32)}}"}))
+
+    def test_refused_key_with_no_volume_key_generates_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            key, source = load_or_create_admin_key(tmp, {"ADMIN_KEY": "short"})
+            self.assertEqual(source, "generated")
+            self.assertNotEqual(key, "short")
+            self.assertIsNone(config.weak_key_reason(key))
 
     def test_unevaluated_template_is_ignored(self):
         with tempfile.TemporaryDirectory() as tmp:

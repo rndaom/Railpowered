@@ -1168,6 +1168,16 @@
     if (v === 'setups') { loadSetups(true); loadWorlds(true); loadStorage(true); }
   }
 
+  // Stays up (no dismiss) while the server ignores a weak ADMIN_KEY.
+  function renderKeyBanner(warning) {
+    var banner = $('#key-banner');
+    if (!banner) return;
+    var text = typeof warning === 'string' ? warning : '';
+    if (text) setText($('#key-text'), text);
+    if (banner.hidden === !text) return;
+    withStableScroll(function () { banner.hidden = !text; });
+  }
+
   function onStatus(s) {
     var prev = state.status;
     s.phase = PHASES[s.phase] ? s.phase : 'unknown';
@@ -1185,6 +1195,7 @@
       state.settings.restart_required = false;
     }
     trackTask(prev ? prev.task : null, s.task);
+    renderKeyBanner(s.admin_key_warning);
 
     renderStatus();
 
