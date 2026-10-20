@@ -573,6 +573,71 @@ class LifecycleGuardTests(ControllerTestCase):
 
 
 class WakeAndProxyTests(ControllerTestCase):
+    EMPTY_LIST = MODERN + "There are 0 of a max of 20 players online: "
+
+    def wake_online(self, name: str = "Steve") -> None:
+        count = len(self.processes)
+        self.assertTrue(self.controller.request_wake(name))
+        self.assertTrue(wait_for(lambda: len(self.processes) == count + 1))
+        self.proc.emit(DONE)
+        self.assertTrue(wait_for(lambda: self.state.phase == "online"))
+
+    def sleep_idle(self) -> None:
+        self.assertTrue(self.controller.idle_tick(now=self.state.idle_since + 601))
+        self.assertTrue(wait_for(lambda: self.state.phase == "sleeping"))
+
+    def test_empty_wakes_back_off_15_minutes_then_an_hour(self):
+        self.next_process_kwargs = {"list_reply": self.EMPTY_LIST}
+        self.controller.ensure_listener()
+        self.wake_online()
+        self.sleep_idle()
+        paused = self.controller.wake_paused_until()
+        self.assertAlmostEqual(paused, time.time() + 900, delta=10)
+        self.assertFalse(self.controller.request_wake("Scanner"))
+        self.assertEqual(self.controller.proxy_info()["mode"], "resting")
+        self.assertEqual(self.controller.snapshot()["idle"]["wake_paused_until"], int(paused))
+        self.assertTrue(any("nobody joined" in text for text in (e["text"] for e in self.state.logs_after()["lines"])))
+        # After the pause, the next empty wake pauses for an hour.
+        self.controller._wake_paused_until = time.time() - 1
+        self.assertIsNone(self.controller.wake_paused_until())
+        self.assertEqual(self.controller.proxy_info()["mode"], "sleeping")
+        self.wake_online()
+        self.sleep_idle()
+        self.assertAlmostEqual(self.controller.wake_paused_until(), time.time() + 3600, delta=10)
+        self.controller._wake_paused_until = time.time() - 1
+        self.wake_online()
+        self.sleep_idle()
+        self.assertAlmostEqual(self.controller.wake_paused_until(), time.time() + 3600, delta=10)
+
+    def test_a_player_joining_resets_the_backoff(self):
+        self.next_process_kwargs = {"list_reply": self.EMPTY_LIST}
+        self.wake_online()
+        self.sleep_idle()
+        self.controller._wake_paused_until = time.time() - 1
+        self.wake_online()
+        self.emit_and_settle(MODERN + "Alice joined the game")
+        self.emit_and_settle(MODERN + "Alice left the game")
+        self.sleep_idle()
+        self.assertIsNone(self.controller.wake_paused_until())
+        self.assertEqual(self.controller._empty_wakes, 0)
+        self.assertIsNone(self.controller.snapshot()["idle"]["wake_paused_until"])
+
+    def test_dashboard_starts_and_manual_stops_never_pause_wakes(self):
+        self.next_process_kwargs = {"list_reply": self.EMPTY_LIST}
+        self.start_online()  # a start from the dashboard, nobody joins
+        self.sleep_idle()
+        self.assertIsNone(self.controller.wake_paused_until())
+        self.wake_online()
+        self.controller.stop()  # stopped by the owner, not by idle sleep
+        self.assertTrue(wait_for(lambda: self.state.phase == "sleeping"))
+        self.assertIsNone(self.controller.wake_paused_until())
+        # A pause is lifted by a start from the dashboard.
+        self.wake_online()
+        self.sleep_idle()
+        self.assertIsNotNone(self.controller.wake_paused_until())
+        self.start_online()
+        self.assertIsNone(self.controller.wake_paused_until())
+
     def test_wake_starts_once(self):
         self.assertTrue(self.controller.request_wake("Steve"))
         self.controller.request_wake("Alex")

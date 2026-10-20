@@ -27,12 +27,15 @@ MODE_SLEEPING = "sleeping"
 MODE_STARTING = "starting"
 MODE_UPDATING = "updating"
 MODE_CRASHED = "crashed"  # the last start failed: joins don't wake it
+MODE_RESTING = "resting"  # woken lately with nobody joining: joins wait a while
 
 MESSAGES = {
     MODE_SLEEPING: "The server is waking up! Try joining again in a minute.",
     MODE_STARTING: "The server is starting up. Try joining again in a minute.",
     MODE_UPDATING: "Server is updating, try again in a minute.",
     MODE_CRASHED: "The server couldn't start. Ask the owner to check the dashboard.",
+    MODE_RESTING: "The server was woken recently but nobody joined, so it's resting for a "
+                  "while. Try again later, or ask the owner to start it.",
     "not_whitelisted": "You are not whitelisted on this server.",
 }
 MOTD_SUFFIX = {
@@ -40,6 +43,7 @@ MOTD_SUFFIX = {
     MODE_STARTING: "Starting up - try again in a minute",
     MODE_UPDATING: "Updating - try again in a minute",
     MODE_CRASHED: "Couldn't start - ask the owner",
+    MODE_RESTING: "Sleeping - joins wake it again later",
 }
 
 # Release -> protocol number, used so a sleeping server shows its real version
@@ -183,6 +187,11 @@ class SleepProxy:
     MAX_HANDLERS = 128
     CONNECTION_DEADLINE = 6.0
     FIRST_BYTE_TIMEOUT = 2.0
+    # A real client sends its whole handshake (and the status or login
+    # packet after it) in one go, so once the first byte is in, the rest of
+    # the exchange gets this long: a trickling socket can't hold a slot for
+    # the full CONNECTION_DEADLINE.
+    AFTER_FIRST_BYTE = 2.0
     MAX_HANDSHAKE = 4096
     MAX_LOGIN_START = 1024
 
@@ -320,6 +329,7 @@ class SleepProxy:
             first = conn.peek(1, self.FIRST_BYTE_TIMEOUT)
             if not first:
                 return
+            conn.deadline = min(conn.deadline, time.monotonic() + self.AFTER_FIRST_BYTE)
             if first[0] == 0xFE:
                 head = conn.peek(3, 0.3)
                 if len(head) >= 3 and head[1] == 0x01 and head[2] == 0x00:

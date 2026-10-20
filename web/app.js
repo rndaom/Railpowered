@@ -1476,6 +1476,17 @@
       timeKey = 'exit:' + s.last_exit.at;
       setText(timeLabel, 'Last exit');
       if (timeVal.getAttribute('data-key') !== timeKey) timeVal.replaceChildren(el('span', { id: 'exit-ago', title: formatDateTime(s.last_exit.at) }));
+    } else if (!RUNNING[s.phase] && s.idle.wake_paused_until) {
+      // Woken lately with nobody joining: joins don't wake it until then.
+      var pausedUntil = s.idle.wake_paused_until;
+      timeKey = 'paused:' + pausedUntil;
+      setText(timeLabel, 'Joins wake it');
+      if (timeVal.getAttribute('data-key') !== timeKey) {
+        timeVal.replaceChildren(
+          el('span', { title: formatDateTime(pausedUntil) },
+            'From ' + new Date(pausedUntil * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })),
+          el('span', { class: 'subtle' }, 'or press Start'));
+      }
     } else {
       // Not "sleeps after": while it's asleep or stopped, that read as if it were about to happen.
       timeKey = 'sleep:' + timeout;

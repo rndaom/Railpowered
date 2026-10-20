@@ -261,6 +261,14 @@ class ModernLoginTests(ProxyTestCase):
         self.assertEqual(json.loads(text)["text"], MESSAGES["crashed"])
         self.assert_no_wake()
 
+    def test_login_while_resting_after_empty_wakes_does_not_wake(self):
+        self.info["mode"] = "resting"
+        client = self.client()
+        client.send(handshake(2) + login_start("Steve"))
+        _id, text = client.read_string_packet()
+        self.assertEqual(json.loads(text)["text"], MESSAGES["resting"])
+        self.assert_no_wake()
+
     def test_transfer_intent_counts_as_login(self):
         client = self.client()
         client.send(handshake(3) + login_start("Steve"))
@@ -399,6 +407,21 @@ class RobustnessTests(ProxyTestCase):
             pass
         # The first-byte window (2 s), and no 1 s drain for a silent socket.
         self.assertLess(time.monotonic() - started, SleepProxy.FIRST_BYTE_TIMEOUT + 0.8)
+        self.assert_no_wake()
+
+    def test_trickling_clients_are_cut_off_soon_after_the_first_byte(self):
+        client = self.client()
+        raw = handshake(1)
+        started = time.monotonic()
+        client.send(raw[:1])  # the first byte, then nothing more
+        try:
+            client.read_until_eof()
+        except ConnectionResetError:
+            pass
+        took = time.monotonic() - started
+        # AFTER_FIRST_BYTE (2 s) plus the 1 s drain, well short of CONNECTION_DEADLINE + drain.
+        self.assertLess(took, SleepProxy.AFTER_FIRST_BYTE + 1.8)
+        self.assertLess(SleepProxy.AFTER_FIRST_BYTE + 1.8, SleepProxy.CONNECTION_DEADLINE + 1.0)
         self.assert_no_wake()
 
     def test_stop_releases_port_and_start_is_idempotent(self):

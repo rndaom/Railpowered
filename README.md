@@ -41,7 +41,7 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 
 **Server**
 
-- **Wake on join.** While asleep, a sleep proxy owns port 25565. It answers the server list with your real MOTD and version, and a real login attempt wakes the server. A server-list ping never does.
+- **Wake on join.** While asleep, a sleep proxy owns port 25565. It answers the server list with your real MOTD and version, and a real login attempt wakes the server. A server-list ping never does. If a wake ends with nobody actually joining (a scanner, or a friend who gave up), joins stop waking the server for 15 minutes, then for an hour after each further empty wake; a player joining or a press of **Start** ends the pause.
 - **Sleep when empty.** After 10 minutes with nobody online (configurable, or off), Minecraft saves and stops.
 - **Start, stop, restart, save** from the dashboard, plus a live log and a **console** for server commands.
 - **Graceful shutdown on redeploy.** `SIGTERM` runs `save-all flush` and `stop` inside Railway's 60-second draining window.
@@ -188,7 +188,7 @@ stateDiagram-v2
 
 | Phase | Meaning |
 |---|---|
-| `sleeping` | Minecraft is down. The sleep proxy owns 25565, and a login wakes it. |
+| `sleeping` | Minecraft is down. The sleep proxy owns 25565, and a login wakes it (unless wakes are paused after an empty wake; the Overview then shows when joins wake it again). |
 | `preparing` | A background task is installing or downloading. Joins are told to try again shortly. |
 | `starting` | The JVM is up but hasn't finished loading the world. |
 | `online` | Minecraft printed `Done (…)`, so players can join. The idle timer runs while nobody is online. |
