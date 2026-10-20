@@ -73,6 +73,41 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 - Signed, revocable sessions. CSRF protection on every change. Rate-limited sign-in. A strict Content Security Policy.
 - Light and dark themes, keyboard accessible, with a mobile layout that has a bottom tab bar.
 
+<table>
+  <tr>
+    <td width="33%" align="center">
+      <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/setups-dark.png">
+        <source media="(prefers-color-scheme: light)" srcset="docs/assets/screenshots/setups-light.png">
+        <img src="docs/assets/screenshots/setups-light.png" alt="Setups page: saved setups and the new-setup form">
+      </picture>
+      <br><sub><b>Setups</b>: vanilla, Fabric, Forge or a modpack</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="docs/assets/screenshots/worlds-dark.png" alt="Worlds and backups page">
+      <br><sub><b>Worlds &amp; backups</b>: restore, download, disk use</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="docs/assets/screenshots/players-light.png" alt="Players page: whitelist and operators">
+      <br><sub><b>Players</b>: whitelist and operators</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" align="center">
+      <img src="docs/assets/screenshots/console-dark.png" alt="Console with the live server log">
+      <br><sub><b>Console</b>: live log and commands</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="docs/assets/screenshots/login-dark.png" alt="Sign-in page">
+      <br><sub><b>Sign-in</b>: rate-limited, one key</sub>
+    </td>
+    <td width="33%" align="center">
+      <img src="docs/assets/screenshots/mobile-dark.png" alt="The dashboard on a phone" width="200">
+      <br><sub><b>Mobile</b>: bottom tab bar</sub>
+    </td>
+  </tr>
+</table>
+
 ## Quick start
 
 1. **Click [Deploy on Railway](https://railway.com/new/template/AGX0Mu?utm_medium=integration&utm_source=button&utm_campaign=railpowered).**
@@ -394,43 +429,6 @@ railway.toml          Railway build and deploy settings (health check, 60 s drai
 .github/              CI, end-to-end, weekly JRE update check, issue templates
 docs/assets/          Logo and screenshots
 ```
-
-## Gallery
-
-<table>
-  <tr>
-    <td width="33%" align="center">
-      <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/setups-dark.png">
-        <source media="(prefers-color-scheme: light)" srcset="docs/assets/screenshots/setups-light.png">
-        <img src="docs/assets/screenshots/setups-light.png" alt="Setups page: saved setups and the new-setup form">
-      </picture>
-      <br><sub><b>Setups</b>: vanilla, Fabric, Forge or a modpack</sub>
-    </td>
-    <td width="33%" align="center">
-      <img src="docs/assets/screenshots/worlds-dark.png" alt="Worlds and backups page">
-      <br><sub><b>Worlds &amp; backups</b>: restore, download, disk use</sub>
-    </td>
-    <td width="33%" align="center">
-      <img src="docs/assets/screenshots/players-light.png" alt="Players page: whitelist and operators">
-      <br><sub><b>Players</b>: whitelist and operators</sub>
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" align="center">
-      <img src="docs/assets/screenshots/console-dark.png" alt="Console with the live server log">
-      <br><sub><b>Console</b>: live log and commands</sub>
-    </td>
-    <td width="33%" align="center">
-      <img src="docs/assets/screenshots/login-dark.png" alt="Sign-in page">
-      <br><sub><b>Sign-in</b>: rate-limited, one key</sub>
-    </td>
-    <td width="33%" align="center">
-      <img src="docs/assets/screenshots/mobile-dark.png" alt="The dashboard on a phone" width="200">
-      <br><sub><b>Mobile</b>: bottom tab bar</sub>
-    </td>
-  </tr>
-</table>
 
 ## Contributing
 
