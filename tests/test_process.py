@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import threading
 import time
 import unittest
@@ -27,6 +28,9 @@ from mc_host.state import ServerState
 from mc_host.tasks import TaskRunner
 
 MODERN = "[12:00:00] [Server thread/INFO]: "
+# Unique per call: time.monotonic() ticks in ~16 ms steps on Windows, so two
+# quick markers could collide and a settle would match the previous one.
+_MARKERS = itertools.count()
 DONE = MODERN + 'Done (4.213s)! For help, type "help"'
 
 
@@ -109,7 +113,7 @@ class ControllerTestCase(RuntimeTestCase):
         return self.proc
 
     def emit_and_settle(self, line: str) -> None:
-        marker = f"{MODERN}marker {time.monotonic()}"
+        marker = f"{MODERN}marker {next(_MARKERS)}"
         self.proc.emit(line)
         self.proc.emit(marker)
         self.assertTrue(wait_for(lambda: any(e["text"].endswith(marker.split(": ", 1)[1])

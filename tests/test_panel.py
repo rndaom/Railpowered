@@ -214,7 +214,8 @@ class PagesAndAuthTests(PanelTestCase):
                 self.login("bad", headers={"X-Forwarded-For": f"9.9.9.{index}"})
             started = time.monotonic()
             response = self.login(TEST_KEY, headers={"X-Forwarded-For": "8.8.8.8"})
-            self.assertGreaterEqual(time.monotonic() - started, 0.3)  # waited in the slow lane
+            # waited in the slow lane (a little slack for Windows' ~16 ms clock ticks)
+            self.assertGreaterEqual(time.monotonic() - started, 0.25)
             self.assertEqual(response.getheader("Location"), "/")
             response = self.login("bad", headers={"X-Forwarded-For": "7.7.7.7"})
             self.assertEqual(response.getheader("Location"), "/login?error=1")
