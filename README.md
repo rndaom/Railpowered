@@ -55,12 +55,13 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 - **Modpacks:** a Modrinth `.mrpack` or a server `.zip`, from a link or uploaded from your computer (Fabric or Forge packs).
 - **Java picked for you.** The image ships Eclipse Temurin 8, 17, 21 and 25. Railpowered reads the Java requirement from Mojang's version metadata and uses the smallest Java that fits.
 - **Installs are transactional.** A new setup installs first and becomes active only if that succeeds. If it fails, your current setup keeps working.
+- **Downloaded files.** The Setups page lists the server jars, Fabric and Forge installs and modpacks on the volume, with their sizes. Delete the ones no setup uses to free space. A setup that needs them later downloads them again.
 
 **Worlds and backups**
 
 - Multiple worlds side by side. Each one remembers the newest Minecraft version that opened it.
-- **Downgrade guard.** Opening a world with an older version than it was played on is blocked. You can choose a new world instead, or confirm, in which case a backup is taken first.
-- **Backups** of one world as a `.tar.gz`. Backups of a running world use `save-off` / `save-all flush` / `save-on`, so the server stays online. Restore into the same world or a new one, download any backup, or upload one back (via the API).
+- **Downgrade guard.** Opening a world with an older version than it was played on is blocked, whether that comes from a new setup, a setup switch, a modpack install or a start after a restore. The dashboard asks first: pick a new world instead, or confirm, in which case a backup is taken first.
+- **Backups** of one world as a `.tar.gz`. Backups of a running world use `save-off` / `save-all flush` / `save-on`, so the server stays online. Restore into the same world or a new one, download any backup, and bring one back with **Upload backup**.
 - **Automatic safety backups** before a restore, a downgrade and a world upgrade.
 
 **Players and settings**
@@ -70,8 +71,9 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 
 **Dashboard**
 
-- Signed, revocable sessions. CSRF protection on every change. Rate-limited sign-in. A strict Content Security Policy.
-- Light and dark themes, keyboard accessible, with a mobile layout that has a bottom tab bar.
+- Signed, revocable sessions, plus **Sign out everywhere** to end them all at once. CSRF protection on every change. Rate-limited sign-in. A strict Content Security Policy.
+- No third-party requests: the IBM Plex fonts and every icon are served by the dashboard itself.
+- Light, dark and automatic themes, keyboard accessible, with a mobile layout that has a bottom tab bar.
 
 <table>
   <tr>
@@ -85,7 +87,7 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
     </td>
     <td width="33%" align="center">
       <img src="docs/assets/screenshots/worlds-dark.png" alt="Worlds and backups page">
-      <br><sub><b>Worlds &amp; backups</b>: restore, download, disk use</sub>
+      <br><sub><b>Worlds &amp; backups</b>: restore, download, upload</sub>
     </td>
     <td width="33%" align="center">
       <img src="docs/assets/screenshots/players-light.png" alt="Players page: whitelist and operators">
@@ -191,7 +193,7 @@ stateDiagram-v2
 | `starting` | The JVM is up but hasn't finished loading the world. |
 | `online` | Minecraft printed `Done (…)`, so players can join. The idle timer runs while nobody is online. |
 | `stopping` | `save-all flush`, then `stop`, with a grace period before the process is killed. |
-| `crashed` | The process exited unexpectedly or didn't finish starting within `START_TIMEOUT`. The proxy is back on the port, and the Overview shows the last meaningful log line. After a failed *start*, joins don't retry for 5 minutes, or at all for errors a retry can't fix, such as a missing Java or a blocked downgrade. |
+| `crashed` | The process exited unexpectedly or didn't finish starting within `START_TIMEOUT`. The proxy is back on the port, and the Overview shows the last meaningful log line. After a failed *start*, joins don't retry for 5 minutes, or at all for errors a retry can't fix, such as a missing Java or a blocked downgrade. The Overview says which applies and when a join will wake the server again. |
 
 ## Costs and sleeping on Railway
 
@@ -297,7 +299,7 @@ Everything Railpowered writes lives in `/server/data`, so it survives redeploys:
 
 The dashboard sits on a public URL and the join address is easy to scan for. Railpowered's protections:
 
-- **Sessions:** signed `HttpOnly` cookies (`__Host-` prefixed and `Secure` over HTTPS, `SameSite=Lax`) that last 30 days. They're keyed to a secret on the volume plus `ADMIN_KEY`, so changing the key signs everyone out. Logging out revokes the session for good, even across restarts.
+- **Sessions:** signed `HttpOnly` cookies (`__Host-` prefixed and `Secure` over HTTPS, `SameSite=Lax`) that last 30 days. They're keyed to a secret on the volume plus `ADMIN_KEY`, so changing the key signs everyone out. Signing out revokes the session for good, even across restarts, and **Sign out everywhere** (in the sidebar) revokes every session at once, this browser's included.
 - **CSRF:** every state-changing API request must carry the `X-Railpowered: 1` header and pass a same-origin check.
 - **Sign-in limits:** 10 failed attempts per address per 10 minutes. A flood of failures from many addresses slows every sign-in down instead of locking you out. The key is compared in constant time.
 - **Headers:** a strict Content Security Policy (no inline scripts), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin`, and `Cache-Control: no-store` on API responses.
@@ -321,7 +323,7 @@ Minecraft can upgrade a world to a newer version, but it can't take it back. Rai
 - **Downgrades are blocked.** If a setup would open a world on an older version than it was played on, Railpowered refuses with a clear message. You can pick a newer version, use a new world, or confirm, which takes a `pre-downgrade` backup first.
 - **Restoring replaces one world** and first saves a `pre-restore` backup of it as it is now. Restoring never touches setups, settings or player lists. You can also restore into a new world name.
 - **Live backups** of the running world pause autosaves (`save-off`), flush to disk (`save-all flush`), archive, then resume (`save-on`), so the server stays online.
-- **Keep a copy elsewhere.** Backups live on the same Railway volume as the worlds, so deleting the volume deletes them too. Download the ones you care about. A downloaded backup can be uploaded again later (for example onto a new volume) through `POST /api/backups/upload`. Send the file as the request body, signed in, with the `X-Railpowered: 1` header.
+- **Keep a copy elsewhere.** Backups live on the same Railway volume as the worlds, so deleting the volume deletes them too. Download the ones you care about. **Upload backup** on the Worlds page brings a downloaded backup back later, for example onto a new volume.
 
 ## FAQ and troubleshooting
 
@@ -364,7 +366,7 @@ Minecraft can upgrade a world to a newer version, but it can't take it back. Rai
 <details>
 <summary><strong>Can I use my existing world?</strong></summary>
 
-<br>Yes. Pack the world folder (the one with <code>level.dat</code>) as a <code>.tar.gz</code>, upload it as a backup with <code>POST /api/backups/upload</code>, then restore it from the Worlds page into a new world. A world found at <code>/server/data/world</code> (for example from another server image) is left untouched, and a log message explains how to move it into <code>worlds/</code>.
+<br>Yes. Pack the world folder (the one with <code>level.dat</code>) as a <code>.tar.gz</code>, upload it with <strong>Upload backup</strong> on the Worlds page, then restore it into a new world. A world found at <code>/server/data/world</code> (for example from another server image) is left untouched, and a log message explains how to move it into <code>worlds/</code>.
 </details>
 
 <details>
@@ -442,4 +444,4 @@ Railpowered is released under the [MIT License](LICENSE). See [NOTICE](NOTICE) f
 - **[Eclipse Temurin](https://adoptium.net/)** Java runtimes from the Eclipse Adoptium project (GPLv2 with the Classpath Exception) are included in the Docker image.
 - **[Fabric](https://fabricmc.net/)** and **[Minecraft Forge](https://minecraftforge.net/)** are downloaded from their official Maven repositories when you choose them.
 - **[Modrinth](https://modrinth.com/)** hosts the `.mrpack` modpack format and most modpacks you'll install.
-- **[IBM Plex](https://github.com/IBM/plex)** fonts (SIL Open Font License 1.1) are loaded from Google Fonts by the dashboard.
+- **[IBM Plex](https://github.com/IBM/plex)** fonts (SIL Open Font License 1.1) are bundled with the dashboard in [`web/assets/fonts/`](web/assets/fonts).
