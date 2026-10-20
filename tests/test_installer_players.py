@@ -153,12 +153,6 @@ class ListManagementTests(PlayersTestCase):
         self.write("white-list.txt", "# old list\nAlex\nsteve\nbad name\n")
         self.assertEqual(self.names("whitelist"), ["Alex", "steve"])
 
-    def test_v1_shims(self):
-        self.assertEqual(installer.update_name_list("ops", "Alex", add=True), ["Alex"])
-        path, names = installer.list_file_names("ops")
-        self.assertEqual((path, names), (self.path("ops.json"), ["Alex"]))
-        self.assertEqual(installer.update_name_list("ops", "Alex", add=False), [])
-
 
 class ListFormatTests(PlayersTestCase):
     def setUp(self):

@@ -219,6 +219,12 @@ ERROR_STATUS = {
     "active_setup": 409,
     "active_world": 409,
     "world_downgrade": 409,
+    "busy": 409,
+    "install_failed": 500,
+    "java_missing": 500,
+    "backup_failed": 500,
+    "config_unreadable": 500,
+    "start_failed": 500,
     "too_large": 413,
     "disk_full": 507,
     "network": 502,
@@ -237,13 +243,15 @@ class InstallError(Exception):
         code: str = "install_error",
         detail: str | None = None,
         http_status: int | None = None,
+        data: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(message)
         self.message = message
         self.code = code
-        self.detail = detail
+        self.detail = detail  # technical detail for the log, never shown in the UI
         self.http_status = http_status
-        self.status = ERROR_STATUS.get(code, 500)
+        self.status = http_status or ERROR_STATUS.get(code, 500)
+        self.data = dict(data or {})  # extra JSON fields for the API error body
 
 
 @dataclass
@@ -1597,6 +1605,7 @@ def check_downgrade(level_name: str, version: str) -> None:
             f"{version} can damage or delete parts of it. Pick {last} or newer, use a new "
             "world, or confirm to take a backup and open it anyway.",
             code="world_downgrade",
+            data={"world": level_name, "last_version": last, "version": version},
         )
 
 
@@ -3215,7 +3224,10 @@ _prepared_digest: str | None = None
 
 def _user_properties_digest() -> str:
     values = read_properties()
-    relevant = {k: values.get(k) for k in PROPERTY_DEFAULTS}
+    # The whitelist switch is applied live with `whitelist on|off`, so it
+    # never needs a restart.
+    live = ("white-list", "enforce-whitelist")
+    relevant = {k: values.get(k) for k in PROPERTY_DEFAULTS if k not in live}
     return hashlib.sha1(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
 
 
@@ -4100,104 +4112,6 @@ def _reset_caches() -> None:
 def clear_latest_cache() -> None:
     """Forget cached version lists and network failures."""
     _reset_caches()
-
-
-# ---------------------------------------------------------------------------
-# TODO(integration): v1 panel compatibility. mc_host still calls these names;
-# delete this block once it uses the setup API above.
-# ---------------------------------------------------------------------------
-
-
-def list_profiles(cfg: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    return list_setups(cfg)
-
-
-def get_profile(cfg: dict[str, Any], profile_id: str) -> dict[str, Any] | None:
-    return next((s for s in cfg.get("profiles") or [] if s.get("id") == profile_id), None)
-
-
-def upsert_profile(cfg: dict[str, Any], name: str | None = None) -> dict[str, Any]:
-    """Make the top-level fields of a v1-style cfg its active setup (in place)."""
-    fields = {k: cfg.get(k) for k in ("type", "minecraft_version", "level_name", "instance", "modpack")}
-    candidate = _sanitize_setup({**fields, "id": "pending", "name": name})
-    if candidate is None:
-        raise InstallError("That setup isn't valid.", code="invalid_request")
-    cfg.setdefault("profiles", [])
-    match = next((s for s in cfg["profiles"] if _fingerprint(s) == _fingerprint(candidate)), None)
-    if match is None:
-        candidate["id"] = _new_setup_id(cfg)
-        cfg["profiles"].append(candidate)
-        match = candidate
-    cfg["active_profile"] = match["id"]
-    return cfg
-
-
-def configured_version(cfg: dict[str, Any] | None = None) -> str:
-    return _active_version(_normalize_config(copy.deepcopy(cfg)) if cfg else None)
-
-
-def uses_legacy_files(version: str) -> bool:
-    return not uses_json_lists(version)
-
-
-def properties_for(cfg: dict[str, Any]) -> dict[str, str]:
-    values = read_properties()
-    version = configured_version(cfg)
-    values["online-mode"] = "true" if _effective_online_mode(version) else "false"
-    return values
-
-
-def apply_server(cfg: dict[str, Any]) -> RuntimeSpec:
-    fields = {k: cfg.get(k) for k in ("type", "minecraft_version", "level_name", "instance", "modpack")}
-    if cfg.get("name") and "profiles" not in cfg:  # result of install_modpack_*
-        fields["name"] = cfg["name"]
-    current = _active_setup(load_config())
-    candidate = _sanitize_setup({**fields, "id": "pending"})
-    if candidate and _fingerprint(candidate) == _fingerprint(current):
-        return prepare_runtime()
-    return create_setup(fields)
-
-
-def activate_profile(profile_id: str) -> dict[str, Any]:
-    activate_setup(profile_id)
-    return load_config()
-
-
-def rename_profile(profile_id: str, name: str) -> dict[str, Any]:
-    update_setup(profile_id, name=name)
-    return load_config()
-
-
-def delete_profile(profile_id: str) -> dict[str, Any]:
-    delete_setup(profile_id)
-    return load_config()
-
-
-def select_world(name: str) -> dict[str, Any]:
-    cfg = load_config()
-    update_setup(cfg["active_profile"], level_name=name)
-    return load_config()
-
-
-def backup_path(name: str) -> str:
-    """v1 contract: a path that simply doesn't exist for unknown names."""
-    try:
-        return backup_file(name)
-    except InstallError:
-        return os.path.join(paths()["backups"], ".missing")
-
-
-def list_file_names(kind: str) -> tuple[str, list[str]]:
-    data = players()
-    return _canonical_path(_kind(kind)), [e["name"] for e in data[kind]]
-
-
-def update_name_list(kind: str, name: str, add: bool) -> list[str]:
-    if add:
-        add_player(kind, name)
-    else:
-        remove_player(kind, name)
-    return [e["name"] for e in _load_list(_kind(kind))]
 
 
 if __name__ == "__main__":  # pragma: no cover - manual smoke test

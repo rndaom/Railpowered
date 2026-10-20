@@ -322,35 +322,5 @@ class WorldLinkTests(SetupTestCase):
         self.assertIn("symlink", str(ctx.exception))
 
 
-class V1ShimTests(SetupTestCase):
-    def test_select_world_updates_active_setup_in_place(self):
-        installer.create_world("creative")
-        installer.select_world("creative")
-        setups = installer.list_setups()
-        self.assertEqual(len(setups), 1)
-        self.assertEqual(setups[0]["level_name"], "creative")
-
-    def test_apply_server_with_unchanged_setup_only_prepares(self):
-        cfg = installer.load_config()
-        with mock.patch.object(installer, "create_setup") as create:
-            spec = installer.apply_server(cfg)
-        create.assert_not_called()
-        self.assertEqual(spec.version, "26.3")
-
-    def test_profile_wrappers(self):
-        cfg = installer.load_config()
-        cfg.update({"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "w2"})
-        installer.apply_server(cfg)
-        new_id = installer.load_config()["active_profile"]
-        self.assertNotEqual(new_id, "default")
-        installer.activate_profile("default")
-        installer.rename_profile(new_id, "Renamed")
-        self.assertEqual(installer.get_profile(installer.load_config(), new_id)["name"], "Renamed")
-        installer.delete_profile(new_id)
-        self.assertEqual(len(installer.list_profiles()), 1)
-        self.assertTrue(installer.uses_legacy_files("1.7.5"))
-        self.assertFalse(installer.uses_legacy_files("1.7.6"))
-
-
 if __name__ == "__main__":
     unittest.main()
