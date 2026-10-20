@@ -76,10 +76,20 @@ class ServerError(Exception):
     code = "server_error"
     status = 409
 
-    def __init__(self, message: str, code: str | None = None) -> None:
+    def __init__(
+        self,
+        message: str,
+        code: str | None = None,
+        status: int | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         if code:
             self.code = code
+        if status:
+            self.status = status
+        # Extra JSON fields for the API (e.g. world/versions for world_downgrade).
+        self.data: dict[str, Any] = dict(data or {})
 
 
 class ServerBusy(ServerError):
@@ -97,6 +107,13 @@ class NotRunning(ServerError):
 class StartFailed(ServerError):
     code = "start_failed"
     status = 500
+
+
+# Start failures that the next join can't fix: waking again would only fail
+# the same way, so the sleep proxy tells players to ask the owner instead.
+PERSISTENT_START_FAILURES = frozenset(
+    {"world_downgrade", "java_missing", "unsupported_pack", "instance_not_found", "invalid_version"}
+)
 
 
 def idle_should_stop(
@@ -240,10 +257,19 @@ class ServerController:
         self.ensure_listener()
 
     # -- start -------------------------------------------------------------
-    def start(self, *, ignore_task: bool = False, reason: str | None = None) -> Any:
+    def start(
+        self,
+        *,
+        ignore_task: bool = False,
+        reason: str | None = None,
+        allow_downgrade: bool = False,
+    ) -> Any:
         """Prepare and launch Minecraft. Returns the RuntimeSpec.
 
-        Raises ServerBusy / AlreadyRunning (409) or StartFailed (500).
+        Raises ServerBusy / AlreadyRunning (409) or StartFailed (500; 409
+        with code world_downgrade and its data when the world has been
+        played on a newer version: retry with allow_downgrade to back it up
+        and open it anyway).
         """
         if self._shutting_down:
             raise ServerBusy("Railpowered is shutting down.")
@@ -265,7 +291,7 @@ class ServerController:
         self._info_cache = (0.0, {})
         self.log(f"Starting Minecraft{f' ({reason})' if reason else ''}…")
         try:
-            spec = ix.prepare_runtime()
+            spec = ix.prepare_runtime(allow_downgrade=True) if allow_downgrade else ix.prepare_runtime()
             command = build_command(spec)
             # os.environ minus ADMIN_KEY and other secrets, plus JAVA_HOME.
             env = ix.child_env(spec.env)
@@ -311,6 +337,7 @@ class ServerController:
 
     def _start_failed(self, exc: BaseException) -> StartFailed:
         message = _friendly_start_error(exc)
+        cause = ix.error_code(exc) if isinstance(exc, installer.InstallError) else None
         if not isinstance(exc, installer.InstallError):
             print(traceback.format_exc(), flush=True)
         with self.state.lock:
@@ -320,6 +347,9 @@ class ServerController:
             self.state.last_exit = {"code": None, "at": int(time.time()), "reason": message}
         self.log(f"Could not start Minecraft: {message}", "error")
         self.ensure_listener()
+        if cause == "world_downgrade":
+            # Keep what the dashboard needs to offer "back up and open anyway".
+            return StartFailed(message, code=cause, status=409, data=ix.error_data(exc))
         return StartFailed(message)
 
     # -- stop --------------------------------------------------------------

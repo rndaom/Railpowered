@@ -133,12 +133,18 @@ def delete_setup(setup_id: str) -> None:
     installer.delete_setup(setup_id)
 
 
-def prepare_runtime() -> Any:
+def prepare_runtime(allow_downgrade: bool = False) -> Any:
+    if allow_downgrade:
+        return installer.prepare_runtime(allow_downgrade=True)
     return installer.prepare_runtime()
 
 
 def check_downgrade(level_name: str, version: str) -> None:
     installer.check_downgrade(level_name, version)
+
+
+def check_setup_downgrade(setup_id: str) -> None:
+    installer.check_setup_downgrade(setup_id)
 
 
 def install_modpack_from_url(
@@ -241,21 +247,26 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 
 # -- shapes for the HTTP API -----------------------------------------------------
-_WORLD_KEYS = ("name", "size_bytes", "active", "last_version", "last_played", "used_by")
-_BACKUP_KEYS = ("name", "world", "size_bytes", "created_at", "minecraft_version", "kind")
+_WORLD_KEYS = ("name", "size_bytes", "active", "last_version", "newest_version", "last_played", "used_by")
+_BACKUP_KEYS = ("name", "world", "size_bytes", "created_at", "minecraft_version", "kind", "damaged")
 
 
 def list_worlds() -> list[dict[str, Any]]:
     return [{key: item.get(key) for key in _WORLD_KEYS} for item in installer.list_worlds()]
 
 
+def _backup_shape(item: dict[str, Any]) -> dict[str, Any]:
+    shaped = {key: item.get(key) for key in _BACKUP_KEYS}
+    shaped["damaged"] = bool(item.get("damaged"))
+    return shaped
+
+
 def list_backups() -> list[dict[str, Any]]:
-    return [{key: item.get(key) for key in _BACKUP_KEYS} for item in installer.list_backups()]
+    return [_backup_shape(item) for item in installer.list_backups()]
 
 
 def create_backup(world: str, before_tar: Any = None, after_tar: Any = None) -> dict[str, Any]:
-    result = installer.create_backup(world, before_tar=before_tar, after_tar=after_tar)
-    return {key: result.get(key) for key in _BACKUP_KEYS}
+    return _backup_shape(installer.create_backup(world, before_tar=before_tar, after_tar=after_tar))
 
 
 def players() -> dict[str, Any]:

@@ -275,6 +275,9 @@ class RuntimeSpec:
     setup_id: str = ""
     instance: str | None = None
     warnings: list[str] = field(default_factory=list)
+    # Set when this start opens the world with an older version than it has
+    # seen: {"world", "version", "from", "backup"}.
+    downgrade: dict[str, Any] | None = None
 
     def build_command(self, extra_jvm_args: list[str] | tuple[str, ...] = ()) -> list[str]:
         """java [extra_jvm_args] [jvm_args] [@argfiles] [-jar jar] nogui"""
@@ -1615,42 +1618,92 @@ def _setup_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
     return setup
 
 
+# The world sidecar (.railpowered.json) keeps, for the downgrade guard:
+#   newest_version      the newest Minecraft that has opened the world. It
+#                       only ever rises; the guard compares against it.
+#   last_version        the version that last reached "online" (display).
+#   downgrade_ack       {version, from, backup, at}: an older version the
+#                       owner confirmed (after a backup) that hasn't run yet.
+#   accepted_downgrades older versions that were confirmed and then ran.
+# Confirming never lowers anything, so a failed or never-started downgrade
+# can't weaken the guard for other versions.
+
+
+def _world_newest(meta: dict[str, Any]) -> str | None:
+    best: str | None = None
+    best_key: tuple[int, ...] | None = None
+    # downgraded_from: sidecars written before newest_version existed.
+    for value in (meta.get("newest_version"), meta.get("last_version"), meta.get("downgraded_from")):
+        if not isinstance(value, str) or not value:
+            continue
+        key = version_key(value)
+        if key is not None and (best_key is None or key > best_key):
+            best, best_key = value, key
+    return best
+
+
+def _downgrade_accepted(meta: dict[str, Any], version: str) -> bool:
+    key = version_key(version)
+    ack = meta.get("downgrade_ack")
+    confirmed = [ack.get("version")] if isinstance(ack, dict) else []
+    confirmed += list(meta.get("accepted_downgrades") or [])
+    return any(isinstance(v, str) and version_key(v) == key for v in confirmed)
+
+
 def _downgrade_from(level: str, version: str) -> str | None:
-    """The newer version that last ran ``level``, if ``version`` is older."""
+    """The newest version that opened ``level``, when ``version`` is older
+    and that downgrade hasn't already been confirmed."""
     meta = world_meta(level)
-    last = meta.get("last_version") if meta else None
-    if not last:
+    newest = _world_newest(meta)
+    if not newest:
         return None
-    new_key, old_key = version_key(version), version_key(str(last))
-    if new_key is None or old_key is None:
+    new_key, old_key = version_key(version), version_key(newest)
+    if new_key is None or old_key is None or new_key >= old_key:
         return None
-    return str(last) if new_key < old_key else None
+    if _downgrade_accepted(meta, version):
+        return None
+    return newest
 
 
 def check_downgrade(level_name: str, version: str) -> None:
-    """Raise world_downgrade when ``version`` is older than the world's last run."""
-    last = _downgrade_from(level_name, version)
-    if last:
+    """Raise world_downgrade when ``version`` is older than the newest
+    version that has opened the world (and wasn't confirmed before)."""
+    newest = _downgrade_from(level_name, version)
+    if newest:
         raise InstallError(
-            f"World '{level_name}' was last played on Minecraft {last}. Opening it with "
-            f"{version} can damage or delete parts of it. Pick {last} or newer, use a new "
+            f"World '{level_name}' has been played on Minecraft {newest}. Opening it with "
+            f"{version} can damage or delete parts of it. Pick {newest} or newer, use a new "
             "world, or confirm to take a backup and open it anyway.",
             code="world_downgrade",
-            data={"world": level_name, "last_version": last, "version": version},
+            data={"world": level_name, "last_version": newest, "newest_version": newest, "version": version},
         )
 
 
-def _accept_downgrade(level: str, version: str, server_type: str, previous: str) -> None:
-    meta = world_meta(level) or {}
-    meta.update(
-        {
-            "last_version": version,
-            "last_type": server_type,
-            "downgraded_from": previous,
-            "downgraded_at": _iso(),
-        }
-    )
+def check_setup_downgrade(setup_id: str) -> None:
+    """check_downgrade for a saved setup, without touching the network."""
+    setup = _find_setup(load_config(), setup_id)
+    version = _display_version(setup)
+    if version and os.path.isdir(world_path(setup["level_name"])):
+        check_downgrade(setup["level_name"], version)
+
+
+def _ack_downgrade(level: str, info: dict[str, Any]) -> None:
+    """Remember a confirmed downgrade (its backup is already taken)."""
+    meta = world_meta(level)
+    newest = _world_newest(meta)
+    if newest:
+        meta["newest_version"] = newest
+    meta.pop("downgraded_from", None)
+    meta.pop("downgraded_at", None)
+    meta["downgrade_ack"] = {
+        "version": info["version"],
+        "from": info["from"],
+        "backup": info.get("backup"),
+        "at": _iso(),
+    }
     _write_world_meta(level, meta)
+    backup = f" (backup {info['backup']})" if info.get("backup") else ""
+    _say(f"Opening world '{level}' with Minecraft {info['version']}, older than {info['from']}{backup}.")
 
 
 def _remember_setup(setup: dict[str, Any], activate: bool, resolved: str) -> None:
@@ -1715,8 +1768,6 @@ def create_setup(
             if not exists:
                 os.makedirs(world_dir, exist_ok=True)
                 created = True
-            if previous:
-                _auto_backup(setup["level_name"], "pre-downgrade")
             if activate:
                 _sync_back_quietly(cfg)
                 candidate = copy.deepcopy(cfg)
@@ -1725,14 +1776,16 @@ def create_setup(
                 candidate["active_profile"] = setup["id"]
                 spec = _prepare_candidate(candidate, allow_downgrade=bool(previous))
             else:
+                # Not opened yet: the downgrade is confirmed (with a backup)
+                # when the setup is activated, which stops the server first.
                 spec = _install_runtime(setup, version)
         except BaseException:
             if created:
                 _remove_if_empty(world_dir)
             raise
         _remember_setup(setup, activate, spec.version or version)
-        if previous and activate:
-            _accept_downgrade(setup["level_name"], spec.version or version, setup["type"], previous)
+        if spec.downgrade and activate:
+            _ack_downgrade(setup["level_name"], spec.downgrade)
         _say(f"Setup ready: {setup['name']} ({setup_summary(setup)})")
         return spec
 
@@ -1746,8 +1799,6 @@ def activate_setup(setup_id: str, allow_downgrade: bool = False) -> RuntimeSpec:
         previous = _downgrade_from(setup["level_name"], version)
         if previous and not allow_downgrade:
             check_downgrade(setup["level_name"], version)
-        if previous:
-            _auto_backup(setup["level_name"], "pre-downgrade")
         _sync_back_quietly(cfg)
         candidate = copy.deepcopy(cfg)
         candidate["active_profile"] = setup_id
@@ -1760,8 +1811,8 @@ def activate_setup(setup_id: str, allow_downgrade: bool = False) -> RuntimeSpec:
             fresh["active_profile"] = setup_id
 
         _mutate_config(apply)
-        if previous:
-            _accept_downgrade(setup["level_name"], resolved, setup["type"], previous)
+        if spec.downgrade:
+            _ack_downgrade(setup["level_name"], spec.downgrade)
         return spec
 
 
@@ -1772,7 +1823,11 @@ def update_setup(
     allow_downgrade: bool = False,
 ) -> dict[str, Any]:
     """Rename a setup or point it at another world (created if missing).
-    The caller must make sure an active setup's server is stopped first."""
+    The caller must make sure an active setup's server is stopped first.
+
+    An older version than the world has seen is only validated here
+    (world_downgrade unless ``allow_downgrade``); the backup and the
+    confirmation happen when the setup is activated or started."""
     with _RUNTIME_LOCK:
         cfg = load_config()
         setup = _find_setup(cfg, setup_id)
@@ -1791,9 +1846,6 @@ def update_setup(
                 previous = _downgrade_from(new_level, version) if version else None
                 if previous and not allow_downgrade:
                     check_downgrade(new_level, version)
-                if previous:
-                    _auto_backup(new_level, "pre-downgrade")
-                    _accept_downgrade(new_level, version, setup["type"], previous)
                 os.makedirs(world_path(new_level), exist_ok=True)
 
         def apply(fresh: dict[str, Any]) -> dict[str, Any]:
@@ -1880,18 +1932,38 @@ def _write_world_meta(level_name: str, meta: dict[str, Any]) -> None:
 
 
 def record_world_version(level_name: str, version: str, server_type: str = "vanilla") -> None:
-    """Called when the server reaches 'online': remember the newest version
-    that has run this world (the downgrade guard reads it)."""
+    """Called when the server reaches 'online': the world now holds data
+    written by ``version``. Raises newest_version (the downgrade guard reads
+    it); an older version that ran is remembered as accepted."""
     try:
         validate_name(level_name, "world")
         _validate_version(version, "forge")
     except InstallError:
         return
+    new_key = version_key(version)
+    if new_key is None:
+        return
     meta = world_meta(level_name)
-    last = meta.get("last_version")
-    old_key, new_key = version_key(str(last)) if last else None, version_key(version)
-    if not last or (new_key is not None and (old_key is None or new_key >= old_key)):
-        meta["last_version"] = version
+    newest = _world_newest(meta)
+    newest_key = version_key(newest) if newest else None
+    meta.pop("downgraded_from", None)
+    meta.pop("downgraded_at", None)
+    if newest_key is None or new_key > newest_key:
+        # A newer version: earlier confirmations were about older data.
+        meta["newest_version"] = version
+        meta.pop("downgrade_ack", None)
+        meta.pop("accepted_downgrades", None)
+    else:
+        meta["newest_version"] = newest
+        if new_key < newest_key:
+            accepted = [v for v in meta.get("accepted_downgrades") or [] if isinstance(v, str)]
+            if not any(version_key(v) == new_key for v in accepted):
+                accepted.append(version)
+            meta["accepted_downgrades"] = accepted[-20:]
+        ack = meta.get("downgrade_ack")
+        if isinstance(ack, dict) and version_key(str(ack.get("version"))) == new_key:
+            meta.pop("downgrade_ack", None)
+    meta["last_version"] = version
     meta["last_type"] = server_type
     meta["last_played"] = _iso()
     _write_world_meta(level_name, meta)
@@ -1924,6 +1996,7 @@ def list_worlds() -> list[dict[str, Any]]:
                 "size_bytes": size,
                 "active": name == active,
                 "last_version": meta.get("last_version"),
+                "newest_version": _world_newest(meta),
                 "last_played": meta.get("last_played"),
                 "used_by": used.get(name, []),
                 "has_level": os.path.isfile(os.path.join(full, "level.dat")),
@@ -2396,7 +2469,13 @@ def prepare_runtime(
 ) -> RuntimeSpec:
     """Install and configure the active setup of ``cfg`` (default: saved
     config) and return how to launch it. With persist=False nothing in
-    manager.json changes (create/activate use that for transactions)."""
+    manager.json changes (create/activate use that for transactions).
+
+    Opening a world with an older version than it has seen needs
+    ``allow_downgrade``. The world is then backed up once everything else
+    succeeded (a failed install leaves no extra archive), and spec.downgrade
+    describes it; with persist=True the confirmation is recorded here,
+    otherwise the caller records it after committing (_ack_downgrade)."""
     with _RUNTIME_LOCK:
         cfg = _normalize_config(copy.deepcopy(cfg)) if cfg else load_config()
         setup = _active_setup(cfg)
@@ -2404,7 +2483,8 @@ def prepare_runtime(
         version = resolve_minecraft_version(setup["minecraft_version"], True, setup["type"])
         level = setup["level_name"]
         os.makedirs(world_path(level), exist_ok=True)
-        if not allow_downgrade:
+        previous = _downgrade_from(level, version)
+        if previous and not allow_downgrade:
             check_downgrade(level, version)
         spec = _install_runtime(setup, version)
         spec.jvm_args.extend(_log4j_args(version))
@@ -2417,13 +2497,76 @@ def prepare_runtime(
             _relink_instance_world(spec.cwd, level)
         _render_access_lists(version, spec.cwd, network=True)
         _remember_prepared_properties()
+        if previous:
+            spec.downgrade = {
+                "world": level,
+                "version": version,
+                "from": previous,
+                "backup": _safety_backup(level, "pre-downgrade"),
+            }
+        else:
+            _backup_before_upgrade(level, version, spec)
         if persist and setup.get("resolved_version") != version:
             def apply(fresh: dict[str, Any]) -> None:
                 for item in fresh["profiles"]:
                     if item["id"] == setup["id"]:
                         item["resolved_version"] = version
             _mutate_config(apply)
+        if persist and spec.downgrade:
+            _ack_downgrade(level, spec.downgrade)
         return spec
+
+
+def _backup_before_upgrade(level: str, version: str, spec: RuntimeSpec) -> None:
+    """A newer version ("latest" after a release, or a switch) upgrades the
+    world for good; keep an automatic archive of it first. A failure only
+    warns: blocking the start on it would keep everyone out."""
+    newest = _world_newest(world_meta(level))
+    new_key, old_key = version_key(version), version_key(newest) if newest else None
+    if new_key is None or old_key is None or new_key <= old_key:
+        return
+    if not os.path.isfile(os.path.join(world_path(level), "level.dat")):
+        return
+    try:
+        name = _safety_backup(level, "pre-upgrade")
+    except InstallError as exc:
+        warning = f"Upgrading world '{level}' from {newest} to {version} without a backup: {exc}"
+        spec.warnings.append(warning)
+        _say(warning)
+        return
+    if name:
+        _say(f"Upgrading world '{level}' from Minecraft {newest} to {version}; backup {name}.")
+
+
+def _newest_change(directory: str) -> float:
+    """Latest modification time of anything in a world folder."""
+    latest = 0.0
+    for root, dirs, files in os.walk(directory):
+        for entry in [root, *(os.path.join(root, f) for f in files if f != "session.lock")]:
+            try:
+                latest = max(latest, os.stat(entry).st_mtime)
+            except OSError:
+                continue
+    return latest
+
+
+def _safety_backup(level: str, kind: str) -> str | None:
+    """An automatic backup of ``level`` before a risky start. Retrying after a
+    failed start reuses the last one when the world hasn't changed since."""
+    directory = world_path(level)
+    if not os.path.isdir(directory) or not os.listdir(directory):
+        return None
+    changed = _newest_change(directory)
+    for item in list_backups():  # newest first
+        if item["world"] == level and item["kind"] == kind and not item["damaged"]:
+            try:
+                taken = os.stat(os.path.join(paths()["backups"], item["name"])).st_mtime
+            except OSError:
+                break
+            if taken >= changed:
+                return item["name"]
+            break
+    return _auto_backup(level, kind)
 
 
 def _prepare_candidate(cfg: dict[str, Any], allow_downgrade: bool = False) -> RuntimeSpec:
@@ -3869,7 +4012,31 @@ def restore_backup(name: str, target: str | None = None) -> dict[str, Any]:
             "name": name,
             "pre_restore_backup": pre,
             "last_version": world_meta(dest_name).get("last_version"),
+            "downgrade_warning": _restored_downgrade_warning(dest_name),
         }
+
+
+def _restored_downgrade_warning(world: str) -> dict[str, Any] | None:
+    """The restored world may come from a newer version than the active
+    setup runs (its sidecar is part of the backup). Say so now, rather than
+    let the next start fail with world_downgrade."""
+    try:
+        cfg = load_config()
+        setup = _active_setup(cfg)
+        if setup["level_name"] != world:
+            return None
+        version = _display_version(setup)
+        newest = _downgrade_from(world, version) if version else None
+    except InstallError:
+        return None
+    if not newest:
+        return None
+    message = (
+        f"The restored world '{world}' has been played on Minecraft {newest}, newer than this "
+        f"setup's {version}. Starting it will ask you to confirm the downgrade first."
+    )
+    _say(message)
+    return {"world": world, "newest_version": newest, "version": version, "message": message}
 
 
 # ---------------------------------------------------------------------------

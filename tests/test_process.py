@@ -52,7 +52,7 @@ class ControllerTestCase(RuntimeTestCase):
             stop_timeout=2,
         )
         patches = {
-            "prepare_runtime": mock.Mock(side_effect=lambda cfg=None: self.spec),
+            "prepare_runtime": mock.Mock(side_effect=lambda cfg=None, **_kw: self.spec),
             "child_env": mock.Mock(return_value={"PATH": "/usr/bin"}),
             "read_properties": mock.Mock(return_value={"motd": "Hi", "max-players": "8"}),
             "active_setup": mock.Mock(
@@ -172,6 +172,20 @@ class StartAndReadyTests(ControllerTestCase):
         self.assertIsNone(self.state.last_exit["code"])
         self.assertEqual(self.state.last_exit["reason"], "Mojang is unreachable")
         self.assertTrue(self.proxy.active)
+
+    def test_downgrade_refusal_keeps_its_code_and_can_be_confirmed(self):
+        self.ix["prepare_runtime"].side_effect = installer.InstallError(
+            "World 'world' has been played on Minecraft 1.21.1.", code="world_downgrade",
+            data={"world": "world", "last_version": "1.21.1", "version": "1.20.1"},
+        )
+        with self.assertRaises(StartFailed) as caught:
+            self.controller.start()
+        error = caught.exception
+        self.assertEqual((error.code, error.status, error.data["last_version"]), ("world_downgrade", 409, "1.21.1"))
+        self.ix["prepare_runtime"].side_effect = lambda cfg=None, **_kw: self.spec
+        self.controller.start(allow_downgrade=True)
+        self.ix["prepare_runtime"].assert_called_with(allow_downgrade=True)
+        self.assertEqual(self.state.phase, "starting")
 
     def test_missing_java_is_reported_plainly(self):
         def boom(*args, **kwargs):

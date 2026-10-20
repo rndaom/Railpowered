@@ -446,7 +446,8 @@ class ServerControlTests(PanelTestCase):
             task = payload["task"]
             self.assertEqual((task["kind"], task["state"]), ("backup", "running"))
             self.assertEqual(
-                set(task), {"id", "kind", "label", "state", "error", "started_at", "finished_at"}
+                set(task),
+                {"id", "kind", "label", "state", "error", "code", "data", "note", "started_at", "finished_at"},
             )
             status, payload = self.api("POST", "/api/backups", {"world": "world"})
             self.assertEqual((status, payload["code"]), (409, "busy"))
@@ -468,6 +469,43 @@ class ServerControlTests(PanelTestCase):
             tasks.wait_idle(5)
         task = self.api("GET", "/api/tasks/current")[1]["task"]
         self.assertEqual((task["state"], task["error"]), ("failed", "Not enough disk space."))
+
+    def test_failed_task_keeps_the_code_and_data(self):
+        error = installer.InstallError("Older version", code="world_downgrade",
+                                       data={"world": "world", "last_version": "1.21.1"})
+        with mock.patch.object(controller, "backup_world", side_effect=error):
+            self.assertEqual(self.api("POST", "/api/backups", {})[0], 202)
+            tasks.wait_idle(5)
+        task = self.api("GET", "/api/tasks/current")[1]["task"]
+        self.assertEqual((task["code"], task["data"]["last_version"]), ("world_downgrade", "1.21.1"))
+        with mock.patch.object(controller, "backup_world",
+                               side_effect=AlreadyRunning("The server is already stopping.")):
+            self.assertEqual(self.api("POST", "/api/backups", {})[0], 202)
+            tasks.wait_idle(5)
+        task = self.api("GET", "/api/tasks/current")[1]["task"]
+        self.assertEqual(task["error"], "The server is already stopping.")
+        self.assertEqual(task["code"], "already_running")
+
+    def test_start_downgrade_can_be_confirmed(self):
+        refusal = StartFailed("World 'world' has been played on 1.21.1.", code="world_downgrade",
+                              status=409, data={"world": "world", "last_version": "1.21.1",
+                                                "version": "1.20.1"})
+        with mock.patch.object(controller, "start", side_effect=refusal):
+            status, payload = self.api("POST", "/api/server/start")
+        self.assertEqual((status, payload["code"], payload["last_version"]), (409, "world_downgrade", "1.21.1"))
+        with mock.patch.object(controller, "start") as start:
+            self.assertEqual(self.api("POST", "/api/server/start", {"allow_downgrade": True})[0], 200)
+        self.assertTrue(start.call_args.kwargs["allow_downgrade"])
+        self.assertEqual(self.api("POST", "/api/server/start", {"allow_downgrade": "yes"})[0], 400)
+
+    def test_restore_of_a_newer_world_finishes_with_a_note(self):
+        result = {"world": "world", "downgrade_warning": {"message": "Played on 1.21.1; confirm first."}}
+        with mock.patch.object(ix, "backup_file", return_value="x"), \
+                mock.patch.object(ix, "restore_backup", return_value=result):
+            self.assertEqual(self.api("POST", "/api/backups/world-20260101-000000.tar.gz/restore", {})[0], 202)
+            tasks.wait_idle(5)
+        task = self.api("GET", "/api/tasks/current")[1]["task"]
+        self.assertEqual((task["state"], task["note"]), ("done", "Played on 1.21.1; confirm first."))
 
 
 class SetupRouteTests(PanelTestCase):
@@ -520,7 +558,7 @@ class SetupRouteTests(PanelTestCase):
         )
         self.assertIsNone(tasks.running())
         active = self.api("GET", "/api/setups")[1]["setups"][0]
-        with mock.patch.object(ix, "activate_setup"):
+        with mock.patch.object(ix, "activate_setup") as activate:
             other = installer.load_config()
             other["profiles"].append({**other["profiles"][0], "id": "old", "name": "Old",
                                       "minecraft_version": "1.20.1", "resolved_version": "1.20.1"})
@@ -530,6 +568,16 @@ class SetupRouteTests(PanelTestCase):
             status, payload = self.api("POST", "/api/setups/old/activate", {"allow_downgrade": True})
             self.assertEqual(status, 202)
             tasks.wait_idle(5)
+            # The active setup: a plain activate is a no-op, a confirmed one
+            # prepares it again (how a restored newer world gets confirmed).
+            status, payload = self.api("POST", f"/api/setups/{active['id']}/activate", {})
+            self.assertEqual((status, payload["already_active"]), (200, True))
+            status, payload = self.api(
+                "POST", f"/api/setups/{active['id']}/activate", {"allow_downgrade": True}
+            )
+            self.assertEqual((status, payload["task"]["kind"]), (202, "switch"))
+            tasks.wait_idle(5)
+        self.assertEqual(activate.call_args, mock.call(active["id"], allow_downgrade=True))
         self.assertTrue(active["active"])
 
     def test_setup_list_activate_and_delete(self):
@@ -681,7 +729,8 @@ class WorldBackupRouteTests(PanelTestCase):
         self.assertEqual(status, 200)
         world = payload["worlds"][0]
         self.assertEqual(
-            set(world), {"name", "size_bytes", "active", "last_version", "last_played", "used_by"}
+            set(world),
+            {"name", "size_bytes", "active", "last_version", "newest_version", "last_played", "used_by"},
         )
         self.assertEqual((world["name"], world["active"]), ("world", True))
         self.assertEqual(self.api("POST", "/api/worlds", {"name": "creative"})[0], 200)
@@ -709,10 +758,18 @@ class WorldBackupRouteTests(PanelTestCase):
         self.assertEqual(set(payload["disk"]), {"used_bytes", "total_bytes", "free_bytes"})
         backup = payload["backups"][0]
         self.assertEqual(
-            set(backup), {"name", "world", "size_bytes", "created_at", "minecraft_version", "kind"}
+            set(backup),
+            {"name", "world", "size_bytes", "created_at", "minecraft_version", "kind", "damaged"},
         )
         self.assertEqual(backup["kind"], "manual")
         self.assertEqual(backup["world"], "world")
+        self.assertIs(backup["damaged"], False)
+        broken = os.path.join(installer.paths()["backups"], "broken-20260101-000000.tar.gz")
+        with open(broken, "wb") as handle:
+            handle.write(b"\x1f\x8b truncated")
+        listed = {b["name"]: b for b in self.api("GET", "/api/backups")[1]["backups"]}
+        self.assertIs(listed["broken-20260101-000000.tar.gz"]["damaged"], True)
+        os.remove(broken)
         response, data = self.request("GET", f"/api/backups/{backup['name']}/download")
         self.assertEqual(response.status, 200)
         self.assertEqual(int(response.getheader("Content-Length")), len(data))

@@ -211,7 +211,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         except TaskBusy as exc:
             self._fail(is_api, 409, "busy", str(exc))
         except ServerError as exc:
-            self._fail(is_api, exc.status, exc.code, str(exc))
+            self._fail(is_api, exc.status, exc.code, str(exc), getattr(exc, "data", None))
         except installer.InstallError as exc:
             if getattr(exc, "detail", None):
                 print(f"{ix.error_code(exc)}: {exc.detail}", flush=True)
@@ -480,8 +480,11 @@ class PanelHandler(BaseHTTPRequestHandler):
     # -- server control ----------------------------------------------------------
     @route("POST", "/api/server/start")
     def api_start(self) -> None:
-        self._json_body()
-        controller.start(reason="dashboard")
+        data = self._json_body()
+        # A 409 world_downgrade answer can be confirmed by sending
+        # {"allow_downgrade": true}: the world is backed up, then opened.
+        allow_downgrade = _bool(data, "allow_downgrade", False)
+        controller.start(reason="dashboard", allow_downgrade=allow_downgrade)
         self._json({"ok": True})
 
     @route("POST", "/api/server/stop")
@@ -637,14 +640,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         data = self._json_body()
         allow_downgrade = _bool(data, "allow_downgrade", False)
         setup = self._find_setup(setup_id)
-        if setup["active"]:
+        if setup["active"] and not allow_downgrade:
             self._json({"ok": True, "task": None, "already_active": True})
             return
+        # With allow_downgrade the active setup is prepared again too: that is
+        # how a world restored from a newer backup gets confirmed.
         if not allow_downgrade:
-            version = setup["minecraft_version"]
-            if version == "latest":
-                version = setup.get("resolved_version") or "latest"
-            _precheck_downgrade(setup["level_name"], version)
+            ix.check_setup_downgrade(setup_id)
         _require_idle_tasks()
 
         def run(_ctx: Any) -> None:
@@ -845,7 +847,15 @@ class PanelHandler(BaseHTTPRequestHandler):
             raise ApiError(409, "server_running", f"Stop the server before restoring {effective}.")
         _require_idle_tasks()
         label = f"Restoring {effective or 'world'} from backup"
-        task = tasks.submit("restore", label, lambda _ctx: ix.restore_backup(name, target=target))
+
+        def run(ctx: Any) -> dict[str, Any]:
+            result = ix.restore_backup(name, target=target)
+            warning = (result or {}).get("downgrade_warning")
+            if isinstance(warning, dict) and warning.get("message"):
+                ctx.set_note(str(warning["message"]))
+            return result
+
+        task = tasks.submit("restore", label, run)
         self._json({"task": task.to_dict()}, 202)
 
     @route("DELETE", f"/api/backups/{_SEG}")

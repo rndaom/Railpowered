@@ -127,6 +127,16 @@ class RestoreTests(BackupTestCase):
         self.assertEqual(self.world_file("world", "new.txt"), "added later")
         self.assertFalse([n for n in os.listdir(self.path("worlds")) if n.startswith(".")])
 
+    def test_restoring_a_newer_world_into_the_active_setup_warns(self):
+        self.assertIsNone(installer.restore_backup(self.backup)["downgrade_warning"])
+        cfg = installer.load_config()
+        cfg["profiles"][0]["minecraft_version"] = "1.20.1"
+        installer.save_config(cfg)
+        warning = installer.restore_backup(self.backup)["downgrade_warning"]
+        self.assertEqual((warning["newest_version"], warning["version"]), ("1.21.1", "1.20.1"))
+        self.assertIn("confirm", warning["message"])
+        self.assertIsNone(installer.restore_backup(self.backup, target="copy")["downgrade_warning"])
+
     def test_restore_into_new_world_name(self):
         result = installer.restore_backup(self.backup, target="copy")
         self.assertEqual(result["world"], "copy")
