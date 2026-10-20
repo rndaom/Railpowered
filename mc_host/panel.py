@@ -744,8 +744,9 @@ class PanelHandler(BaseHTTPRequestHandler):
         if setup["active"]:
             raise ApiError(409, "active_setup", "Switch to another setup before deleting this one.")
         _require_idle_tasks()
-        ix.delete_setup(setup_id)
-        self._json({"ok": True})
+        orphaned = ix.delete_setup(setup_id)
+        # orphaned: installed files no setup uses now (offer to delete them).
+        self._json({"ok": True, "orphaned": orphaned})
 
     # -- modpacks -----------------------------------------------------------------
     def _modpack_task(
@@ -947,8 +948,24 @@ class PanelHandler(BaseHTTPRequestHandler):
                 409, "active_world", "This is the active setup's world. Switch setups before deleting it."
             )
         _require_idle_tasks()
+        before = ix.storage_keys()
         removed = ix.delete_world(name)
-        self._json({"ok": True, "removed_setups": removed})
+        self._json({"ok": True, "removed_setups": removed, "orphaned": ix.orphaned_storage(before)})
+
+    # -- downloaded files (instances and server jars) -----------------------------
+    @route("GET", "/api/storage")
+    def api_storage(self) -> None:
+        self._json(ix.list_storage())
+
+    @route("DELETE", f"/api/storage/{_SEG}/{_SEG}")
+    def api_delete_storage(self, kind: str, name: str) -> None:
+        if kind not in ("instance", "jar"):
+            raise ApiError(404, "not_found", "Not found.")
+        _require_idle_tasks()
+        if kind == "instance" and controller.running_instance() == name:
+            raise ApiError(409, "in_use", "The server is running from these files. Stop it first.")
+        result = ix.delete_storage(kind, name)
+        self._json({"ok": True, "freed": result["freed"], **ix.list_storage()})
 
     # -- backups --------------------------------------------------------------------
     @route("GET", "/api/backups")

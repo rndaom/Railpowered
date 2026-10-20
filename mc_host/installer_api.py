@@ -129,8 +129,25 @@ def update_setup(
     )
 
 
-def delete_setup(setup_id: str) -> None:
-    installer.delete_setup(setup_id)
+def delete_setup(setup_id: str) -> list[dict[str, Any]]:
+    """Returns the downloaded files no setup uses any more (list_storage items)."""
+    return list(installer.delete_setup(setup_id) or [])
+
+
+def storage_keys() -> set[tuple[str, str]]:
+    return installer.storage_keys()
+
+
+def orphaned_storage(before: set[tuple[str, str]]) -> list[dict[str, Any]]:
+    return installer.orphaned_storage(before)
+
+
+def list_storage() -> dict[str, Any]:
+    return installer.list_storage()
+
+
+def delete_storage(kind: str, name: str) -> dict[str, Any]:
+    return installer.delete_storage(kind, name)
 
 
 def prepare_runtime(allow_downgrade: bool = False) -> Any:

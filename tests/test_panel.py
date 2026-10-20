@@ -969,7 +969,36 @@ class WorldBackupRouteTests(PanelTestCase):
         self.assertEqual(self.api("DELETE", "/api/worlds/missing")[0], 404)
         status, payload = self.api("DELETE", "/api/worlds/creative")
         self.assertEqual(status, 200)
-        self.assertEqual(payload["removed_setups"], [])
+        self.assertEqual((payload["removed_setups"], payload["orphaned"]), ([], []))
+
+    def test_storage_list_and_delete(self):
+        os.makedirs(os.path.join(installer.paths()["instances"], "forge-1.12.2", "libraries"))
+        os.makedirs(os.path.join(installer.paths()["instances"], "mypack"))
+
+        def add(cfg):
+            cfg["profiles"].append(
+                {"id": "pack", "name": "My pack", "type": "modpack", "minecraft_version": "1.20.1",
+                 "resolved_version": "1.20.1", "level_name": "packworld", "instance": "mypack"})
+
+        installer._mutate_config(add)
+        status, payload = self.api("GET", "/api/storage")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(payload), {"items", "total"})
+        items = {item["name"]: item for item in payload["items"]}
+        self.assertEqual(set(items["mypack"]), {"kind", "name", "type", "size", "used_by"})
+        self.assertEqual(items["mypack"]["used_by"], [{"id": "pack", "name": "My pack"}])
+        status, payload = self.api("DELETE", "/api/storage/instance/mypack")
+        self.assertEqual((status, payload["code"]), (409, "in_use"))
+        self.assertEqual(payload["used_by"][0]["id"], "pack")
+        status, payload = self.api("DELETE", "/api/storage/instance/forge-1.12.2")
+        self.assertEqual(status, 200)
+        self.assertNotIn("forge-1.12.2", {item["name"] for item in payload["items"]})
+        self.assertEqual(self.api("DELETE", "/api/storage/world/world")[0], 404)
+        self.assertEqual(self.api("DELETE", "/api/storage/instance/missing")[0], 404)
+        self.assertEqual(self.api("DELETE", "/api/storage/instance/..")[0], 400)
+        status, payload = self.api("DELETE", "/api/setups/pack")
+        self.assertEqual(status, 200)
+        self.assertEqual([(i["kind"], i["name"]) for i in payload["orphaned"]], [("instance", "mypack")])
 
     def test_backup_list_download_and_delete(self):
         level = os.path.join(installer.world_path("world"), "level.dat")

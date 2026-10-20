@@ -219,6 +219,8 @@ ERROR_STATUS = {
     "instance_not_found": 404,
     "player_not_found": 404,
     "world_exists": 409,
+    "in_use": 409,
+    "storage_not_found": 404,
     "active_setup": 409,
     "active_world": 409,
     "world_downgrade": 409,
@@ -1859,7 +1861,12 @@ def update_setup(
         return _mutate_config(apply)
 
 
-def delete_setup(setup_id: str) -> None:
+def delete_setup(setup_id: str) -> list[dict[str, Any]]:
+    """Remove a setup (its world and installed files stay). Returns the
+    downloaded files no setup uses any more (see list_storage), so the
+    dashboard can offer to delete them."""
+    before = storage_keys()
+
     def apply(cfg: dict[str, Any]) -> None:
         _find_setup(cfg, setup_id)
         if cfg.get("active_profile") == setup_id:
@@ -1870,6 +1877,141 @@ def delete_setup(setup_id: str) -> None:
         cfg["profiles"] = [s for s in cfg["profiles"] if s["id"] != setup_id]
 
     _mutate_config(apply)
+    return orphaned_storage(before)
+
+
+# ---------------------------------------------------------------------------
+# Downloaded files (instances and server jars)
+# ---------------------------------------------------------------------------
+
+STORAGE_KINDS = ("instance", "jar")
+
+
+def _storage_key(setup: dict[str, Any]) -> tuple[str, str] | None:
+    """(kind, name) of the installed files a setup runs from."""
+    try:
+        if (setup.get("type") or "vanilla") == "vanilla":
+            version = str(setup.get("resolved_version") or "")
+            if not version or version == VERSION_LATEST:
+                version = _display_version(setup) or ""
+            return ("jar", os.path.basename(vanilla_jar_path(version))) if version else None
+        return ("instance", os.path.basename(runtime_dir(setup)))
+    except InstallError:
+        return None
+
+
+def _storage_refs(cfg: dict[str, Any]) -> dict[tuple[str, str], list[dict[str, str]]]:
+    refs: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for setup in cfg["profiles"]:
+        key = _storage_key(setup)
+        if key:
+            refs.setdefault(key, []).append({"id": setup["id"], "name": setup["name"]})
+    return refs
+
+
+def storage_keys() -> set[tuple[str, str]]:
+    """Everything the saved setups currently run from."""
+    return set(_storage_refs(load_config()))
+
+
+def _storage_dir(kind: str) -> str:
+    if kind not in STORAGE_KINDS:
+        raise InstallError("Pick an instance or a server jar.", code="invalid_request")
+    return paths()["instances" if kind == "instance" else "jars"]
+
+
+def _storage_item(kind: str, name: str, path: str) -> dict[str, Any] | None:
+    if name.startswith(".") or os.path.islink(path):
+        return None
+    if kind == "instance":
+        if not os.path.isdir(path):
+            return None
+        if os.path.isfile(os.path.join(path, PACK_META_FILE)):
+            flavor = "modpack"
+        elif name.startswith("fabric-"):
+            flavor = "fabric"
+        elif name.startswith("forge-"):
+            flavor = "forge"
+        else:
+            flavor = "other"
+        size = _dir_size(path)
+    else:
+        if not (os.path.isfile(path) and name.endswith(".jar")):
+            return None
+        if name.startswith("minecraft_server."):
+            flavor = "vanilla"
+        elif name.startswith("fabric-installer-"):
+            flavor = "fabric"
+        elif name.startswith("forge-"):
+            flavor = "forge"
+        else:
+            flavor = "other"
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return None
+    return {"kind": kind, "name": name, "type": flavor, "size": size}
+
+
+def list_storage() -> dict[str, Any]:
+    """Installed server files with their size and the setups that use them:
+    instances/<name> (Fabric, Forge, modpacks) and jars/*.jar (vanilla
+    servers and loader installers; jars are re-downloaded when needed)."""
+    refs = _storage_refs(load_config())
+    items = []
+    for kind in STORAGE_KINDS:
+        directory = _storage_dir(kind)
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            names = []
+        for name in names:
+            item = _storage_item(kind, name, os.path.join(directory, name))
+            if item is not None:
+                item["used_by"] = refs.get((kind, name), [])
+                items.append(item)
+    return {"items": items, "total": sum(item["size"] for item in items)}
+
+
+def orphaned_storage(before: set[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Items in ``before`` (storage_keys()) that no setup uses now."""
+    now = storage_keys()
+    found = []
+    for kind, name in sorted(before - now):
+        directory = _storage_dir(kind)
+        item = _storage_item(kind, name, os.path.join(directory, name))
+        if item is not None:
+            item["used_by"] = []
+            found.append(item)
+    return found
+
+
+def delete_storage(kind: str, name: str) -> dict[str, Any]:
+    """Delete an instance or a server jar no setup uses (in_use otherwise)."""
+    directory = _storage_dir(kind)
+    with _RUNTIME_LOCK:
+        path = _safe_child(directory, name)
+        item = _storage_item(kind, name, path)
+        if item is None:
+            raise InstallError(f"'{name}' isn't on the volume.", code="storage_not_found")
+        users = _storage_refs(load_config()).get((kind, name), [])
+        if users:
+            listed = ", ".join(u["name"] for u in users[:3]) + (" and more" if len(users) > 3 else "")
+            raise InstallError(
+                f"'{name}' is used by {listed}. Delete those setups first.",
+                code="in_use",
+                data={"used_by": users},
+            )
+        # Moved aside under the lock (instant); removed after it.
+        trash = os.path.join(directory, f".trash-{name}-{secrets.token_hex(4)}")
+        os.replace(path, trash)
+        _SIZE_CACHE.pop(path, None)
+    if kind == "instance":
+        _remove_instance_tree(trash)
+    else:
+        _remove_tree(trash)
+    _say(f"Deleted {name} ({_human_bytes(item['size'])} freed).")
+    return {"kind": kind, "name": name, "freed": item["size"]}
 
 
 # ---------------------------------------------------------------------------
@@ -2191,7 +2333,7 @@ def recover_interrupted(now: float | None = None) -> dict[str, Any]:
     # Partial downloads and atomic-write temp files.
     for directory in (where["data"], where["jars"], where["cache"]):
         for entry in entries(directory):
-            if _TEMP_FILE_RE.match(entry):
+            if _TEMP_FILE_RE.match(entry) or (directory == where["jars"] and entry.startswith(".trash-")):
                 drop(os.path.join(directory, entry))
     for entry in entries(where["cache"]):
         sub = os.path.join(where["cache"], entry)
