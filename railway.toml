@@ -9,6 +9,7 @@ dockerfilePath = "Dockerfile"
 # and to the Dockerfile's COPY lines.
 watchPatterns = [
   "/Dockerfile",
+  "/.dockerignore",
   "/start.sh",
   "/manager.py",
   "/installer.py",
