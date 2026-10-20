@@ -1,10 +1,33 @@
+# Railway config as code: https://docs.railway.com/reference/config-as-code
+# Keep in sync with .railway/railway.ts (the template's reference definition).
+
 [build]
+builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
+# Redeploy (and restart the Minecraft server) only when something that ends up
+# in the image changes, not on README or CI edits. Add new runtime files here
+# and to the Dockerfile's COPY lines.
+watchPatterns = [
+  "/Dockerfile",
+  "/start.sh",
+  "/manager.py",
+  "/installer.py",
+  "/server.properties",
+  "/mc_host/**",
+  "/web/**",
+  "/railway.toml",
+]
 
 [deploy]
-startCommand = "./start.sh"
+# No startCommand: the image's ENTRYPOINT (tini) and CMD (/server/start.sh) run.
 healthcheckPath = "/health"
 healthcheckTimeout = 300
 restartPolicyType = "ON_FAILURE"
-restartPolicyMaxRetries = 3
+restartPolicyMaxRetries = 10
 requiredMountPath = "/server/data"
+# Seconds between SIGTERM and SIGKILL on redeploy or restart. Railway's default
+# is 0, which would kill Minecraft mid-save; this gives it time to save the
+# world and exit. The container exits as soon as the save is done.
+drainingSeconds = 60
+# Two containers must never share the world volume.
+overlapSeconds = 0
