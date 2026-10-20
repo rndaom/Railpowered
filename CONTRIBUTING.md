@@ -40,7 +40,13 @@ mc_host/
   main.py           Startup and shutdown: signals, background prepare,
                     sleep proxy and HTTP server
   config.py         Environment variables, ports, memory and the admin key
+  auth.py           Signed session cookies, logout and sign-out-everywhere,
+                    login rate limits
+  web.py            Static files, page templates and security headers (CSP)
   panel.py          The dashboard's HTTP server and JSON API
+  tasks.py          Background tasks, one at a time (installs, switches,
+                    backups, restores)
+  installer_api.py  Adapter between the panel/process layer and installer.py
   process.py        Starts and stops Minecraft, the console, idle sleep, wake-up
   proxy.py          Sleep proxy on 25565: answers server-list pings and wakes
                     the server on a login (modern and 1.2.5-1.6 clients)
@@ -52,7 +58,7 @@ tests/              unittest suite (standard library only)
 server.properties   Defaults copied to a new volume on first boot
 start.sh            Container entrypoint: seeds the volume, drops root,
                     starts manager.py
-Dockerfile          Ubuntu 24.04, Python 3.12, Temurin JREs 8, 21 and 25
+Dockerfile          Ubuntu 24.04, Python 3.12, Temurin JREs 8, 17, 21 and 25
 railway.toml        Railway build and deploy settings (config as code)
 .railway/           Template notes and a reference IaC definition
 .github/            CI, issue templates and maintenance scripts
@@ -92,11 +98,18 @@ Useful variables while developing:
 | `ADMIN_KEY` | generated | Dashboard key. If unset, one is generated, saved in the data directory and printed in the log. |
 | `PORT` | `8080` | Dashboard port. |
 | `AUTO_START` | `false` | Start Minecraft at boot instead of on the first join. |
-| `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft sleeps (`0` = never). |
+| `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft sleeps (`0` = never, at most `86400`: the dashboard allows up to one day). |
+| `START_TIMEOUT` | `900` | Seconds a start may take before Minecraft is stopped and reported as crashed (`0` = no limit; at least `120`, at most `21600`). |
 | `MC_MAX_MEMORY` / `MC_MIN_MEMORY` | `auto` / `256M` | Java heap limits. |
 | `STOP_TIMEOUT` | `30` | Seconds Minecraft gets to save and exit before it is killed (5 to 45, so a shutdown fits in Railway's 60-second draining window). |
-| `JAVA_8_HOME`, `JAVA_21_HOME`, `JAVA_25_HOME` | `/opt/java/<n>` | Where each Java lives. Set only the ones you have: Railpowered picks the smallest installed Java the version needs (a Java 25 also runs 1.20.5+), then falls back to `java` on `PATH`. |
+| `JAVA_8_HOME`, `JAVA_17_HOME`, `JAVA_21_HOME`, `JAVA_25_HOME` | `/opt/java/<n>` | Where each Java lives. Set only the ones you have: Railpowered picks the smallest installed Java the version needs (a Java 25 also runs 1.20.5+), then falls back to `java` on `PATH`. |
 | `WEB_DIR` | `/server/web`, then `./web` | Where the dashboard files are served from. |
+| `WEB_PORT` | unset | Dashboard port; overrides `PORT` (either is ignored if it equals the Minecraft port). |
+| `MC_PUBLIC_ADDRESS` | unset | Join address shown in the dashboard, when Railway's TCP proxy variables don't give it. |
+| `BACKUP_KEEP` | `0` | Automatic backups (before a restore, a downgrade or an upgrade) kept per world; older ones are deleted. `0` keeps all. Manual and uploaded backups are never deleted. |
+| `MAX_UPLOAD_MB` | `1024` | Largest modpack or backup upload, and largest modpack download. |
+| `MAX_EXTRACT_MB` | `8192` | Largest unpacked modpack (also limited by free space). |
+| `FABRIC_LOADER_VERSION`, `FABRIC_INSTALLER_VERSION` | unset | Pin Fabric's loader and installer instead of using the newest stable ones. |
 
 Fabric, Forge and modpack setups link their world folders with symlinks. On
 Windows that needs Developer Mode (or WSL), so for those setups run it in
@@ -148,7 +161,7 @@ On Windows, tests that need symlinks or bash skip themselves when those are not
 available; CI runs the full suite on Linux.
 
 CI (`.github/workflows/ci.yml`) runs the tests on Python 3.12 and 3.13 on
-Linux and on Windows, compiles every Python file, runs ShellCheck and
+Linux, and on 3.12 on Windows, compiles every Python file, runs ShellCheck and
 `node --check` on the dashboard scripts, and builds the image and smoke-tests
 it.
 

@@ -49,9 +49,9 @@ into the Deploy form as they are.
 | `ADMIN_KEY` | *(required, no default)* | Dashboard password. Use a long passphrase (four or more random words, or 20+ characters): anyone who has it controls your server. |
 | `PORT` | `8080` | Dashboard port. Keep 8080 so Railway's health check and HTTP domain reach the dashboard. |
 | `MINECRAFT_VERSION` | `latest` | First deploy only: the Minecraft version to start with (`latest`, or a version such as `1.21.1`). Change versions later from the dashboard. |
-| `SERVER_TYPE` | `vanilla` | First deploy only: `vanilla` or `fabric`. Add Forge or modpacks later from the dashboard. |
+| `SERVER_TYPE` | `vanilla` | First deploy only: `vanilla`, `fabric` or `forge` (Forge needs `MINECRAFT_VERSION` set to 1.16.5, 1.12.2 or 1.7.10). Add modpacks or other versions later from the dashboard. |
 | `AUTO_START` | `false` | `true` starts Minecraft when the container boots. `false` waits until a player joins or you press Start. The dashboard setting overrides this. |
-| `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft goes to sleep (600 = 10 minutes, 0 = never). The dashboard setting overrides this. |
+| `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft goes to sleep (600 = 10 minutes, 0 = never, at most 86400 = one day). The dashboard setting overrides this. |
 | `MC_MAX_MEMORY` | `auto` | Java heap limit: `auto` (fits the container, at most 2G) or a size such as `3G`. Keep it below the service's memory limit. |
 | `MC_MIN_MEMORY` | `256M` | Java heap reserved at start, such as `256M` or `1G`. Must not exceed `MC_MAX_MEMORY`. |
 
