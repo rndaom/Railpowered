@@ -56,6 +56,8 @@ jobs:
           if [ -d web ]; then
             find web -name '*.js' -print0 | xargs -0 -r -n1 node --check
           fi
+      - name: Dockerfile
+        run: docker run --rm -i hadolint/hadolint:v2.15.1 < Dockerfile
       - name: railway.toml parses
         run: python -c "import tomllib; tomllib.load(open('railway.toml', 'rb'))"
 

@@ -14,6 +14,14 @@
 
 FROM ubuntu:24.04 AS jre
 
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Packages are not version-pinned, so every build gets Ubuntu's security fixes.
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
 # Release names as the Adoptium API reports them (release_name), plus the
 # SHA-256 of each Linux JRE tarball for x64 (amd64) and aarch64 (arm64).
 ARG JRE8_RELEASE=jdk8u504-b01
@@ -28,12 +36,8 @@ ARG JRE25_SHA256_ARM64=34828cbb93ed31c281c84ecb31ddab655d11a802f263c1fc019d42e9e
 # Set by BuildKit for the platform being built; Railway builds amd64.
 ARG TARGETARCH
 
-SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates curl \
- && rm -rf /var/lib/apt/lists/*
-
+# The SHELL above is bash, so ${release//+/%2B} is fine.
+# hadolint ignore=SC3060
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
       amd64) arch=x64;     sha8="$JRE8_SHA256_AMD64"; sha21="$JRE21_SHA256_AMD64"; sha25="$JRE25_SHA256_AMD64" ;; \
@@ -58,6 +62,25 @@ RUN set -eu; \
 
 FROM ubuntu:24.04 AS runtime
 
+# python3: the manager (stdlib only, 3.12 on Ubuntu 24.04).
+# ca-certificates: HTTPS to Mojang, Fabric, Forge and Modrinth at runtime.
+# tini: PID 1, forwards SIGTERM to the manager and reaps orphaned processes.
+# setpriv (util-linux, already in the base image) drops root in start.sh.
+# hadolint ignore=DL3008
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends ca-certificates python3 tini \
+ && rm -rf /var/lib/apt/lists/*
+
+# Minecraft and the dashboard run as this unprivileged user. Ubuntu's stock
+# "ubuntu" user owns uid 1000, so it is replaced.
+RUN if id -u ubuntu >/dev/null 2>&1; then userdel --remove ubuntu || true; fi \
+ && groupadd --gid 1000 minecraft \
+ && useradd --uid 1000 --gid minecraft --home-dir /home/minecraft --create-home \
+      --shell /usr/sbin/nologin minecraft
+
+COPY --from=jre /opt/java /opt/java
+
+# Declared after the apt layers so a JRE bump does not invalidate them.
 ARG JRE8_RELEASE=jdk8u504-b01
 ARG JRE21_RELEASE=jdk-21.0.12.1+1
 ARG JRE25_RELEASE=jdk-25.0.4.1+1
@@ -72,23 +95,6 @@ LABEL org.opencontainers.image.title="Railpowered" \
       railpowered.jre8="${JRE8_RELEASE}" \
       railpowered.jre21="${JRE21_RELEASE}" \
       railpowered.jre25="${JRE25_RELEASE}"
-
-# python3: the manager (stdlib only, 3.12 on Ubuntu 24.04).
-# ca-certificates: HTTPS to Mojang, Fabric, Forge and Modrinth at runtime.
-# tini: PID 1, forwards SIGTERM to the manager and reaps orphaned processes.
-# setpriv (util-linux, already in the base image) drops root in start.sh.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates python3 tini \
- && rm -rf /var/lib/apt/lists/*
-
-# Minecraft and the dashboard run as this unprivileged user. Ubuntu's stock
-# "ubuntu" user owns uid 1000, so it is replaced.
-RUN if id -u ubuntu >/dev/null 2>&1; then userdel --remove ubuntu 2>/dev/null || userdel ubuntu; fi \
- && groupadd --gid 1000 minecraft \
- && useradd --uid 1000 --gid minecraft --home-dir /home/minecraft --create-home \
-      --shell /usr/sbin/nologin minecraft
-
-COPY --from=jre /opt/java /opt/java
 
 ENV JAVA_8_HOME=/opt/java/8 \
     JAVA_21_HOME=/opt/java/21 \
