@@ -36,7 +36,7 @@ CONSOLE_MAX = 1000
 GENERIC_500 = "Something went wrong on the server. The log has the details."
 # An uploaded pack that hit the world-downgrade guard is kept this long as
 # modpacks/.held-<token><ext>, so confirming doesn't mean uploading it again.
-HELD_UPLOAD_TTL = 3600
+HELD_UPLOAD_TTL = installer.HELD_UPLOAD_TTL
 _HELD_TOKEN_RE = re.compile(r"[0-9a-f]{32}")
 _HELD_EXTENSIONS = (".mrpack", ".zip")
 # One upload streams at a time: same-name uploads can't trip over each other

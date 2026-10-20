@@ -2054,6 +2054,171 @@ def _remove_tree(path: str) -> None:
     shutil.rmtree(path, ignore_errors=True)
 
 
+# Uploaded modpacks kept for a downgrade confirmation (modpacks/.held-*).
+HELD_UPLOAD_TTL = 3600
+RESTORE_TARGET_FILE = "TARGET"  # in worlds/.restore-*: the world being replaced
+_TEMP_FILE_RE = re.compile(r"^\..+\.[A-Za-z0-9_]{6,}\.(tmp|part)$")  # _atomic_write / download_file
+_OLD_INSTANCE_RE = re.compile(r"^\.old-(.+)-[0-9a-f]{8}$")
+
+
+def _recovered_world_name(base: str) -> str:
+    worlds = paths()["worlds"]
+    stem = f"{base[:14]}-recovered-{_stamp()[:8]}"[:28]
+    name, counter = stem, 2
+    while os.path.lexists(os.path.join(worlds, name)):
+        name, counter = f"{stem}-{counter}", counter + 1
+    return name
+
+
+def recover_interrupted(now: float | None = None) -> dict[str, Any]:
+    """Clean up after work a restart cut short (call at boot, before any
+    task runs). Data is put back first: an instance or world that was moved
+    aside and never replaced is moved back, worlds left inside a previous
+    pack copy are rescued, and a world a restore had set aside with no other
+    copy becomes '<name>-recovered-<date>'. Then staging folders, partial
+    downloads, uploads and temp files are deleted.
+
+    Returns {"recovered": [messages], "removed": count, "bytes": freed}."""
+    now = time.time() if now is None else now
+    ensure_layout()
+    where = paths()
+    recovered: list[str] = []
+    removed = 0
+    freed = 0
+
+    def drop(path: str) -> None:
+        nonlocal removed, freed
+        try:
+            if os.path.islink(path) or os.path.isfile(path):
+                size = os.path.getsize(path) if os.path.isfile(path) and not os.path.islink(path) else 0
+                os.unlink(path)
+            else:
+                size = _dir_size(path, fresh=True)
+                link = os.path.join(path, "worlds")  # never follow an instance's worlds link
+                if os.path.islink(link):
+                    os.unlink(link)
+                shutil.rmtree(path)
+                _SIZE_CACHE.pop(path, None)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            _say(f"Couldn't remove leftover {os.path.relpath(path, DATA_DIR)}: {exc}")
+            return
+        removed += 1
+        freed += size
+
+    def entries(directory: str) -> list[str]:
+        try:
+            return sorted(os.listdir(directory))
+        except OSError:
+            return []
+
+    # instances/: a pack swap cut short.
+    instances = where["instances"]
+    for entry in entries(instances):
+        path = os.path.join(instances, entry)
+        match = _OLD_INSTANCE_RE.match(entry)
+        if match and NAME_RE.match(match.group(1)):
+            name = match.group(1)
+            if not os.path.lexists(os.path.join(instances, name)):
+                os.replace(path, os.path.join(instances, name))
+                recovered.append(f"Put modpack '{name}' back (its update was interrupted).")
+                continue
+            local_worlds = os.path.join(path, "worlds")
+            if os.path.isdir(local_worlds) and not os.path.islink(local_worlds):
+                _rescue_instance_worlds(local_worlds, name)
+            drop(path)
+        elif entry.startswith((".old-", ".staging-", ".unpack-", ".trash-", ".hoist-")):
+            drop(path)
+
+    # worlds/: a restore or a delete cut short.
+    worlds = where["worlds"]
+    for entry in entries(worlds):
+        path = os.path.join(worlds, entry)
+        if entry.startswith(".restore-") and os.path.isdir(path) and not os.path.islink(path):
+            old = os.path.join(path, "old")
+            target = ""
+            try:
+                with open(os.path.join(path, RESTORE_TARGET_FILE), encoding="utf-8") as handle:
+                    target = handle.read().strip()
+            except OSError:
+                pass
+            if os.path.isdir(old) and not os.path.islink(old):
+                if NAME_RE.match(target) and not os.path.lexists(os.path.join(worlds, target)):
+                    os.replace(old, os.path.join(worlds, target))
+                    recovered.append(f"Put world '{target}' back (a restore was interrupted).")
+                elif not NAME_RE.match(target) and os.listdir(old):
+                    # Unknown target: keep the world rather than guess.
+                    name = _recovered_world_name("world")
+                    os.replace(old, os.path.join(worlds, name))
+                    recovered.append(f"Kept a world from an interrupted restore as '{name}'.")
+                # Otherwise the restore finished; the replaced world was
+                # backed up (pre-restore) before it was moved aside.
+            drop(path)
+        elif entry.startswith(".trash-"):
+            drop(path)
+        elif _TEMP_FILE_RE.match(entry):
+            drop(path)
+        elif os.path.isdir(path) and not os.path.islink(path) and not entry.startswith("."):
+            for inner in entries(path):  # sidecar temp files inside a world
+                if _TEMP_FILE_RE.match(inner):
+                    drop(os.path.join(path, inner))
+
+    # backups/: an archive that was still being written.
+    backups = where["backups"]
+    for entry in entries(backups):
+        if entry.startswith(".") and entry.endswith(".tmp"):
+            drop(os.path.join(backups, entry))
+
+    # modpacks/: downloads and uploads (held ones expire).
+    modpacks = where["modpacks"]
+    for entry in entries(modpacks):
+        path = os.path.join(modpacks, entry)
+        if entry.startswith(".held-"):
+            try:
+                expired = now - os.path.getmtime(path) > HELD_UPLOAD_TTL
+            except OSError:
+                expired = True
+            if expired:
+                drop(path)
+        elif (
+            entry.startswith((".download-", ".upload-"))
+            or re.fullmatch(r"\.?[A-Za-z0-9][A-Za-z0-9._-]*\.upload\.(zip|mrpack)", entry)
+            or _TEMP_FILE_RE.match(entry)
+        ):
+            drop(path)
+
+    # Partial downloads and atomic-write temp files.
+    for directory in (where["data"], where["jars"], where["cache"]):
+        for entry in entries(directory):
+            if _TEMP_FILE_RE.match(entry):
+                drop(os.path.join(directory, entry))
+    for entry in entries(where["cache"]):
+        sub = os.path.join(where["cache"], entry)
+        if os.path.isdir(sub) and not os.path.islink(sub):
+            for inner in entries(sub):
+                if _TEMP_FILE_RE.match(inner):
+                    drop(os.path.join(sub, inner))
+
+    for message in recovered:
+        _say(message)
+    if removed:
+        _say(
+            f"Cleaned up {removed} leftover file{'s' if removed != 1 else ''} from interrupted "
+            f"work ({_human_bytes(freed)} freed)."
+        )
+    return {"recovered": recovered, "removed": removed, "bytes": freed}
+
+
+def _human_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{int(value)} {unit}" if unit == "bytes" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} bytes"
+
+
 # ---------------------------------------------------------------------------
 # Instances, Fabric and Forge
 # ---------------------------------------------------------------------------
@@ -4243,6 +4408,10 @@ def restore_backup(name: str, target: str | None = None) -> dict[str, Any]:
                 meta = _backup_meta(source)
                 world, prefix = _backup_world_prefix(members, meta)
                 dest_name = validate_name(target or world, "world")
+                # If this is cut short after the world was moved aside, the
+                # boot sweep (recover_interrupted) knows where it belongs.
+                with open(os.path.join(staging, RESTORE_TARGET_FILE), "w", encoding="utf-8") as handle:
+                    handle.write(dest_name)
                 limit = _extract_limit(worlds)
                 total = 0
                 restored = os.path.join(staging, "world")
