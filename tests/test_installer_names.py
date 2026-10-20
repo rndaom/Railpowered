@@ -19,6 +19,18 @@ class NameRuleTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIsNone(installer.NAME_RE.match(name))
 
+    def test_trailing_newline_never_passes(self):
+        # "$" matches before a final "\n"; the patterns must anchor at the true end.
+        for regex, good in (
+            (installer.NAME_RE, "world"),
+            (installer.PLAYER_NAME_RE, "Notch"),
+            (installer.VERSION_RE, "1.20.1"),
+            (installer.BACKUP_NAME_RE, "world-20260101-000000.tar.gz"),
+        ):
+            with self.subTest(pattern=regex.pattern):
+                self.assertTrue(regex.match(good))
+                self.assertIsNone(regex.match(good + "\n"))
+
     def test_world_name_alias(self):
         self.assertIs(installer.WORLD_NAME_RE, installer.NAME_RE)
 

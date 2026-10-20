@@ -777,6 +777,7 @@ class PlayersAndSettingsTests(PanelTestCase):
             self.assertEqual(
                 self.api("PUT", "/api/players/whitelist/enabled", {"enabled": "yes"})[0], 400
             )
+        self.assertEqual(self.api("DELETE", "/api/players/ops/Notch%0A")[0], 400)
         add.assert_called_once_with("ops", "Steve")
         remove.assert_called_once_with("whitelist", "Alex")
         toggle.assert_called_once_with(True)

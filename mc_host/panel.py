@@ -50,7 +50,7 @@ ROUTES: list[Route] = []
 
 def route(method: str, pattern: str, auth_required: bool = True) -> Callable[[Callable], Callable]:
     def register(fn: Callable) -> Callable:
-        ROUTES.append((method, re.compile(f"^{pattern}$"), fn.__name__, auth_required))
+        ROUTES.append((method, re.compile(f"^{pattern}\\Z"), fn.__name__, auth_required))
         return fn
 
     return register
@@ -58,7 +58,7 @@ def route(method: str, pattern: str, auth_required: bool = True) -> Callable[[Ca
 
 _SEG = r"([^/]+)"
 # <world>[-pre-restore|-pre-downgrade]-YYYYmmdd-HHMMSS[-n].tar.gz
-_BACKUP_WORLD = re.compile(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz$")
+_BACKUP_WORLD = re.compile(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz\Z")
 
 
 class PanelServer(ThreadingHTTPServer):

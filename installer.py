@@ -80,15 +80,17 @@ CONFIG_SCHEMA = 2
 SERVER_TYPES = ("vanilla", "fabric", "forge", "modpack")
 TYPE_LABELS = {"vanilla": "Vanilla", "fabric": "Fabric", "forge": "Forge", "modpack": "Modpack"}
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+# Anchored with \Z, not $: "$" also matches before a trailing newline, so a
+# URL-decoded "Notch%0A" would otherwise pass as a name.
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 WORLD_NAME_RE = NAME_RE  # v1 name, kept for callers
 NAME_RULE = (
     "1 to 32 characters: letters, numbers, dot, dash and underscore, "
     "starting with a letter or number"
 )
-VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,39}$")
-PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
-BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.tar\.gz$")
+VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,39}\Z")
+PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
+BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.tar\.gz\Z")
 SETUP_NAME_MAX = 48
 RESERVED_INSTANCE_PREFIXES = ("fabric-", "forge-")
 
@@ -3807,6 +3809,8 @@ def lookup_player(name: str, network: bool = True) -> tuple[str, str]:
             try:
                 data = json.loads(body.decode("utf-8"))
                 exact = str(data.get("name") or name)
+                if not PLAYER_NAME_RE.match(exact):
+                    exact = name  # never let a reply put an odd name in a console command
                 uuid = dashed_uuid(str(data.get("id") or ""))
             except (ValueError, AttributeError, InstallError, UnicodeDecodeError) as exc:
                 last = InstallError("bad reply", code="network", detail=str(exc))
@@ -4071,6 +4075,11 @@ def add_player(kind: str, name: str) -> dict[str, Any]:
         entries = _load_list(kind)
         if not any(e["name"].casefold() == exact.casefold() for e in entries):
             entry = _normalize_entry(kind, {"uuid": uuid, "name": exact})
+            if entry is None:
+                raise InstallError(
+                    "Player names are 1 to 16 letters, numbers or underscores.",
+                    code="invalid_player_name",
+                )
             entries.append(entry)
             _save_list(kind, entries)
         _render_to_active(cfg, version)

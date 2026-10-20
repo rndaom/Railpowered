@@ -48,7 +48,7 @@ CONTENT_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
 }
-STATIC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+STATIC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 LOGIN_ERRORS = {
     "1": "That key didn't match. Check it and try again.",

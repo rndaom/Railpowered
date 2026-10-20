@@ -60,7 +60,7 @@ WHITELIST_RE = re.compile(
 )
 LIST_LEGACY_RE = re.compile(r"\[INFO\] Connected players: ?(.*)$")
 LIST_NAMES_RE = re.compile(_PREFIX + _SYS + r"(.*)$")
-PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
 _GC_FLAG = re.compile(r"^-XX:\+Use\w*GC$")
 # Shutdown budget: STOP_TIMEOUT (<= 45s) + KILL_WAIT + MONITOR_JOIN must stay
 # under Railway's drainingSeconds (60, railway.toml) so SIGKILL never lands

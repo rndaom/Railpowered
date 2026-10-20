@@ -61,7 +61,7 @@ LEGACY_PROTOCOLS = {
     "1.6.1": 73, "1.6.2": 74, "1.6.4": 78,
 }
 
-_PLAYER_NAME = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+_PLAYER_NAME = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
 _VERSION_PARTS = re.compile(r"^(\d+)\.(\d+)")
 
 

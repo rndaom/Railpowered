@@ -93,6 +93,12 @@ class OnlineModeTests(PlayersTestCase):
         self.mojang("Steve", {"id": "8667ba71b85a4004af54457a9734eed7", "name": "Steve"}, which=1)
         self.assertEqual(installer.add_player("ops", "Steve")["uuid"], "8667ba71-b85a-4004-af54-457a9734eed7")
 
+    def test_odd_name_in_mojang_reply_is_not_trusted(self):
+        self.mojang("Steve", {"id": "8667ba71b85a4004af54457a9734eed7", "name": "Steve\nop Mallory"})
+        added = installer.add_player("ops", "Steve")
+        self.assertEqual(added["name"], "Steve")
+        self.assertEqual([e["name"] for e in self.read_json("ops.json")], ["Steve"])
+
     def test_expired_cache_is_refreshed(self):
         self.write(".uuid-cache.json", json.dumps(
             {"notch": {"name": "Notch", "uuid": NOTCH_ONLINE, "at": int(time.time()) - 40 * 86400}}))
