@@ -20,7 +20,13 @@ deploying or running Railpowered, you agree to the Minecraft EULA.
 
 Eclipse Temurin
 ---------------
-The Docker image includes Eclipse Temurin Java runtimes (versions 8, 21 and
-25) from the Eclipse Adoptium project, licensed under the GNU General Public
+The Docker image includes Eclipse Temurin Java runtimes (versions 8, 17, 21
+and 25) from the Eclipse Adoptium project, licensed under the GNU General Public
 License, version 2, with the Classpath Exception.
 https://adoptium.net/
+
+IBM Plex
+--------
+The dashboard ships IBM Plex Sans, IBM Plex Sans Condensed and IBM Plex Mono
+(web/assets/fonts), Copyright 2017 IBM Corp. with Reserved Font Name "Plex",
+licensed under the SIL Open Font License, Version 1.1 (web/assets/fonts/OFL.txt).
