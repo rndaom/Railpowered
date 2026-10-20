@@ -32,6 +32,24 @@
     },
   };
 
+  // Per-tab memory that survives a trip through the sign-in page.
+  var SESSION_KEYS = {
+    returnTo: 'railpowered.return-to',
+    settingsDraft: 'railpowered.settings-draft',
+  };
+
+  var sessionStore = {
+    get: function (key) {
+      try { return window.sessionStorage.getItem(key); } catch (_) { return null; }
+    },
+    set: function (key, value) {
+      try {
+        if (value == null) window.sessionStorage.removeItem(key);
+        else window.sessionStorage.setItem(key, value);
+      } catch (_) { /* storage blocked: nothing is carried over */ }
+    },
+  };
+
   var THEME_COLORS = { light: '#f3f4f6', dark: '#090c10' };
 
   function readThemeChoice() {
@@ -96,6 +114,11 @@
       label: 'Online', icon: 'i-signal',
       copy: function (s) {
         var n = s.player_count || 0;
+        if (!s.join_address) {
+          // Without a public address nobody outside Railway can reach it, whatever the whitelist says.
+          if (n === 0) return 'Minecraft is running. Once you add a public address, friends can join.';
+          return plural(n, 'player is', 'players are') + ' on right now.';
+        }
         var who = s.whitelist_enabled ? 'Anyone on the whitelist' : 'Anyone with the address';
         if (n === 0) return who + ' can join now.';
         return plural(n, 'player is', 'players are') + ' on right now. ' + who + ' can join too.';
@@ -110,7 +133,7 @@
     crashed: {
       label: 'Crashed', icon: 'i-alert',
       copy: function () { return 'Minecraft stopped unexpectedly. It still wakes up when someone joins, or you can start it again now.'; },
-      sub: function () { return 'Start it again from Overview'; },
+      sub: function () { return 'Stopped unexpectedly'; },
     },
     unknown: {
       label: 'Checking…', icon: 'i-loader',
@@ -134,13 +157,18 @@
     disk: null,
     players: null,
     settings: null,
+    settingsPeek: null,     // /api/settings fetched for the New setup form while Settings hasn't loaded
     settingsDirty: false,
+    uploading: null,        // { abort } while a modpack upload is in flight
+    removedPlayers: {},     // kind -> { name, timer }: just removed, with an inline Undo
     pending: {},            // server actions in flight: { start: true, ... }
-    watchedTasks: {},       // task ids seen running (so we can report how they ended)
-    notifiedTasks: {},      // task ids already reported with a toast
-    dismissedTasks: {},     // "id:state" keys the user closed in the banner
+    // Task ids restart at t1 when the backend restarts, so tasks are tracked by
+    // taskIdent() (id + start time), never by the id alone.
+    watchedTasks: {},       // tasks seen running (so we can report how they ended)
+    notifiedTasks: {},      // tasks whose outcome was already announced
+    dismissedTasks: {},     // taskKey()s the user closed in the banner
     taskFirstSeen: {},
-    editingSetup: null,     // { id, draft }
+    editingSetup: null,     // { id, draft, focusOnRender, sel }
     setupForm: null,        // set up in initSetupForm
     loaded: {},             // which views have loaded their data at least once
   };
@@ -301,6 +329,15 @@
     return plural(h, 'hour', 'hours') + (m ? ' ' + plural(m, 'minute', 'minutes') : '');
   }
 
+  // Compact form for tight spots like the hero facts: "10 min", "1 h 30 min", "2 h".
+  function formatMinutesShort(min) {
+    min = Math.round(Number(min) || 0);
+    if (min <= 0) return 'Off';
+    if (min < 60) return min + ' min';
+    var h = Math.floor(min / 60), m = min % 60;
+    return h + ' h' + (m ? ' ' + m + ' min' : '');
+  }
+
   function toDate(v) {
     if (v == null || v === '') return null;
     if (typeof v === 'number') return new Date(v < 1e12 ? v * 1000 : v);
@@ -325,10 +362,37 @@
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   }
 
+  // The year is shown only when it isn't this year, so last year's backup can't pass for this year's.
   function formatDateTime(v) {
     var d = toDate(v);
     if (!d) return '';
-    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+    var opts = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' };
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = 'numeric';
+    return d.toLocaleString(undefined, opts);
+  }
+
+  function formatTime(v) {
+    var d = toDate(v);
+    if (!d) return '';
+    var sameDay = d.toDateString() === new Date().toDateString();
+    return sameDay ? d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }) : formatDateTime(d);
+  }
+
+  function isRecent(v, days) {
+    var d = toDate(v);
+    return !!d && Math.abs(Date.now() - d.getTime()) < days * 86400000;
+  }
+
+  // Row metadata: parts that start with an icon separate themselves; plain
+  // text parts get a quiet dot in front so neighbouring facts don't run together.
+  function metaParts(parts) {
+    var out = [];
+    parts.filter(Boolean).forEach(function (part, i) {
+      var leadsWithIcon = part.firstChild && part.firstChild.nodeType === 1 && part.firstChild.namespaceURI === SVG_NS;
+      if (i > 0 && !leadsWithIcon) out.push(el('span', { class: 'sep', 'aria-hidden': 'true' }, '·'));
+      out.push(part);
+    });
+    return out;
   }
 
   function capitalize(s) { s = String(s || ''); return s.charAt(0).toUpperCase() + s.slice(1); }
@@ -351,11 +415,12 @@
     return s.slice(0, 32).replace(/[-.]+$/, '');
   }
 
-  function uniqueWorldName(base) {
+  // base, or base-2, base-3… : the first one not in names (compared without case).
+  function uniqueName(base, names) {
     var taken = {};
-    (state.worlds || []).forEach(function (w) { taken[String(w.name).toLowerCase()] = true; });
-    var name = slugName(base) || 'world';
-    if (!taken[name.toLowerCase()]) return name;
+    names.forEach(function (n) { taken[String(n).toLowerCase()] = true; });
+    var name = slugName(base);
+    if (!name || !taken[name.toLowerCase()]) return name;
     for (var i = 2; i < 100; i++) {
       var suffix = '-' + i;
       var candidate = name.slice(0, 32 - suffix.length) + suffix;
@@ -364,12 +429,45 @@
     return name;
   }
 
+  function uniqueWorldName(base) {
+    return uniqueName(slugName(base) || 'world', (state.worlds || []).map(function (w) { return w.name; }));
+  }
+
+  // Installed modpack folders (lower-cased) -> names of the setups using each.
+  function packInstances() {
+    var map = {};
+    (state.setups || []).forEach(function (s) {
+      if (!s.instance) return;
+      var k = String(s.instance).toLowerCase();
+      (map[k] = map[k] || []).push(s.name || setupSummary(s));
+    });
+    return map;
+  }
+
+  // A guessed pack name never points at a pack that is already installed;
+  // replacing one is only done when the admin types that name on purpose.
+  function guessPackName(raw) {
+    return uniqueName(raw, Object.keys(packInstances()));
+  }
+
   function versionLabel(setup) {
     if (!setup) return '';
     var v = setup.resolved_version || setup.minecraft_version || '';
     if (setup.minecraft_version === 'latest') return v && v !== 'latest' ? v + ' (latest)' : 'Latest';
     return v;
   }
+
+  function isConcreteVersion(v) { return /\d/.test(String(v || '')); }
+
+  // The exact number friends must pick in their launcher, or '' when it isn't known
+  // yet (an "Always latest" setup that has never resolved a release).
+  function exactVersion(setup) {
+    if (!setup) return '';
+    var v = setup.resolved_version || (setup.minecraft_version !== 'latest' ? setup.minecraft_version : '');
+    return isConcreteVersion(v) ? String(v) : '';
+  }
+
+  var UNKNOWN_LATEST = 'the latest release (start the server once to see the exact number)';
 
   function setupSummary(setup) {
     if (!setup) return '';
@@ -444,7 +542,12 @@
     if (redirecting) return;
     redirecting = true;
     stopPolling();
-    window.location.replace('/login');
+    // Remember where the user was (and any unsaved settings) so signing in
+    // again brings them back to the same place instead of a cold start.
+    var hash = window.location.hash || '';
+    if (/^#\/[a-z]/.test(hash)) sessionStore.set(SESSION_KEYS.returnTo, hash);
+    stashSettingsDraft();
+    window.location.replace('/login?error=expired');
   }
 
   function fallbackMessage(status) {
@@ -488,10 +591,11 @@
     });
   }
 
-  // Raw upload with progress (fetch has no upload progress events).
+  // Raw upload with progress (fetch has no upload progress events). The
+  // returned promise has an abort() method for the Cancel button.
   function uploadFile(path, file, onProgress) {
-    return new Promise(function (resolve, reject) {
-      var xhr = new XMLHttpRequest();
+    var xhr = new XMLHttpRequest();
+    var promise = new Promise(function (resolve, reject) {
       xhr.open('POST', path, true);
       xhr.withCredentials = true;
       xhr.setRequestHeader('X-Railpowered', '1');
@@ -508,26 +612,45 @@
         resolve(data);
       });
       xhr.addEventListener('error', function () {
-        reject(new ApiError('The upload was interrupted. Check your connection and try again.', { code: 'network' }));
+        // The server refuses an upload it can't take (too big, volume full,
+        // another task running) before reading it and closes the connection,
+        // which most browsers report as a plain network error.
+        reject(new ApiError('The upload stopped before it finished. Either the connection dropped, or the server ' +
+          'refused the file (for example because the volume is short on space). Check the Console, then try again.', { code: 'network' }));
       });
       xhr.addEventListener('abort', function () { reject(new ApiError('Upload cancelled.', { code: 'aborted' })); });
       xhr.send(file);
     });
+    promise.abort = function () { xhr.abort(); };
+    return promise;
   }
 
   /* ================================================================ toasts + announcer */
 
+  // Messages that arrive together (a phase change and a task result, say) are
+  // read as one, rather than the second silently replacing the first.
+  var announceQueue = [];
+  var announceTimer = null;
+
   function announce(text) {
     var node = $('#announcer');
-    if (!node) return;
+    if (!node || !text) return;
+    announceQueue.push(text);
+    if (announceTimer) return;
     node.textContent = '';
-    window.setTimeout(function () { node.textContent = text; }, 60);
+    announceTimer = window.setTimeout(function () {
+      node.textContent = announceQueue.join(' ');
+      announceQueue = [];
+      announceTimer = null;
+    }, 60);
   }
 
   function toast(opts) {
     var tone = opts.tone || 'info';
     var iconName = { ok: 'i-check-circle', bad: 'i-alert-circle', warn: 'i-alert', info: 'i-info' }[tone] || 'i-info';
-    var node = el('div', { class: 'toast tone-' + tone, role: tone === 'bad' ? 'alert' : 'status' },
+    // No role on the toast itself: #toasts is the (polite) live region, so each
+    // toast is announced once.
+    var node = el('div', { class: 'toast tone-' + tone },
       icon(iconName),
       el('div', { class: 'toast-body' },
         el('p', { class: 'toast-title' }, opts.title),
@@ -542,13 +665,29 @@
     var host = $('#toasts');
     host.appendChild(node);
     while (host.children.length > 4) host.removeChild(host.firstChild);
-    var timeout = opts.timeout != null ? opts.timeout : (tone === 'bad' ? 9000 : (opts.actions ? 7000 : 4500));
+    // Toasts with a button stay longer, and none of them close while the
+    // pointer or keyboard focus is on them.
+    var hasActions = !!(opts.actions && opts.actions.length);
+    var timeout = opts.timeout != null ? opts.timeout : (hasActions ? 15000 : (tone === 'bad' ? 9000 : 4500));
     var timer = timeout > 0 ? window.setTimeout(dismiss, timeout) : null;
-    node.addEventListener('mouseenter', function () { if (timer) { window.clearTimeout(timer); timer = null; } });
-    node.addEventListener('mouseleave', function () { if (!timer && timeout > 0) timer = window.setTimeout(dismiss, 3000); });
+    var hovered = false, focused = false;
+    function pause() { if (timer) { window.clearTimeout(timer); timer = null; } }
+    function resume() { if (!timer && !hovered && !focused && timeout > 0 && node.isConnected) timer = window.setTimeout(dismiss, 4000); }
+    node.addEventListener('mouseenter', function () { hovered = true; pause(); });
+    node.addEventListener('mouseleave', function () { hovered = false; resume(); });
+    node.addEventListener('focusin', function () { focused = true; pause(); });
+    node.addEventListener('focusout', function (e) {
+      if (e.relatedTarget && node.contains(e.relatedTarget)) return;
+      focused = false;
+      resume();
+    });
     function dismiss() {
       if (timer) window.clearTimeout(timer);
+      timer = null;
+      timeout = 0;
       if (!node.isConnected) return;
+      // Don't strand keyboard focus on a toast that's about to disappear.
+      if (node.contains(document.activeElement)) $('#main').focus({ preventScroll: true });
       node.classList.add('is-leaving');
       window.setTimeout(function () { if (node.isConnected) node.remove(); }, 220);
     }
@@ -609,6 +748,9 @@
     if (dlg.open) dlg.close();
     var back = dialogState.returnFocus;
     dialogState.returnFocus = null;
+    // The opener may have been re-rendered while the dialog was open.
+    var action = back && back.getAttribute ? back.getAttribute('data-action') : null;
+    if (back && !back.isConnected && action) back = $('#hero-actions [data-action="' + action + '"]');
     if (back && back.isConnected && typeof back.focus === 'function') {
       try { back.focus({ preventScroll: true }); } catch (_) { back.focus(); }
     }
@@ -621,7 +763,15 @@
     dlg.addEventListener('close', function () {
       if (dialogState.resolve) { var r = dialogState.resolve; dialogState.resolve = null; r(null); }
     });
-    dlg.addEventListener('click', function (e) { if (e.target === dlg) closeDialog(null); });
+    // Close on a backdrop click only when the press started on the backdrop
+    // too: dragging a text selection out of an input must not close the dialog.
+    var pressedBackdrop = false;
+    dlg.addEventListener('pointerdown', function (e) { pressedBackdrop = e.target === dlg; });
+    dlg.addEventListener('click', function (e) {
+      var fromBackdrop = pressedBackdrop;
+      pressedBackdrop = false;
+      if (e.target === dlg && fromBackdrop) closeDialog(null);
+    });
     dlg.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter' || e.target.tagName !== 'INPUT' || e.target.type === 'radio' || e.target.type === 'checkbox') return;
       var def = dlg.querySelector('button[data-default="true"]');
@@ -665,7 +815,11 @@
   /* ================================================================ router + shell */
 
   function parseRoute() {
-    var m = /^#\/([a-z]+)(?:\/([A-Za-z0-9_-]+))?/.exec(window.location.hash || '');
+    var hash = window.location.hash || '';
+    // Only "#/view" hashes are routes. In-page anchors such as "#main" (the
+    // skip link without JavaScript) keep the current view.
+    if (hash && hash.indexOf('#/') !== 0 && state.route.view) return { view: state.route.view, anchor: '' };
+    var m = /^#\/([a-z]+)(?:\/([A-Za-z0-9_-]+))?/.exec(hash);
     var view = m && VIEWS.indexOf(m[1]) !== -1 ? m[1] : 'overview';
     return { view: view, anchor: m && m[2] ? m[2] : '' };
   }
@@ -682,6 +836,9 @@
       if (link.getAttribute('data-nav') === route.view) link.setAttribute('aria-current', 'page');
       else link.removeAttribute('aria-current');
     });
+    // The phone tab bar has no tab for these; light up "More" instead.
+    var more = $('#tab-more');
+    if (more) more.classList.toggle('is-current', ['settings', 'console', 'help'].indexOf(route.view) !== -1);
     closeDrawer(false);
     updateTitle();
     if (changed) {
@@ -729,10 +886,13 @@
 
   var drawerMedia = window.matchMedia ? window.matchMedia('(max-width: 959px)') : null;
 
-  function openDrawer() {
+  var drawerOpener = null;
+
+  function openDrawer(e) {
     var app = $('#app');
+    drawerOpener = (e && e.currentTarget) || $('#drawer-open');
     app.classList.add('drawer-open');
-    $('#drawer-open').setAttribute('aria-expanded', 'true');
+    $$('[aria-controls="sidebar"]').forEach(function (b) { b.setAttribute('aria-expanded', 'true'); });
     setInert(true);
     var first = $('#sidebar .nav-link[aria-current="page"]') || $('#sidebar .nav-link');
     if (first) first.focus();
@@ -742,9 +902,10 @@
     var app = $('#app');
     if (!app.classList.contains('drawer-open')) return;
     app.classList.remove('drawer-open');
-    $('#drawer-open').setAttribute('aria-expanded', 'false');
+    $$('[aria-controls="sidebar"]').forEach(function (b) { b.setAttribute('aria-expanded', 'false'); });
     setInert(false);
-    if (restoreFocus) $('#drawer-open').focus();
+    if (restoreFocus) (drawerOpener || $('#drawer-open')).focus();
+    drawerOpener = null;
   }
 
   function setInert(on) {
@@ -757,6 +918,7 @@
 
   function initShell() {
     $('#drawer-open').addEventListener('click', openDrawer);
+    $('#tab-more').addEventListener('click', openDrawer);
     $('#drawer-close').addEventListener('click', function () { closeDrawer(true); });
     $('#drawer-scrim').addEventListener('click', function () { closeDrawer(true); });
     document.addEventListener('keydown', function (e) {
@@ -779,6 +941,11 @@
       });
     });
 
+    $('.skip-link').addEventListener('click', function (e) {
+      e.preventDefault();
+      $('#main').focus();
+    });
+
     $('#logout').addEventListener('click', function () {
       var button = this;
       runBusy(button, 'Signing out…', function () {
@@ -788,10 +955,20 @@
           headers: { 'X-Railpowered': '1', 'Content-Type': 'application/x-www-form-urlencoded' },
           body: 'x_railpowered=1',
           redirect: 'manual',
-        }).catch(function () { return null; }).then(function () {
-          redirecting = true;
-          stopPolling();
-          window.location.replace('/login');
+        }).catch(function () { return null; }).then(function (res) {
+          // Success is the redirect to /login. Anything else (a 403, or Railway's
+          // edge answering 502 mid-redeploy) means the session is still valid,
+          // so say so instead of flashing the sign-in page.
+          if (res && (res.type === 'opaqueredirect' || res.ok)) {
+            redirecting = true;
+            stopPolling();
+            window.location.replace('/login');
+            return new Promise(function () {}); // keep the button busy while the page changes
+          }
+          toast({
+            tone: 'bad', title: 'Couldn\'t sign out',
+            text: res ? 'The server didn\'t confirm it, so you\'re still signed in. Try again.' : 'Couldn\'t reach your server, so you\'re still signed in. Try again.',
+          });
         });
       });
     });
@@ -806,7 +983,8 @@
 
     window.addEventListener('hashchange', function () { navigate(false); });
     window.addEventListener('beforeunload', function (e) {
-      if (state.settingsDirty) { e.preventDefault(); e.returnValue = ''; }
+      if (redirecting) return; // goLogin keeps the settings draft for after sign-in
+      if (state.settingsDirty || state.uploading) { e.preventDefault(); e.returnValue = ''; }
     });
   }
 
@@ -859,7 +1037,11 @@
   // user closed, for this browser session, so a reload doesn't bring them back.
   var DISMISSED_KEY = 'railpowered.dismissed-tasks';
 
-  function taskKey(task) { return task.id + ':' + task.state + ':' + (task.finished_at || ''); }
+  // A task's identity. Ids come from a per-process counter, so after a
+  // redeploy a new "t1" must not be mistaken for the old one.
+  function taskIdent(task) { return task.id + '@' + (task.started_at || ''); }
+
+  function taskKey(task) { return taskIdent(task) + ':' + task.state + ':' + (task.finished_at || ''); }
 
   function readDismissed() {
     try { return JSON.parse(window.sessionStorage.getItem(DISMISSED_KEY) || '[]'); } catch (_) { return []; }
@@ -884,16 +1066,30 @@
     if (state.connected === ok && ok) return;
     state.connected = ok;
     var banner = $('#conn-banner');
-    banner.hidden = ok;
     // Keep showing the last known status, but make it look out of date.
     $('#hero').classList.toggle('is-stale', !ok);
     if (!ok) {
-      setText($('#conn-text'), err && err.status >= 500
+      var answered = err && err.status >= 500;
+      setText($('#conn-title'), answered ? 'The dashboard hit an error' : 'Can\'t reach Railpowered');
+      setText($('#conn-text'), answered
         ? 'The server answered with an error. If Railway is redeploying, this clears up in a minute or two.'
         : 'The dashboard will keep trying. If Railway is redeploying, this clears up in a minute or two.');
     }
+    withStableScroll(function () { banner.hidden = ok; });
     renderPills();
     updateTitle();
+  }
+
+  // The banners sit above every view and stick to the top of the screen.
+  // When one appears, changes size or goes away, scroll by the same amount so
+  // the content under the pointer stays put; the sticky banner stays in sight.
+  function withStableScroll(change) {
+    var ref = document.getElementById('view-' + state.route.view);
+    if (!ref || ref.hidden) { change(); return; }
+    var before = ref.getBoundingClientRect().top;
+    change();
+    var shift = ref.getBoundingClientRect().top - before; // read after layout, so native scroll anchoring is included
+    if (shift) window.scrollBy(0, shift);
   }
 
   function onVisibility() {
@@ -928,7 +1124,12 @@
     if (prev && prev.phase !== s.phase) {
       announce('Server is ' + PHASES[s.phase].label.toLowerCase().replace('…', '') + '.');
     }
-    trackTask(prev ? prev.task : null, s.task, !prev);
+    // Minecraft reads server.properties when it starts, so once it has gone
+    // down (or restarted between two polls), saved settings are in effect.
+    if (prev && state.settings && state.settings.restart_required && serverRestarted(prev, s)) {
+      state.settings.restart_required = false;
+    }
+    trackTask(prev ? prev.task : null, s.task);
 
     renderStatus();
 
@@ -942,32 +1143,36 @@
     if (crowdChanged && state.setupForm) renderSetupImpact();
     if (state.route.view === 'help') renderHelp();
     if (state.route.view === 'settings') renderRestartBanner();
+    // Until the player lists load, the whitelist switch shows what the status says.
+    if (!state.players) $('#wl-switch').checked = !!s.whitelist_enabled;
+  }
+
+  function serverRestarted(prev, s) {
+    if (prev.phase === s.phase) return prev.uptime != null && s.uptime != null && s.uptime < prev.uptime;
+    if (!RUNNING[s.phase]) return true;              // stopping, asleep, crashed, preparing
+    return s.phase === 'starting' && prev.phase === 'online'; // a restart seen between polls
   }
 
   /* ================================================================ task tracking */
 
-  function trackTask(prev, next, initial) {
+  // The task banner is the one place a task's outcome is shown (it sticks to
+  // the top of the screen on every view); screen readers hear it once through
+  // the announcer. A toast would only repeat it.
+  function trackTask(prev, next) {
     if (!next || !next.id) return;
-    if (!state.taskFirstSeen[next.id]) state.taskFirstSeen[next.id] = Date.now();
+    var ident = taskIdent(next);
+    if (!state.taskFirstSeen[ident]) state.taskFirstSeen[ident] = Date.now();
     if (next.state === 'running') {
-      if (!initial) state.watchedTasks[next.id] = true;
-      else state.watchedTasks[next.id] = true;
+      state.watchedTasks[ident] = true;
       return;
     }
-    if (state.notifiedTasks[next.id]) return;
-    var wasRunning = state.watchedTasks[next.id] || (prev && prev.id === next.id && prev.state === 'running');
-    if (!wasRunning) return; // finished before this page loaded: the banner shows it, no toast
-    state.notifiedTasks[next.id] = true;
+    if (state.notifiedTasks[ident]) return;
+    var wasRunning = state.watchedTasks[ident] || (prev && taskIdent(prev) === ident && prev.state === 'running');
+    if (!wasRunning) return; // finished before this page loaded: the banner shows it
+    state.notifiedTasks[ident] = true;
     var label = next.label || 'Task';
-    if (next.state === 'done') {
-      toast({ tone: 'ok', title: label + ': done', text: taskDoneText(next) });
-    } else {
-      toast({
-        tone: 'bad', title: label + ': failed',
-        text: next.error || 'It stopped with an error. The console has the details.',
-        actions: [{ label: 'Open console', run: function () { window.location.hash = '#/console'; } }],
-      });
-    }
+    if (next.state === 'done') announce(label + ': done. ' + taskDoneText(next));
+    else announce(label + ': failed. ' + (next.error || 'The console has the details.'));
     onTaskFinished(next);
   }
 
@@ -987,7 +1192,7 @@
     if (state.worlds || state.route.view === 'worlds' || state.route.view === 'setups') loadWorlds(true);
     if (state.backups || state.route.view === 'worlds') loadBackups(true);
     var form = state.setupForm;
-    if (form && form.pendingTaskId === task.id) {
+    if (form && form.pendingTaskId === taskIdent(task)) {
       form.pendingTaskId = null;
       if (task.state === 'done') resetSetupForm();
       else setText($('#setup-summary'), 'That didn\'t work. Your details are still here, so you can adjust them and try again.');
@@ -997,13 +1202,20 @@
 
   function taskElapsed(task) {
     var started = toDate(task.started_at);
-    var t0 = started ? started.getTime() : state.taskFirstSeen[task.id] || Date.now();
-    if (t0 > Date.now() + 5000) t0 = state.taskFirstSeen[task.id] || Date.now();
+    var seen = state.taskFirstSeen[taskIdent(task)];
+    var t0 = started ? started.getTime() : seen || Date.now();
+    if (t0 > Date.now() + 5000) t0 = seen || Date.now();
     return Math.max(0, (Date.now() - t0) / 1000);
   }
 
+  // No live role here: the counters below change every second and would be
+  // read out each time. Outcomes are announced once by trackTask().
   function renderTaskBanner() {
     var banner = $('#task-banner');
+    withStableScroll(function () { renderTaskBannerNow(banner); });
+  }
+
+  function renderTaskBannerNow(banner) {
     var s = state.status;
     var task = s && s.task;
     if (!task || !task.id || isTaskDismissed(task)) {
@@ -1011,53 +1223,57 @@
       banner.removeAttribute('data-key');
       return;
     }
-    var key = task.id + ':' + task.state + ':' + (task.label || '') + ':' + (task.error || '');
+    var key = taskIdent(task) + ':' + task.state + ':' + (task.label || '') + ':' + (task.error || '');
     banner.hidden = false;
-    if (banner.getAttribute('data-key') === key) { updateTaskElapsed(); return; }
+    if (banner.getAttribute('data-key') === key) { updateTaskTimes(); return; }
+    var hadFocus = banner.contains(document.activeElement);
     banner.setAttribute('data-key', key);
     var label = task.label || 'Working';
     var dismissBtn = el('button', {
       class: 'icon-btn', type: 'button', 'aria-label': 'Hide this message',
-      onclick: function () { dismissTask(task); renderTaskBanner(); },
+      onclick: function () { dismissTask(task); renderTaskBanner(); $('#main').focus({ preventScroll: true }); },
     }, icon('i-x', 'icon-sm'));
     if (task.state === 'running') {
       banner.className = 'banner tone-work';
-      banner.setAttribute('role', 'status');
       banner.replaceChildren(
         spinner(),
         el('div', { class: 'banner-body' },
           el('p', { class: 'banner-title' }, label + '…'),
-          el('p', { class: 'banner-text' }, el('span', { id: 'task-elapsed' }), ' · You can keep using the dashboard while this runs.'),
+          el('p', { class: 'banner-text' }, el('span', { id: 'task-elapsed', class: 'tabular' }), ' · You can keep using the dashboard while this runs.'),
           el('div', { class: 'task-track', 'aria-hidden': 'true' })));
-      updateTaskElapsed();
     } else if (task.state === 'done') {
+      var doneText = taskDoneText(task);
       banner.className = 'banner tone-ok';
-      banner.setAttribute('role', 'status');
       banner.replaceChildren(
         icon('i-check-circle'),
         el('div', { class: 'banner-body' },
           el('p', { class: 'banner-title' }, label + ': done'),
-          el('p', { class: 'banner-text' }, 'Finished ' + (relativeTime(task.finished_at) || 'just now') + '.')),
+          el('p', { class: 'banner-text' }, doneText ? doneText + ' ' : '', 'Finished ',
+            el('span', { id: 'task-finished', title: formatDateTime(task.finished_at) || null }), '.')),
         el('div', { class: 'banner-actions' }, dismissBtn));
     } else {
       banner.className = 'banner tone-bad';
-      banner.setAttribute('role', 'alert');
       banner.replaceChildren(
         icon('i-alert-circle'),
         el('div', { class: 'banner-body' },
           el('p', { class: 'banner-title' }, label + ': failed'),
           el('p', { class: 'banner-text' }, task.error || 'It stopped with an error. The console has the details.')),
         el('div', { class: 'banner-actions' },
-          el('a', { class: 'btn btn-sm', href: '#/console' }, 'Open console'),
+          el('a', { class: 'btn btn-sm', href: '#/console' }, icon('i-console', 'icon-sm'), 'Open console'),
           dismissBtn));
     }
+    updateTaskTimes();
+    if (hadFocus) $('#main').focus({ preventScroll: true });
   }
 
-  function updateTaskElapsed() {
-    var node = $('#task-elapsed');
+  // Called every second: the elapsed time of a running task, and how long ago a finished one ended.
+  function updateTaskTimes() {
     var task = state.status && state.status.task;
-    if (!node || !task || task.state !== 'running') return;
-    setText(node, 'Running for ' + formatDuration(taskElapsed(task)));
+    if (!task) return;
+    var elapsed = $('#task-elapsed');
+    if (elapsed && task.state === 'running') setText(elapsed, 'Running for ' + formatDuration(taskElapsed(task)));
+    var finished = $('#task-finished');
+    if (finished && task.state === 'done') setText(finished, relativeTime(task.finished_at) || 'just now');
   }
 
   /* ================================================================ status rendering */
@@ -1116,7 +1332,9 @@
     setText($('#phase-word'), meta.label);
     setText($('#phase-copy'), s ? meta.copy(s) : meta.copy({}));
 
-    var key = phase + '|' + Object.keys(state.pending).sort().join(',') + '|' + (s ? (s.player_count > 0 ? 'p' : '') : '');
+    var busyTask = runningTask();
+    var key = phase + '|' + Object.keys(state.pending).sort().join(',') + '|' + (s ? (s.player_count > 0 ? 'p' : '') : '') +
+      '|' + (busyTask ? busyTask.label : '');
     if (key !== heroKey) {
       heroKey = key;
       renderHeroActions(s);
@@ -1124,6 +1342,7 @@
     if (!s) return;
 
     renderAddress(s.join_address || '');
+    $('#address-callout').hidden = !!s.join_address;
 
     var factVersion = $('#fact-version');
     var setup = s.setup;
@@ -1140,63 +1359,126 @@
     var live = liveStatus();
     var timeLabel = $('#fact-time-label');
     var timeVal = $('#fact-time');
+    var timeout = s.idle.timeout_seconds;
+    var timeKey;
     if (RUNNING[s.phase] && live.uptime != null) {
+      timeKey = 'uptime';
       setText(timeLabel, 'Uptime');
-      timeVal.replaceChildren(el('span', { id: 'uptime-value' }, formatDuration(live.uptime)));
+      if (timeVal.getAttribute('data-key') !== timeKey) timeVal.replaceChildren(el('span', { id: 'uptime-value' }));
+    } else if (s.phase === 'crashed' && s.last_exit && s.last_exit.at) {
+      timeKey = 'exit:' + s.last_exit.at;
+      setText(timeLabel, 'Last exit');
+      if (timeVal.getAttribute('data-key') !== timeKey) timeVal.replaceChildren(el('span', { id: 'exit-ago', title: formatDateTime(s.last_exit.at) }));
     } else {
-      setText(timeLabel, 'Sleeps after');
-      var timeout = s.idle.timeout_seconds;
-      timeVal.replaceChildren(timeout > 0
-        ? el('span', null, formatMinutes(Math.round(timeout / 60)).replace(' minutes', ' min').replace(' minute', ' min'))
-        : el('span', null, 'Never'));
-      if (timeout > 0) timeVal.appendChild(el('span', { class: 'subtle' }, 'idle'));
+      // Not "sleeps after": while it's asleep or stopped, that read as if it were about to happen.
+      timeKey = 'sleep:' + timeout;
+      setText(timeLabel, 'Auto-sleep');
+      if (timeVal.getAttribute('data-key') !== timeKey) {
+        timeVal.replaceChildren(timeout > 0
+          ? el('span', null, 'After ' + formatMinutesShort(timeout / 60))
+          : el('span', null, 'Off'));
+        if (timeout > 0) timeVal.appendChild(el('span', { class: 'subtle' }, 'idle'));
+      }
     }
+    timeVal.setAttribute('data-key', timeKey);
+    tickHeroTimes(live);
 
-    var crash = $('#crash-box');
-    if (s.phase === 'crashed' && s.last_exit) {
-      crash.hidden = false;
-      var bits = [];
-      if (s.last_exit.reason) bits.push(s.last_exit.reason);
-      setText($('#crash-reason'), bits.join('\n') || 'Minecraft didn\'t print a reason. Check the console for the full log.');
-    } else {
-      crash.hidden = true;
-    }
-
+    renderCrashBox(s);
     renderHeroStrip(s, live);
   }
 
+  // Plain-language next steps for the crashes friends' servers actually hit.
+  var CRASH_HINTS = [
+    { re: /OutOfMemoryError|Java heap space|GC overhead limit/i,
+      text: 'Minecraft ran out of memory. Pick a lighter setup (fewer mods, smaller view distance), or give the Railway service more RAM.' },
+    { re: /UnsupportedClassVersionError|has been compiled by a more recent version of the Java Runtime/i,
+      text: 'Something on this setup needs a newer Java than the one it started with. Try another Minecraft version or loader version.' },
+    { re: /FAILED TO BIND TO PORT|Address already in use/i,
+      text: 'Another program was using the Minecraft port. Restart the service in Railway, then start the server again.' },
+    { re: /Incompatible mods? found|requires .*(?:minecraft|fabric|forge)|Missing or unsupported mandatory dependencies|ModResolutionException/i,
+      text: 'A mod doesn\'t match this Minecraft version, or needs another mod that isn\'t installed. Check the pack, or switch to a setup that works.' },
+    { re: /Failed to load level|level\.dat|Exception reading .*\.mca|corrupt/i,
+      text: 'Minecraft couldn\'t read the world. Restore a backup from Worlds & backups, or start the setup on a new world.' },
+  ];
+
+  function renderCrashBox(s) {
+    var crash = $('#crash-box');
+    if (s.phase !== 'crashed' || !s.last_exit) { crash.hidden = true; crash.removeAttribute('data-key'); return; }
+    crash.hidden = false;
+    var reason = s.last_exit.reason || '';
+    if (crash.getAttribute('data-key') === reason) return;
+    crash.setAttribute('data-key', reason);
+    setText($('#crash-reason'), reason || 'Minecraft didn\'t print a reason.');
+    var hint = CRASH_HINTS.filter(function (h) { return h.re.test(reason); })[0];
+    fill($('#crash-next'),
+      hint ? el('p', { class: 'crash-hint' }, icon('i-info', 'icon-sm'), el('span', null, hint.text)) : null,
+      el('p', { class: 'crash-links' },
+        el('a', { href: '#/console' }, 'Open the console for the full log'),
+        el('span', { class: 'sep', 'aria-hidden': 'true' }, '·'),
+        el('a', { href: '#/help/crashed' }, 'More about crashes')));
+  }
+
+  function runningTask() {
+    var t = state.status && state.status.task;
+    return t && t.state === 'running' ? t : null;
+  }
+
+  // Unavailable buttons use aria-disabled rather than disabled, so a button
+  // keeps keyboard focus while its request runs; focus is put back on the same
+  // action after every rebuild instead of falling to <body>.
   function renderHeroActions(s) {
     var host = $('#hero-actions');
     var phase = s ? s.phase : 'unknown';
+    var task = runningTask();
+    // The server refuses to start, stop or restart while any task runs.
+    var taskWait = task ? 'Available when “' + (task.label || 'the current task') + '” finishes' : '';
     var defs = [];
     if (phase === 'sleeping') {
-      defs.push({ id: 'start', label: 'Start server', busy: 'Starting…', icon: 'i-power', style: 'primary' });
+      defs.push({ id: 'start', label: 'Start server', busy: 'Starting…', icon: 'i-power', style: 'primary', wait: taskWait });
     } else if (phase === 'crashed') {
       defs.push({ id: 'log', label: 'View log', icon: 'i-console', style: 'ghost', href: '#/console' });
-      defs.push({ id: 'start', label: 'Start again', busy: 'Starting…', icon: 'i-power', style: 'primary' });
+      defs.push({ id: 'start', label: 'Start again', busy: 'Starting…', icon: 'i-power', style: 'primary', wait: taskWait });
     } else if (phase === 'preparing') {
-      defs.push({ id: 'start', label: 'Start server', icon: 'i-power', style: 'primary', disabled: true, title: 'Available when the current task finishes' });
+      defs.push({ id: 'start', label: 'Start server', icon: 'i-power', style: 'primary', wait: taskWait || 'Available when the current task finishes' });
     } else if (phase === 'starting') {
-      defs.push({ id: 'stop', label: 'Stop', busy: 'Stopping…', icon: 'i-stop', style: 'secondary' });
+      defs.push({ id: 'stop', label: 'Stop', busy: 'Stopping…', icon: 'i-stop', style: 'secondary', wait: taskWait });
     } else if (phase === 'online') {
       defs.push({ id: 'save', label: 'Save world', busy: 'Saving…', icon: 'i-save', style: 'ghost' });
-      defs.push({ id: 'restart', label: 'Restart', busy: 'Restarting…', icon: 'i-restart', style: 'secondary' });
-      defs.push({ id: 'stop', label: 'Stop', busy: 'Stopping…', icon: 'i-stop', style: 'outline-danger' });
+      defs.push({ id: 'restart', label: 'Restart', busy: 'Restarting…', icon: 'i-restart', style: 'secondary', wait: taskWait });
+      defs.push({ id: 'stop', label: 'Stop', busy: 'Stopping…', icon: 'i-stop', style: 'outline-danger', wait: taskWait });
     } else if (phase === 'stopping') {
-      defs.push({ id: 'stop', label: 'Stopping…', icon: 'i-stop', style: 'secondary', disabled: true, spin: true });
+      defs.push({ id: 'stop', label: 'Stopping…', icon: 'i-stop', style: 'secondary', wait: 'The server is shutting down', spin: true });
     }
-    host.replaceChildren.apply(host, defs.map(function (d) {
-      if (d.href) return el('a', { class: btnClass(d.style), href: d.href }, icon(d.icon), el('span', null, d.label));
+    var active = document.activeElement;
+    var focusedAction = host.contains(active) ? active.getAttribute('data-action') : null;
+    var anyPending = Object.keys(state.pending).length > 0;
+    var nodes = defs.map(function (d) {
+      if (d.href) return el('a', { class: btnClass(d.style), href: d.href, 'data-action': d.id }, icon(d.icon), el('span', null, d.label));
       var pending = !!state.pending[d.id];
+      var off = !!d.wait || anyPending;
       var b = el('button', {
         type: 'button', class: btnClass(d.style) + (d.style === 'primary' ? ' btn-lg' : ''),
-        disabled: d.disabled || pending || Object.keys(state.pending).length > 0 ? true : null,
+        'data-action': d.id,
+        'aria-disabled': off ? 'true' : null,
         'aria-busy': pending || d.spin ? 'true' : null,
-        title: d.title || null,
+        title: d.wait || null,
       }, pending || d.spin ? spinner() : icon(d.icon), el('span', null, pending ? d.busy : d.label));
-      b.addEventListener('click', function () { serverAction(d.id); });
+      b.addEventListener('click', function () {
+        if (b.getAttribute('aria-disabled') === 'true') return;
+        serverAction(d.id);
+      });
       return b;
-    }));
+    });
+    host.replaceChildren.apply(host, nodes);
+    if (focusedAction) {
+      var target = host.querySelector('[data-action="' + focusedAction + '"]') ||
+        host.querySelector('button:not([aria-disabled="true"]), a');
+      if (!target) {
+        target = $('#phase-word');
+        target.setAttribute('tabindex', '-1');
+      }
+      target.focus({ preventScroll: true });
+    }
   }
 
   function serverAction(id) {
@@ -1222,13 +1504,19 @@
       if (!ok) return;
       state.pending[id] = true;
       heroKey = '';
+      if (id === 'restart' && state.settings) {
+        // The restart applies saved settings, so the "restart to apply" banner can go now.
+        state.settings.restart_required = false;
+        renderRestartBanner();
+      }
       renderHero();
       var path = { start: '/api/server/start', stop: '/api/server/stop', restart: '/api/server/restart', save: '/api/server/save' }[id];
       api('POST', path).then(function () {
-        if (id === 'save') toast({ tone: 'ok', title: 'World saved', text: 'Minecraft wrote everything to disk.' });
-        if (id === 'restart') toast({ tone: 'info', title: 'Restarting', text: 'The server will be back in a minute or two.' });
+        // The save is only requested here; Minecraft writes in the background and logs "Saved the game".
+        if (id === 'save') toast({ tone: 'ok', title: 'Save requested', text: 'Minecraft is writing the world to disk. The console shows when it\'s done.' });
       }, function (err) {
         if (err.code === 'already_running') { toast({ tone: 'info', title: 'Already running', text: err.message }); return; }
+        if (id === 'restart' && state.settings) loadSettings(); // the banner was hidden optimistically
         var titles = { start: 'Couldn\'t start the server', stop: 'Couldn\'t stop the server', restart: 'Couldn\'t restart the server', save: 'Couldn\'t save the world' };
         toastError(titles[id], err);
       }).finally(function () {
@@ -1245,8 +1533,8 @@
     dd.setAttribute('data-address', address);
     if (!address) {
       dd.replaceChildren(el('span', { class: 'address-empty' },
-        'No public address yet. ',
-        el('a', { href: '#/help/address' }, 'How to add one')));
+        icon('i-alert', 'icon-sm'),
+        el('span', null, 'No public address yet. ', el('a', { href: '#/help/address' }, 'How to add one'))));
       return;
     }
     var copyBtn = el('button', { class: 'btn btn-sm address-copy', type: 'button', 'aria-label': 'Copy join address' },
@@ -1329,15 +1617,19 @@
     } else if (s.phase === 'preparing') {
       items.push(el('span', { class: 'strip-item' }, icon('i-info', 'icon-sm'), 'Anyone who tries to join now is asked to try again in a minute.'));
     } else if (s.phase === 'crashed' && s.last_exit) {
-      var bits = [];
-      if (s.last_exit.code != null) bits.push('Exit code ' + s.last_exit.code);
-      if (s.last_exit.at) bits.push(relativeTime(s.last_exit.at));
-      if (bits.length) items.push(el('span', { class: 'strip-item' }, icon('i-clock', 'icon-sm'), bits.join(' · ')));
+      // When it happened is in the facts above; the exit code helps when asking for help.
+      if (s.last_exit.code != null) items.push(el('span', { class: 'strip-item' }, icon('i-info', 'icon-sm'), 'Exit code ' + s.last_exit.code));
+    }
+    var task = runningTask();
+    if (task && s.phase !== 'preparing' && s.phase !== 'stopping') {
+      items.unshift(el('span', { class: 'strip-item strip-wait' }, icon('i-hourglass', 'icon-sm'),
+        (s.phase === 'online' || s.phase === 'starting' ? 'Stop and restart' : 'Starting') + ' wait for “' + (task.label || 'the current task') + '” to finish.'));
     }
     if (s.java) {
       items.push(el('span', { class: 'strip-item strip-end' }, icon('i-coffee', 'icon-sm'), 'Java ' + s.java));
     }
-    var key = s.phase + '|' + timeout + '|' + (live.untilSleep != null) + '|' + s.java + '|' + (s.last_exit ? s.last_exit.at : '');
+    var key = s.phase + '|' + timeout + '|' + (live.untilSleep != null) + '|' + s.java + '|' + (s.last_exit ? s.last_exit.at : '') +
+      '|' + (task ? task.label : '');
     if (strip.getAttribute('data-key') === key && items.length) { tickHero(); return; }
     strip.setAttribute('data-key', key);
     strip.hidden = items.length === 0;
@@ -1363,9 +1655,16 @@
       var timeout = s.idle.timeout_seconds || 1;
       if (meter) meter.style.width = Math.max(0, Math.min(100, (live.untilSleep / timeout) * 100)) + '%';
     }
+    tickHeroTimes(live);
+    updateTaskTimes();
+  }
+
+  function tickHeroTimes(live) {
     var up = $('#uptime-value');
     if (up && live.uptime != null) setText(up, formatDuration(live.uptime));
-    updateTaskElapsed();
+    var ago = $('#exit-ago');
+    var exit = state.status && state.status.last_exit;
+    if (ago && exit && exit.at) setText(ago, capitalize(relativeTime(exit.at) || 'just now'));
   }
 
   /* ---------------------------------------------------------------- overview cards */
@@ -1376,13 +1675,12 @@
     var names = RUNNING[s.phase] ? s.players : [];
     setText($('#online-count'), names.length ? '(' + names.length + ')' : '');
     var list = $('#online-list');
-    var key = s.phase + '|' + names.join(',');
+    var key = s.phase + '|' + names.join(',') + '|' + (s.join_address ? 'a' : '');
     if (list.getAttribute('data-key') !== key) {
       list.setAttribute('data-key', key);
       if (!names.length) {
-        var msg = s.phase === 'online' ? 'Nobody is online right now.' : (s.phase === 'starting' ? 'The server is still starting.' : 'The server is asleep.');
-        var sub = s.phase === 'online' ? 'Share the join address and your friends will show up here.' : 'Players appear here while they\'re connected.';
-        list.replaceChildren(emptyStateCompact('i-players', msg, sub));
+        var copy = onlineEmptyCopy(s);
+        list.replaceChildren(emptyStateCompact('i-players', copy[0], copy[1]));
       } else {
         fill(list, peopleList(names.slice(0, 12), null),
           names.length > 12 ? el('p', { class: 'subtle more-note' }, 'and ' + (names.length - 12) + ' more') : null);
@@ -1391,7 +1689,7 @@
 
     var setup = s.setup;
     var cur = $('#current-setup');
-    var skey = JSON.stringify([setup, s.java, s.online_mode, s.whitelist_enabled]);
+    var skey = JSON.stringify([setup, s.java, s.online_mode, s.whitelist_enabled, !!s.join_address]);
     if (cur.getAttribute('data-key') !== skey) {
       cur.setAttribute('data-key', skey);
       if (!setup) {
@@ -1407,15 +1705,24 @@
             fact('Minecraft', versionLabel(setup) || '—'),
             fact('World', setup.level_name || '—'),
             setup.type === 'modpack' ? fact('Pack', setup.instance || '—') : fact('Java', s.java ? 'Java ' + s.java : '—'),
-            fact('Joining', s.whitelist_enabled ? 'Whitelist only' : 'Anyone with the address')));
+            fact('Joining', !s.join_address ? 'Nobody yet: no public address' : (s.whitelist_enabled ? 'Whitelist only' : 'Anyone with the address'))));
       }
     }
 
     var fr = $('#firstrun');
     fr.hidden = store.get(KEYS.firstRun) === '1';
+    var exact = exactVersion(setup);
     $$('[data-bind="version"]', fr).forEach(function (n) {
-      setText(n, setup ? 'Java Edition ' + (setup.resolved_version || setup.minecraft_version) : 'Java Edition');
+      setText(n, !setup ? 'Java Edition' : (exact ? 'Java Edition ' + exact : 'Java Edition, ' + UNKNOWN_LATEST));
     });
+    var hasAddress = !!s.join_address;
+    if (fr.getAttribute('data-address') !== String(hasAddress)) {
+      fr.setAttribute('data-address', String(hasAddress));
+      setText($('#firstrun-share-title'), hasAddress ? 'Share the join address' : 'Add a public address first');
+      fill($('#firstrun-share-lead'), hasAddress
+        ? 'Friends add it in Minecraft under Multiplayer, Add Server.'
+        : ['Friends can\'t reach the server until it has one. ', el('a', { href: '#/help/address' }, 'Here\'s how'), '.']);
+    }
     var privateKey = s.whitelist_enabled ? 'on' : 'off';
     var privateTip = $('#firstrun-private');
     if (privateTip.getAttribute('data-key') !== privateKey) {
@@ -1424,6 +1731,21 @@
       fill(privateTip, s.whitelist_enabled
         ? ['Only players on the whitelist can join. Add your friends in ', el('a', { href: '#/players' }, 'Players'), '.']
         : ['Turn on the whitelist in ', el('a', { href: '#/players' }, 'Players'), ' so only your friends can get in.']);
+    }
+  }
+
+  // [title, line] for an empty "Online now" list, matching what the server is doing.
+  function onlineEmptyCopy(s) {
+    switch (s && s.phase) {
+      case 'online': return ['Nobody is online right now.', s.join_address
+        ? 'Share the join address and your friends will show up here.'
+        : 'Once you add a public address, friends can join and show up here.'];
+      case 'starting': return ['The server is still starting.', 'Players show up here once it\'s online.'];
+      case 'sleeping': return ['The server is asleep.', 'It wakes up when someone joins.'];
+      case 'crashed': return ['The server isn\'t running.', 'It crashed. See “What happened” above.'];
+      case 'preparing': return ['Installing files.', 'Nobody can join until this finishes.'];
+      case 'stopping': return ['The server is stopping.', 'It\'s saving the world and shutting down.'];
+      default: return ['Checking on the server…', 'Players show up here while they\'re connected.'];
     }
   }
 
@@ -1440,21 +1762,36 @@
   function peopleList(names, kind) {
     var online = {};
     ((state.status && RUNNING[state.status.phase] && state.status.players) || []).forEach(function (n) { online[String(n).toLowerCase()] = true; });
-    return el('ul', { class: 'people', role: 'list' }, names.map(function (entry) {
+    var items = names.map(function (entry) {
       var name = typeof entry === 'string' ? entry : entry.name;
       var isOnline = online[String(name).toLowerCase()];
       return el('li', { class: 'person' },
         avatar(name),
         el('div', { class: 'min-w-0' },
-          el('p', { class: 'person-name' }, name),
+          el('p', { class: 'person-name', title: name }, name),
           kind ? el('p', { class: 'person-sub' }, isOnline ? 'Online now' : (kind === 'ops' ? 'Operator' : 'Can join')) : el('p', { class: 'person-sub' }, 'Playing')),
         kind ? el('button', {
           class: 'btn btn-ghost-danger btn-icon btn-sm', type: 'button',
           'aria-label': kind === 'ops' ? 'Remove ' + name + ' as operator' : 'Remove ' + name + ' from the whitelist',
-          title: 'Remove',
+          title: 'Remove', 'data-remove': kind + ':' + String(name).toLowerCase(),
           onclick: function (e) { removePlayer(kind, name, e.currentTarget); },
         }, icon('i-x', 'icon-sm')) : null);
-    }));
+    });
+    var removed = kind && state.removedPlayers[kind];
+    if (removed && !names.some(function (e) { return String(typeof e === 'string' ? e : e.name).toLowerCase() === removed.name.toLowerCase(); })) {
+      // Undo lives in the list, where the player was, so it is easy to reach from the keyboard.
+      items.push(el('li', { class: 'person is-removed' },
+        avatar(removed.name),
+        el('div', { class: 'min-w-0' },
+          el('p', { class: 'person-name', title: removed.name }, removed.name),
+          el('p', { class: 'person-sub' }, 'Removed')),
+        el('button', {
+          class: 'btn btn-sm', type: 'button', 'data-undo': kind,
+          'aria-label': 'Undo removing ' + removed.name,
+          onclick: function (e) { undoRemovePlayer(kind, e.currentTarget); },
+        }, icon('i-rotate', 'icon-sm'), el('span', null, 'Undo'))));
+    }
+    return el('ul', { class: 'people', role: 'list' }, items);
   }
 
   /* ================================================================ logs */
@@ -1482,6 +1819,9 @@
         // The buffer restarted (the dashboard process restarted): start over.
         logState.lines = []; logState.lastSeq = 0; logState.loaded = false; logState.rendered = false;
         $('#log').replaceChildren();
+        // Someone watching the Console keeps getting lines: show the loading state and append again.
+        if (state.route.view === 'console') renderFullLog();
+        renderMiniLog();
         inflight.logs = false;
         pollLogs();
         return;
@@ -1539,12 +1879,14 @@
     if (overflow > 0) logState.lines.splice(0, overflow);
     if (logState.rendered) {
       var box = $('#log');
-      var empty = box.querySelector('.log-empty');
+      var empty = box.querySelector('.log-empty:not(.log-nomatch)');
       if (empty) empty.remove();
       var frag = document.createDocumentFragment();
       fresh.forEach(function (l) { frag.appendChild(logLineNode(l)); });
-      box.appendChild(frag);
-      while (box.childElementCount > MAX_LOG_LINES) box.removeChild(box.firstElementChild);
+      var noMatch = box.querySelector('.log-nomatch');
+      if (noMatch) box.insertBefore(frag, noMatch); else box.appendChild(frag);
+      var extra = box.querySelectorAll('.log-line').length - MAX_LOG_LINES;
+      for (; extra > 0; extra--) box.removeChild(box.querySelector('.log-line'));
       if (logState.follow) scrollLogToBottom();
       else { logState.unseen += fresh.length; updateJump(); }
       updateLogStats();
@@ -1592,11 +1934,34 @@
   function updateLogStats() {
     var total = logState.lines.length;
     var text = plural(total, 'line', 'lines');
+    var shown = -1;
     if (logState.filter) {
-      var shown = logState.lines.filter(matchesFilter).length;
+      shown = logState.lines.filter(matchesFilter).length;
       text = shown + ' of ' + text;
     }
     setText($('#log-stats'), text);
+    renderNoMatch(shown === 0 && total > 0);
+  }
+
+  // A filter that hides every line gets an explanation, not a blank black box.
+  function renderNoMatch(show) {
+    var box = $('#log');
+    var node = box.querySelector('.log-nomatch');
+    if (!show) { if (node) node.remove(); return; }
+    var raw = $('#log-filter').value.trim();
+    if (node && node.getAttribute('data-filter') === raw) return;
+    if (node) node.remove();
+    box.appendChild(el('div', { class: 'log-empty log-nomatch', 'data-filter': raw },
+      el('p', null, 'No lines match “' + raw + '”.'),
+      el('button', {
+        class: 'btn btn-sm', type: 'button',
+        onclick: function () {
+          var input = $('#log-filter');
+          input.value = '';
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.focus();
+        },
+      }, icon('i-x', 'icon-sm'), 'Clear filter')));
   }
 
   function scrollLogToBottom() {
@@ -1722,13 +2087,19 @@
   function loadVersions() {
     if (state.versions) return Promise.resolve(state.versions);
     if (state.versionsPromise) return state.versionsPromise;
+    var sel = $('#setup-version');
+    // The first call can take a few seconds while the server asks Mojang, Fabric and Forge.
+    sel.replaceChildren(el('option', { value: '', disabled: true, selected: true }, 'Loading versions…'));
+    sel.setAttribute('aria-busy', 'true');
     state.versionsPromise = api('GET', '/api/versions').then(function (data) {
       state.versions = data || {};
+      sel.removeAttribute('aria-busy');
       populateVersionSelect(false);
+      renderUploadLimit();
       return state.versions;
     }, function (err) {
       state.versionsPromise = null;
-      var sel = $('#setup-version');
+      sel.removeAttribute('aria-busy');
       sel.replaceChildren(el('option', { value: '' }, 'Couldn\'t load versions'));
       setText($('#version-help'), err.message + ' Reload the page to try again.');
       throw err;
@@ -1813,25 +2184,59 @@
     return api('GET', '/api/setups').then(function (data) {
       state.setups = Array.isArray(data.setups) ? data.setups : [];
       renderSetups();
+      if (state.setupForm) onSetupFormChange();
     }, function (err) {
       if (!state.setups) host.replaceChildren(errorState('Couldn\'t load your setups', err, function () { loadSetups(); }));
       else if (!quiet) toastError('Couldn\'t refresh setups', err);
     });
   }
 
-  function renderSetups() { keepFocus(['#setups-list'], renderSetupsNow); }
+  function renderSetups() {
+    // A background refresh rebuilds the rows. If the rename box has focus,
+    // carry its caret and selection over to the new box.
+    var ed = state.editingSetup;
+    var input = $('#setups-list .inline-edit input');
+    if (ed && input && document.activeElement === input) {
+      ed.sel = [input.selectionStart, input.selectionEnd, input.selectionDirection];
+    }
+    keepFocus(['#setups-list'], renderSetupsNow);
+  }
 
   function renderSetupsNow() {
     var host = $('#setups-list');
     var setups = state.setups || [];
     setText($('#setups-count'), setups.length ? '(' + setups.length + ')' : '');
+    if (state.editingSetup && !setups.some(function (s) { return s.id === state.editingSetup.id; })) state.editingSetup = null;
     if (!setups.length) {
       host.replaceChildren(emptyState('i-setups', 'No setups yet', 'Create your first one below. It takes a minute or two to download Minecraft.'));
       return;
     }
     var sorted = setups.slice().sort(function (a, b) { return (b.active ? 1 : 0) - (a.active ? 1 : 0); });
-    var busy = !!(state.status && state.status.task && state.status.task.state === 'running');
+    var busy = !!runningTask();
     host.replaceChildren(el('ul', { class: 'list', role: 'list' }, sorted.map(function (s) { return setupRow(s, busy); })));
+
+    var ed = state.editingSetup;
+    var input = ed && host.querySelector('.inline-edit input');
+    if (input && (ed.focusOnRender || ed.sel)) {
+      input.focus({ preventScroll: true });
+      if (ed.focusOnRender) input.select(); // only when editing starts
+      else input.setSelectionRange(ed.sel[0], ed.sel[1], ed.sel[2] || 'none');
+    }
+    if (ed) { ed.focusOnRender = false; ed.sel = null; }
+    if (state.focusRenameOf) {
+      // Back from editing (saved or cancelled): return to that row's Rename button.
+      var rename = host.querySelector('[data-rename="' + cssEscape(state.focusRenameOf) + '"]');
+      state.focusRenameOf = null;
+      if (rename) rename.focus({ preventScroll: true });
+    }
+  }
+
+  function cssEscape(v) { return window.CSS && CSS.escape ? CSS.escape(v) : String(v).replace(/["\\]/g, '\\$&'); }
+
+  function stopEditingSetup(id) {
+    state.editingSetup = null;
+    state.focusRenameOf = id;
+    renderSetups();
   }
 
   function setupRow(setup, busy) {
@@ -1842,35 +2247,34 @@
       input.addEventListener('input', function () { state.editingSetup.draft = input.value; });
       input.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') { e.preventDefault(); saveRename(setup, input.value, saveBtn); }
-        if (e.key === 'Escape') { e.preventDefault(); state.editingSetup = null; renderSetups(); }
+        if (e.key === 'Escape') { e.preventDefault(); stopEditingSetup(setup.id); }
       });
       var saveBtn = el('button', { class: 'btn btn-primary btn-sm', type: 'button', onclick: function () { saveRename(setup, input.value, saveBtn); } }, 'Save');
       title = el('div', { class: 'inline-edit' }, input, saveBtn,
-        el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: function () { state.editingSetup = null; renderSetups(); } }, 'Cancel'));
-      window.requestAnimationFrame(function () { if (input.isConnected && document.activeElement !== input) { input.focus(); input.select(); } });
+        el('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: function () { stopEditingSetup(setup.id); } }, 'Cancel'));
     } else {
       title = el('p', { class: 'row-title' }, setup.name || setupSummary(setup),
         setup.active ? el('span', { class: 'badge badge-accent' }, icon('i-check'), 'Active') : null);
     }
     var actions = [];
     if (!editing) {
-      if (!setup.active) {
-        actions.push(el('button', {
-          class: 'btn btn-sm', type: 'button', disabled: busy || null,
-          title: busy ? 'Wait for the current task to finish' : null,
-          onclick: function (e) { activateSetup(setup, e.currentTarget); },
-        }, icon('i-arrow-right', 'icon-sm'), el('span', null, 'Switch to this')));
-      }
+      // Every row has the same three slots, so the buttons line up down the
+      // list; the active setup gets invisible stand-ins for the two it can't use.
+      var switchBtn = el('button', {
+        class: 'btn btn-sm', type: 'button', disabled: busy || null,
+        title: busy ? 'Wait for the current task to finish' : null,
+        onclick: function (e) { activateSetup(setup, e.currentTarget); },
+      }, icon('i-arrow-right', 'icon-sm'), el('span', null, 'Switch to this'));
+      var deleteBtn = el('button', {
+        class: 'btn btn-ghost-danger btn-sm', type: 'button', 'aria-label': 'Delete ' + (setup.name || 'setup'),
+        onclick: function (e) { deleteSetup(setup, e.currentTarget); },
+      }, icon('i-trash', 'icon-sm'), el('span', null, 'Delete'));
+      actions.push(setup.active ? slotPlaceholder(switchBtn) : switchBtn);
       actions.push(el('button', {
-        class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Rename ' + (setup.name || 'setup'),
-        onclick: function () { state.editingSetup = { id: setup.id, draft: setup.name || '' }; renderSetups(); },
+        class: 'btn btn-ghost btn-sm', type: 'button', 'aria-label': 'Rename ' + (setup.name || 'setup'), 'data-rename': setup.id,
+        onclick: function () { state.editingSetup = { id: setup.id, draft: setup.name || '', focusOnRender: true }; renderSetups(); },
       }, icon('i-edit', 'icon-sm'), el('span', null, 'Rename')));
-      if (!setup.active) {
-        actions.push(el('button', {
-          class: 'btn btn-ghost-danger btn-sm btn-icon', type: 'button', 'aria-label': 'Delete ' + (setup.name || 'setup'), title: 'Delete',
-          onclick: function (e) { deleteSetup(setup, e.currentTarget); },
-        }, icon('i-trash', 'icon-sm')));
-      }
+      actions.push(setup.active ? slotPlaceholder(deleteBtn) : deleteBtn);
     }
     return el('li', { class: 'row' + (setup.active ? ' is-active' : '') },
       el('span', { class: 'glyph t-' + setup.type }, icon(TYPE_ICON[setup.type] || 'i-cube')),
@@ -1879,78 +2283,143 @@
       el('div', { class: 'row-actions' }, actions));
   }
 
+  // An invisible copy of a button that holds its place in a row of actions.
+  function slotPlaceholder(button) {
+    var copy = button.cloneNode(true);
+    copy.className += ' slot-placeholder';
+    copy.disabled = true;
+    copy.removeAttribute('aria-label');
+    copy.removeAttribute('title');
+    copy.setAttribute('aria-hidden', 'true');
+    copy.setAttribute('tabindex', '-1');
+    return copy;
+  }
+
   function setupMetaParts(setup) {
     var parts = [];
     parts.push(el('span', null, setup.type === 'modpack' ? 'Modpack' + (setup.instance ? ' “' + setup.instance + '”' : '') : (TYPE_LABEL[setup.type] || setup.type)));
     var v = versionLabel(setup);
     if (v) parts.push(el('span', null, 'Minecraft ' + v));
-    if (setup.level_name) parts.push(el('span', null, icon('i-world', 'icon-sm'), setup.level_name));
-    return parts;
+    if (setup.level_name) parts.push(el('span', { title: 'World' }, icon('i-world', 'icon-sm'), setup.level_name));
+    return metaParts(parts);
   }
 
   function saveRename(setup, value, button) {
     var name = String(value || '').trim();
     if (!name) { toast({ tone: 'bad', title: 'Give the setup a name', text: 'The name can\'t be empty.' }); return; }
-    if (name === setup.name) { state.editingSetup = null; renderSetups(); return; }
+    if (name === setup.name) { stopEditingSetup(setup.id); return; }
     runBusy(button, 'Saving', function () {
       return api('PATCH', '/api/setups/' + encodeURIComponent(setup.id), { name: name }).then(function () {
         state.editingSetup = null;
+        state.focusRenameOf = setup.id;
         toast({ tone: 'ok', title: 'Setup renamed', text: '“' + name + '”' });
         return loadSetups(true).then(function () { pollStatus(); });
       }, function (err) { toastError('Couldn\'t rename the setup', err); });
     });
   }
 
-  function activateSetup(setup, button, allowDowngrade) {
+  function setupTargetVersion(setup) {
+    if (setup.minecraft_version !== 'latest') return setup.minecraft_version;
+    return setup.resolved_version || (state.versions && state.versions.latest) || '';
+  }
+
+  // One decision per switch. A version older than the world's last run is
+  // caught here, before asking, so the first dialog already offers the safe
+  // choices; the server still checks and answers world_downgrade if it knows better.
+  function activateSetup(setup, button, opts) {
+    opts = opts || {};
     var s = state.status || {};
     var n = RUNNING[s.phase] ? s.player_count || 0 : 0;
-    var confirm = allowDowngrade ? Promise.resolve(true) : confirmDialog({
-      icon: 'i-setups',
-      title: 'Switch to “' + (setup.name || setupSummary(setup)) + '”?',
-      body: [
-        el('p', null, setupSummary(setup) + '.'),
-        el('p', null, RUNNING[s.phase]
-          ? 'The server saves the world, stops, and starts again on this setup. It may need to download files first, which can take a few minutes.'
-          : s.phase === 'sleeping'
-            ? 'The server stays asleep and uses this setup the next time it wakes up. Any files it needs are downloaded now.'
-            : 'The server isn\'t running. It uses this setup the next time it starts, and any files it needs are downloaded now.'),
-        n > 0 ? el('div', { class: 'callout tone-warn' }, icon('i-alert'), el('p', null, el('strong', null, plural(n, 'player is', 'players are') + ' online'), ' and will be disconnected.')) : null,
-      ],
-      confirmLabel: 'Switch setup',
-      confirmIcon: 'i-arrow-right',
-    });
-    confirm.then(function (ok) {
-      if (!ok) return;
-      runBusy(button, 'Switching…', function () {
-        var body = allowDowngrade ? { allow_downgrade: true } : {};
-        return api('POST', '/api/setups/' + encodeURIComponent(setup.id) + '/activate', body).then(function (data) {
-          acceptTask(data);
-        }, function (err) {
-          if (err.code === 'world_downgrade') {
-            return downgradeDialog(err, setup.level_name).then(function (choice) {
-              if (choice === 'continue') activateSetup(setup, null, true);
-              else if (choice === 'new') moveSetupToNewWorld(setup);
-            });
-          }
+    var crowd = n > 0 ? el('div', { class: 'callout tone-warn' }, icon('i-alert'), el('p', null, el('strong', null, plural(n, 'player is', 'players are') + ' online'), ' and will be disconnected.')) : null;
+    var decide;
+    if (opts.confirmed) {
+      decide = Promise.resolve(opts.allowDowngrade ? 'continue' : 'switch');
+    } else {
+      var world = (state.worlds || []).filter(function (w) { return w.name === setup.level_name; })[0];
+      var target = setupTargetVersion(setup);
+      if (world && world.last_version && isConcreteVersion(target) && compareVersions(target, world.last_version) < 0) {
+        decide = downgradeDialog({
+          message: '“' + setup.level_name + '” was last played on Minecraft ' + world.last_version + '. “' +
+            (setup.name || setupSummary(setup)) + '” runs ' + target + ', and opening the world with an older version can damage it.',
+          data: { world: setup.level_name },
+        }, setup.level_name, crowd);
+      } else {
+        decide = confirmDialog({
+          icon: 'i-setups',
+          title: 'Switch to “' + (setup.name || setupSummary(setup)) + '”?',
+          body: [
+            el('p', null, setupSummary(setup) + '.'),
+            el('p', null, RUNNING[s.phase]
+              ? 'The server saves the world, stops, and starts again on this setup. It may need to download files first, which can take a few minutes.'
+              : s.phase === 'sleeping'
+                ? 'The server stays asleep and uses this setup the next time it wakes up. Any files it needs are downloaded now.'
+                : 'The server isn\'t running. It uses this setup the next time it starts, and any files it needs are downloaded now.'),
+            crowd,
+          ],
+          confirmLabel: 'Switch setup',
+          confirmIcon: 'i-arrow-right',
+        }).then(function (ok) { return ok ? 'switch' : null; });
+      }
+    }
+    return decide.then(function (choice) {
+      if (choice === 'new') { moveSetupToNewWorld(setup, button); return; }
+      if (choice !== 'switch' && choice !== 'continue') return;
+      var allow = choice === 'continue';
+      // The busy state ends before any follow-up question, so the follow-up
+      // can show its own progress on the same button.
+      return runBusy(button, 'Switching…', function () {
+        return requestActivate(setup, allow).then(function () { return null; }, function (err) {
+          if (err.code === 'world_downgrade') return err;
           toastError('Couldn\'t switch setups', err);
+          return null;
+        });
+      }).then(function (downgrade) {
+        if (!downgrade) return;
+        return downgradeDialog(downgrade, setup.level_name).then(function (again) {
+          if (again === 'continue') return activateSetup(setup, button, { confirmed: true, allowDowngrade: true });
+          if (again === 'new') return moveSetupToNewWorld(setup, button);
         });
       });
     });
   }
 
-  // "Use a new world" for an existing setup: create an empty world, point the
-  // setup at it, then switch.
-  function moveSetupToNewWorld(setup) {
+  function requestActivate(setup, allowDowngrade) {
+    var body = allowDowngrade ? { allow_downgrade: true } : {};
+    return api('POST', '/api/setups/' + encodeURIComponent(setup.id) + '/activate', body).then(function (data) {
+      if (data && data.already_active) { toast({ tone: 'info', title: 'Already active', text: '“' + (setup.name || 'That setup') + '” is the active setup.' }); loadSetups(true); return; }
+      acceptTask(data);
+    });
+  }
+
+  // "Use a new world" for an existing setup: the user already chose to switch,
+  // so create an empty world, point the setup at it and switch, with no second
+  // question. If the switch can't start, put the setup back as it was.
+  function moveSetupToNewWorld(setup, button) {
     var name = uniqueWorldName((setup.level_name || 'world') + '-new');
-    api('POST', '/api/worlds', { name: name }).then(function () {
-      return api('PATCH', '/api/setups/' + encodeURIComponent(setup.id), { level_name: name });
-    }).then(function () {
-      toast({ tone: 'ok', title: 'New world created', text: '“' + (setup.name || 'The setup') + '” now uses the world “' + name + '”.' });
-      return loadSetups(true).then(function () {
-        var fresh = (state.setups || []).filter(function (x) { return x.id === setup.id; })[0] || setup;
-        activateSetup(fresh, null, false);
+    var previous = setup.level_name;
+    var created = false, patched = false;
+    return runBusy(button, 'Switching…', function () {
+      return api('POST', '/api/worlds', { name: name }).then(function () {
+        created = true;
+        return api('PATCH', '/api/setups/' + encodeURIComponent(setup.id), { level_name: name });
+      }).then(function () {
+        patched = true;
+        return requestActivate(setup, false);
+      }).then(function () {
+        toast({ tone: 'ok', title: 'Switching on a new world', text: '“' + (setup.name || 'The setup') + '” now uses the empty world “' + name + '”. “' + previous + '” is untouched.' });
+        loadSetups(true);
+        loadWorlds(true);
+      }).catch(function (err) {
+        var undo = Promise.resolve();
+        if (patched) undo = undo.then(function () { return api('PATCH', '/api/setups/' + encodeURIComponent(setup.id), { level_name: previous }); });
+        if (created) undo = undo.then(function () { return api('DELETE', '/api/worlds/' + encodeURIComponent(name)); });
+        return undo.catch(function () { /* best effort; the lists below show what's there */ }).then(function () {
+          toastError('Couldn\'t switch to a new world', err);
+          loadSetups(true);
+          loadWorlds(true);
+        });
       });
-    }).catch(function (err) { toastError('Couldn\'t set up a new world', err); });
+    });
   }
 
   function deleteSetup(setup, button) {
@@ -1976,8 +2445,9 @@
   function acceptTask(data) {
     var task = data && data.task;
     if (task && task.id) {
-      state.watchedTasks[task.id] = true;
-      state.taskFirstSeen[task.id] = Date.now();
+      var ident = taskIdent(task);
+      state.watchedTasks[ident] = true;
+      if (!state.taskFirstSeen[ident]) state.taskFirstSeen[ident] = Date.now();
       if (state.status) {
         state.status.task = task;
         renderTaskBanner();
@@ -1987,7 +2457,8 @@
     return task;
   }
 
-  function downgradeDialog(err, worldName) {
+  // extra: optional node shown under the explanation (e.g. who gets disconnected).
+  function downgradeDialog(err, worldName, extra) {
     var d = err.data || {};
     var named = d.world || d.level_name || worldName;
     var world = named ? '“' + named + '”' : 'the old world';
@@ -2001,6 +2472,7 @@
         el('ul', null,
           el('li', null, el('strong', null, 'Use a new world'), ': start fresh, and ' + world + ' stays exactly as it is.'),
           el('li', null, el('strong', null, 'Back up and continue anyway'), ': Railpowered backs the world up first, then opens it with the older version.')),
+        extra || null,
       ],
       actions: [
         { label: 'Cancel', value: null, style: 'ghost' },
@@ -2059,9 +2531,10 @@
         try {
           var u = new URL($('#pack-url').value.trim());
           var last = decodeURIComponent(u.pathname.split('/').filter(Boolean).pop() || '');
-          guess = slugName(last);
+          guess = guessPackName(last);
         } catch (_) { guess = ''; }
         $('#pack-name').value = guess;
+        validatePackName(true);
       }
       onSetupFormChange();
     });
@@ -2087,6 +2560,7 @@
       if (f) setPackFile(f);
     });
     $('#file-clear').addEventListener('click', function () { setPackFile(null); fileInput.focus(); });
+    $('#upload-cancel').addEventListener('click', function () { if (state.uploading) state.uploading.abort(); });
 
     $$('input[name="world-mode"]', root).forEach(function (r) {
       r.addEventListener('change', function () {
@@ -2113,9 +2587,18 @@
 
   function setPackFile(file) {
     var form = state.setupForm;
+    var limit = uploadLimit();
     showFieldError($('#pack-file'), $('#pack-file-error'), '');
     if (file && !/\.(mrpack|zip)$/i.test(file.name)) {
       showFieldError($('#pack-file'), $('#pack-file-error'), 'Choose a .mrpack or .zip file.');
+      file = null;
+    } else if (file && limit && file.size > limit) {
+      showFieldError($('#pack-file'), $('#pack-file-error'), '“' + file.name + '” is ' + formatBytes(file.size) +
+        ', and this server accepts uploads up to ' + formatBytes(limit) + '. Paste a download link instead, or raise MAX_UPLOAD_MB in Railway.');
+      file = null;
+    } else if (file && state.disk && state.disk.free_bytes != null && file.size > Number(state.disk.free_bytes)) {
+      showFieldError($('#pack-file'), $('#pack-file-error'), '“' + file.name + '” is ' + formatBytes(file.size) +
+        ', but the volume only has ' + formatBytes(state.disk.free_bytes) + ' free. Delete old backups or worlds first.');
       file = null;
     }
     form.file = file || null;
@@ -2125,9 +2608,23 @@
     if (file) {
       setText($('#file-name'), file.name);
       setText($('#file-size'), formatBytes(file.size));
-      if (!form.packNameTouched) $('#pack-name').value = slugName(file.name);
+      if (!form.packNameTouched) {
+        $('#pack-name').value = guessPackName(file.name);
+        validatePackName(true);
+      }
     }
     onSetupFormChange();
+  }
+
+  // The server's upload limit (MAX_UPLOAD_MB), when the API reports it.
+  function uploadLimit() {
+    var n = Number((state.status && state.status.max_upload_bytes) || (state.versions && state.versions.max_upload_bytes));
+    return n > 0 ? n : null;
+  }
+
+  function renderUploadLimit() {
+    var limit = uploadLimit();
+    setText($('#pack-file-help'), limit ? 'or click to choose a file (up to ' + formatBytes(limit) + ')' : 'or click to choose a file');
   }
 
   function selectedVersion() {
@@ -2153,10 +2650,11 @@
     hint.classList.remove('is-warn');
     showFieldError(input, hint, msg);
     if (!msg && value) {
-      var exists = (state.setups || []).some(function (s) { return s.instance && s.instance.toLowerCase() === value.toLowerCase(); });
-      if (exists) {
-        // A note, not an error: reinstalling under the same name is allowed.
-        hint.replaceChildren(icon('i-info'), el('span', null, 'A pack with this name is installed already. Installing replaces it once the new download succeeds.'));
+      var users = packInstances()[value.toLowerCase()];
+      if (users) {
+        // A note, not an error: reinstalling under the same name is allowed (and confirmed at submit).
+        hint.replaceChildren(icon('i-info'), el('span', null, 'A pack called “' + value + '” is installed already (used by ' + users.join(', ') +
+          '). Installing replaces it once the new download succeeds. Pick another name to keep both.'));
         hint.hidden = false;
         hint.classList.add('is-warn');
         input.removeAttribute('aria-invalid');
@@ -2188,6 +2686,7 @@
     if (!form.worldNameTouched) input.value = '';
     populateExistingWorlds();
     renderExistingWorldNote();
+    renderNewWorldOptions();
     var nameInput = $('#setup-name');
     nameInput.placeholder = defaultSetupName();
     // A modpack setup is named after the pack and always switches over, so those two controls only apply to the others.
@@ -2204,6 +2703,35 @@
     renderSetupImpact();
     renderSetupSteps();
     updateSetupSubmit();
+  }
+
+  // A new world is generated with the seed and world type from Settings > New
+  // worlds, so say which ones before the admin commits to it.
+  function renderNewWorldOptions() {
+    var node = $('#new-world-options');
+    if (!node) return;
+    var data = state.settings || state.settingsPeek;
+    if (!data) {
+      if (!state.settingsPeekPromise) {
+        state.settingsPeekPromise = api('GET', '/api/settings').then(function (d) {
+          state.settingsPeek = d || {};
+          renderNewWorldOptions();
+        }, function () { /* the line keeps its generic wording */ });
+      }
+      node.replaceChildren('Generated with the seed and world type from ', el('a', { href: '#/settings' }, 'Settings'), '.');
+      return;
+    }
+    var props = data.properties || {};
+    var schema = data.schema || {};
+    var seed = String(props['level-seed'] == null ? '' : props['level-seed']).trim();
+    var type = props['level-type'] == null ? '' : String(props['level-type']);
+    var typeLabel = type ? humanize(type) : 'Normal';
+    var opts = schema['level-type'] && schema['level-type'].options;
+    (opts || []).forEach(function (o) {
+      if (o && typeof o === 'object' && String(o.value) === type && o.label) typeLabel = String(o.label);
+    });
+    node.replaceChildren('Seed: ', el('strong', null, seed || 'random'), ' · Type: ', el('strong', null, typeLabel),
+      '. Change these in ', el('a', { href: '#/settings' }, 'Settings, New worlds'), '.');
   }
 
   function defaultSetupName() {
@@ -2245,7 +2773,11 @@
     if (!world) { note.hidden = true; return; }
     var target = form.type === 'modpack' ? '' : selectedVersion();
     var tone = 'warn', text;
-    if (form.type === 'modpack') {
+    if (form.type !== 'modpack' && world.last_version && !isConcreteVersion(target)) {
+      // No concrete version to compare with yet (the list is loading or failed).
+      tone = 'info';
+      text = '“' + world.name + '” was last played on ' + world.last_version + '. Pick a version to check whether it can open this world.';
+    } else if (form.type === 'modpack') {
       text = 'Modpacks can add blocks and items that vanilla can\'t read. Back up “' + world.name + '” first if you might want it without the pack.';
     } else if (!world.last_version) {
       text = '“' + world.name + '” hasn\'t been played yet, so any version is fine.';
@@ -2263,7 +2795,7 @@
       }
     }
     note.className = 'callout tone-' + tone;
-    note.replaceChildren(icon(tone === 'ok' ? 'i-check-circle' : 'i-alert'), el('p', null, text));
+    note.replaceChildren(icon(tone === 'ok' ? 'i-check-circle' : tone === 'info' ? 'i-info' : 'i-alert'), el('p', null, text));
     note.hidden = false;
   }
 
@@ -2314,7 +2846,7 @@
     var running = !!(task && task.state === 'running');
     btn.disabled = form.submitting || running;
     var summary = $('#setup-summary');
-    if (form.pendingTaskId && running && task.id === form.pendingTaskId) setText(summary, 'Working on it. You can leave this page. Progress shows at the top.');
+    if (form.pendingTaskId && running && taskIdent(task) === form.pendingTaskId) setText(summary, 'Working on it. You can leave this page. Progress shows at the top.');
     else if (running) setText(summary, 'Another task is running. You can create the setup when it finishes.');
     else if (!form.pendingTaskId && summary.textContent.indexOf('Another task') === 0) setText(summary, '');
   }
@@ -2386,10 +2918,46 @@
     return true;
   }
 
-  function submitSetup(allowDowngrade) {
+  // Installing under the name of a pack that is already installed replaces
+  // it for every setup that uses it, so that needs a clear yes first.
+  function confirmPackReplace() {
+    var form = state.setupForm;
+    if (form.type !== 'modpack') return Promise.resolve(true);
+    var name = $('#pack-name').value.trim();
+    var users = packInstances()[name.toLowerCase()];
+    if (!users) return Promise.resolve(true);
+    return confirmDialog({
+      tone: 'danger', icon: 'i-alert',
+      title: 'Replace the installed pack “' + name + '”?',
+      body: [
+        el('p', null, 'A pack called ', el('strong', null, name), ' is installed already. Installing this one replaces its files once the download succeeds.'),
+        el('div', { class: 'callout tone-warn' }, icon('i-alert'), el('div', null,
+          el('p', null, el('strong', null, users.length === 1 ? 'This setup uses it and will run the new pack:' : 'These setups use it and will run the new pack:')),
+          el('ul', { class: 'used-by' }, users.map(function (n) { return el('li', null, n); })))),
+        el('p', null, 'To keep both, cancel and give the new pack a different name.'),
+      ],
+      confirmLabel: 'Replace the pack', confirmIcon: 'i-rotate',
+    }).then(function (ok) {
+      if (!ok) $('#pack-name').focus();
+      return ok;
+    });
+  }
+
+  // packConfirmed: the pack-name question was already answered for this submit.
+  function submitSetup(allowDowngrade, packConfirmed) {
     var form = state.setupForm;
     if (form.submitting) return;
     if (!validateSetupForm()) return;
+    var ready = packConfirmed ? Promise.resolve(true) : confirmPackReplace();
+    form.submitting = true;
+    ready.then(function (ok) {
+      form.submitting = false;
+      if (ok) sendSetup(allowDowngrade);
+    });
+  }
+
+  function sendSetup(allowDowngrade) {
+    var form = state.setupForm;
     var body = collectSetup();
     if (allowDowngrade) body.allow_downgrade = true;
     var btn = $('#setup-submit');
@@ -2411,30 +2979,40 @@
       wrap.hidden = false;
       setUploadProgress(0, form.file.size);
       request = runBusy(btn, 'Uploading…', function () {
-        return uploadFile('/api/modpacks/upload?' + q, form.file, setUploadProgress);
+        state.uploading = uploadFile('/api/modpacks/upload?' + q, form.file, setUploadProgress);
+        return state.uploading;
       });
-      request.finally(function () { wrap.hidden = true; bar.setAttribute('aria-valuenow', '0'); });
+      request.catch(function () {}).then(function () {
+        state.uploading = null;
+        wrap.hidden = true;
+        bar.setAttribute('aria-valuenow', '0');
+      });
     }
     request.then(function (data) {
       form.submitting = false;
       var task = acceptTask(data);
-      if (task) form.pendingTaskId = task.id;
+      if (task) form.pendingTaskId = taskIdent(task);
       setText($('#setup-summary'), 'Working on it. You can leave this page. Progress shows at the top.');
       updateSetupSubmit();
       window.scrollTo({ top: 0, behavior: prefersReducedMotion() ? 'auto' : 'smooth' });
     }, function (err) {
       form.submitting = false;
       updateSetupSubmit();
+      if (err.code === 'aborted') {
+        setText($('#setup-summary'), 'Upload cancelled. Nothing was installed.');
+        btn.focus();
+        return;
+      }
       if (err.code === 'world_downgrade') {
         downgradeDialog(err, body.level_name).then(function (choice) {
-          if (choice === 'continue') submitSetup(true);
+          if (choice === 'continue') submitSetup(true, true);
           else if (choice === 'new') {
             $('#setup-form input[name="world-mode"][value="new"]').checked = true;
             $('#new-world-wrap').hidden = false;
             $('#existing-world-wrap').hidden = true;
             form.worldNameTouched = false;
             onSetupFormChange();
-            submitSetup(false);
+            submitSetup(false, true);
           }
         });
         return;
@@ -2488,6 +3066,10 @@
       if (w.last_played) meta.push(el('span', null, icon('i-clock', 'icon-sm'), 'Played ' + relativeTime(w.last_played)));
       meta.push(el('span', null, icon('i-disk', 'icon-sm'), formatBytes(w.size_bytes)));
       var used = Array.isArray(w.used_by) ? w.used_by : [];
+      var deleteBtn = el('button', {
+        class: 'btn btn-ghost-danger btn-sm', type: 'button', 'aria-label': 'Delete world ' + w.name,
+        onclick: function (e) { deleteWorld(w, e.currentTarget); },
+      }, icon('i-trash', 'icon-sm'), el('span', null, 'Delete'));
       var actions = [
         el('button', {
           class: 'btn btn-sm', type: 'button', disabled: busy || null, 'data-backup-world': w.name,
@@ -2495,17 +3077,13 @@
           onclick: function (e) { backupWorld(w.name, e.currentTarget); },
         }, icon('i-archive', 'icon-sm'), el('span', null, 'Back up')),
       ];
-      if (!w.active) {
-        actions.push(el('button', {
-          class: 'btn btn-ghost-danger btn-sm', type: 'button', 'aria-label': 'Delete world ' + w.name,
-          onclick: function (e) { deleteWorld(w, e.currentTarget); },
-        }, icon('i-trash', 'icon-sm'), el('span', null, 'Delete')));
-      }
+      // The active world can't be deleted; an invisible stand-in keeps the columns aligned.
+      actions.push(w.active ? slotPlaceholder(deleteBtn) : deleteBtn);
       return el('li', { class: 'row' + (w.active ? ' is-active' : '') },
         el('span', { class: 'glyph t-world' }, icon('i-world')),
         el('div', { class: 'row-main' },
           el('p', { class: 'row-title' }, w.name, w.active ? el('span', { class: 'badge badge-accent' }, icon('i-check'), 'In use') : null),
-          el('p', { class: 'row-meta' }, meta)),
+          el('p', { class: 'row-meta' }, metaParts(meta))),
         el('div', { class: 'row-actions' }, actions),
         used.length || w.active ? el('p', { class: 'row-note' },
           w.active ? 'The active setup uses this world, so it can\'t be deleted. ' : '',
@@ -2619,25 +3197,29 @@
       var meta = [];
       if (b.minecraft_version) meta.push(el('span', null, 'Minecraft ' + b.minecraft_version));
       meta.push(el('span', null, icon('i-disk', 'icon-sm'), formatBytes(b.size_bytes)));
-      if (b.created_at) meta.push(el('span', null, icon('i-clock', 'icon-sm'), relativeTime(b.created_at)));
+      // The title has the date; the meta adds "2 hours ago" only while that says more.
+      if (b.created_at && isRecent(b.created_at, 7)) meta.push(el('span', null, icon('i-clock', 'icon-sm'), relativeTime(b.created_at)));
+      var damaged = !!b.damaged;
+      var restoreTitle = damaged ? 'This backup can\'t be read, so it can\'t be restored' : (busy ? 'Wait for the current task to finish' : null);
       return el('li', { class: 'row' },
         el('span', { class: 'glyph t-backup' }, icon('i-archive')),
         el('div', { class: 'row-main' },
-          el('p', { class: 'row-title' }, (b.world || 'World') + (when ? ' · ' + when : ''),
+          el('p', { class: 'row-title' }, (b.world || 'Unknown world') + (when ? ' · ' + when : ''),
+            damaged ? el('span', { class: 'badge badge-bad', title: 'The archive is damaged or incomplete. You can still download it.' }, icon('i-alert'), 'Damaged') : null,
             isSafetyBackup(b) ? el('span', { class: 'badge badge-work', title: 'Taken automatically before a restore or before opening the world with an older version' }, 'Safety copy') : null),
-          el('p', { class: 'row-meta' }, meta)),
+          el('p', { class: 'row-meta' }, metaParts(meta))),
         el('div', { class: 'row-actions' },
           el('a', { class: 'btn btn-sm', href: '/api/backups/' + encodeURIComponent(b.name) + '/download', download: b.name, 'aria-label': 'Download backup ' + b.name },
             icon('i-download', 'icon-sm'), el('span', null, 'Download')),
           el('button', {
-            class: 'btn btn-sm', type: 'button', disabled: busy || null, 'data-restore': b.name,
-            title: busy ? 'Wait for the current task to finish' : null,
+            class: 'btn btn-sm', type: 'button', disabled: busy || damaged || null, 'data-restore': b.name, 'data-damaged': damaged ? '' : null,
+            title: restoreTitle, 'aria-label': 'Restore backup ' + b.name,
             onclick: function (e) { restoreBackup(b, e.currentTarget); },
           }, icon('i-rotate', 'icon-sm'), el('span', null, 'Restore')),
           el('button', {
-            class: 'btn btn-ghost-danger btn-sm btn-icon', type: 'button', 'aria-label': 'Delete backup ' + b.name, title: 'Delete',
+            class: 'btn btn-ghost-danger btn-sm', type: 'button', 'aria-label': 'Delete backup ' + b.name,
             onclick: function (e) { deleteBackup(b, e.currentTarget); },
-          }, icon('i-trash', 'icon-sm'))),
+          }, icon('i-trash', 'icon-sm'), el('span', null, 'Delete'))),
         el('p', { class: 'row-note mono' }, b.name));
     }));
   }
@@ -2667,9 +3249,9 @@
     }
     $$('[data-backup-world], [data-restore]').forEach(function (b) {
       if (b.getAttribute('aria-busy') === 'true') return;
-      b.disabled = busy;
+      b.disabled = busy || b.hasAttribute('data-damaged');
     });
-    $$('#setups-list .row-actions .btn:not(.btn-ghost):not(.btn-ghost-danger)').forEach(function (b) {
+    $$('#setups-list .row-actions .btn:not(.btn-ghost):not(.btn-ghost-danger):not(.slot-placeholder)').forEach(function (b) {
       if (b.getAttribute('aria-busy') !== 'true') b.disabled = busy;
     });
   }
@@ -2679,48 +3261,53 @@
     runBusy(button, 'Starting…', function () {
       return api('POST', '/api/backups', body).then(function (data) {
         acceptTask(data);
-        toast({ tone: 'info', title: 'Backing up ' + (world ? '“' + world + '”' : 'the active world'), text: 'Progress shows at the top of the page. You will get a note here when it is done.' });
+        announce('Backing up ' + (world ? '“' + world + '”' : 'the active world') + '. Progress shows at the top of the page.');
       }, function (err) { toastError('Couldn\'t start the backup', err); });
     });
   }
 
   function restoreBackup(backup, button) {
-    var world = backup.world || 'world';
+    // world is null when the archive doesn't say which world it holds; then
+    // the only safe choice is a new world, since "replace" would be a guess.
+    var world = backup.world || '';
     var activeWorld = state.status && state.status.setup && state.status.setup.level_name;
     var running = !!(state.status && (RUNNING[state.status.phase] || state.status.phase === 'stopping'));
-    var newName = el('input', { class: 'input', id: 'restore-name', value: uniqueWorldName(world + '-restored'), autocomplete: 'off', spellcheck: 'false', maxlength: '32' });
+    var inUse = !!world && running && activeWorld === world;
+    var startNew = !world || inUse; // open on the choice that can actually go ahead
+    var newName = el('input', { class: 'input', id: 'restore-name', value: uniqueWorldName((world || 'restored') + (world ? '-restored' : '')), autocomplete: 'off', spellcheck: 'false', maxlength: '32' });
     var nameError = el('p', { class: 'field-error', id: 'restore-name-error', hidden: true });
-    var replaceRadio = el('input', { type: 'radio', name: 'restore-mode', value: 'replace', checked: true });
-    var newRadio = el('input', { type: 'radio', name: 'restore-mode', value: 'new' });
-    var runningNote = el('div', { class: 'callout tone-warn', hidden: true }, icon('i-alert'),
-      el('p', null, el('strong', null, 'The server is using “' + world + '” right now.'), ' Stop the server first, or restore into a new world instead.'));
+    var replaceRadio = el('input', { type: 'radio', name: 'restore-mode', value: 'replace', checked: !startNew, disabled: !world });
+    var newRadio = el('input', { type: 'radio', name: 'restore-mode', value: 'new', checked: startNew });
+    var runningNote = el('span', { class: 'field-error is-warn' }, icon('i-alert'),
+      el('span', null, 'The server is using “' + world + '” right now. Stop it first to replace this world.'));
     var nameWrap = el('div', { class: 'field field-indent', hidden: true },
       el('label', { class: 'field-label', for: 'restore-name' }, 'New world name'), newName, nameError);
+    var label = world ? '“' + world + '”' : 'an unknown world';
     return openDialog({
       tone: 'primary', icon: 'i-rotate',
       title: 'Restore this backup?',
       body: [
-        el('p', null, 'Backup of ', el('strong', null, world), backup.created_at ? ' from ' + formatDateTime(backup.created_at) : '', backup.minecraft_version ? ' (Minecraft ' + backup.minecraft_version + ')' : '', '.'),
-        el('label', { class: 'radio-line' }, replaceRadio, el('span', { class: 'radio-copy' },
-          el('span', null, 'Replace “' + world + '”'),
-          el('span', { class: 'field-help' }, 'Railpowered first saves the current “' + world + '” as a safety backup, so nothing is lost.'))),
+        el('p', null, 'Backup of ', world ? el('strong', null, world) : 'a world whose name isn\'t recorded', backup.created_at ? ' from ' + formatDateTime(backup.created_at) : '', backup.minecraft_version ? ' (Minecraft ' + backup.minecraft_version + ')' : '', '.'),
+        world ? el('label', { class: 'radio-line' }, replaceRadio, el('span', { class: 'radio-copy' },
+          el('span', null, 'Replace ' + label),
+          el('span', { class: 'field-help' }, 'Railpowered first saves the current ' + label + ' as a safety backup, so nothing is lost.'),
+          inUse ? runningNote : null)) : null,
         el('label', { class: 'radio-line' }, newRadio, el('span', { class: 'radio-copy' },
           el('span', null, 'Restore as a new world'),
-          el('span', { class: 'field-help' }, 'Keeps “' + world + '” as it is and adds the backup next to it.'))),
+          el('span', { class: 'field-help' }, world ? 'Keeps ' + label + ' as it is and adds the backup next to it.' : 'The backup becomes a world of its own, and no existing world is touched.'))),
         nameWrap,
-        runningNote,
         el('p', { class: 'subtle' }, 'Restoring changes only the world. Setups, settings and player lists stay as they are.'),
       ],
       actions: [
         { label: 'Cancel', value: null, style: 'ghost' },
         { label: 'Restore', value: 'restore', style: 'primary', icon: 'i-rotate', isDefault: true },
       ],
+      focus: function (buttons) { return startNew ? newName : buttons.restore; },
       onOpen: function (buttons) {
         function sync() {
           var mode = newRadio.checked ? 'new' : 'replace';
           nameWrap.hidden = mode !== 'new';
-          var blocked = mode === 'replace' && running && activeWorld === world;
-          runningNote.hidden = !blocked;
+          var blocked = mode === 'replace' && inUse;
           var bad = '';
           if (mode === 'new') {
             var v = newName.value.trim();
@@ -2741,7 +3328,7 @@
       runBusy(button, 'Starting…', function () {
         return api('POST', '/api/backups/' + encodeURIComponent(backup.name) + '/restore', body).then(function (data) {
           acceptTask(data);
-          toast({ tone: 'info', title: 'Restoring “' + (body.target || world) + '”', text: 'Progress shows at the top of the page. You will get a note here when it is done.' });
+          announce('Restoring ' + (body.target ? '“' + body.target + '”' : label) + '. Progress shows at the top of the page.');
         }, function (err) { toastError('Couldn\'t restore the backup', err); });
       });
     });
@@ -2795,7 +3382,12 @@
     var p = state.players || {};
     var wl = listNames(p.whitelist), ops = listNames(p.ops);
     var sw = $('#wl-switch');
-    if (sw.getAttribute('aria-busy') !== 'true') sw.checked = !!p.whitelist_enabled;
+    if (!state.wlSaving) {
+      // The switch stays off-limits until the lists are known.
+      sw.checked = !!p.whitelist_enabled;
+      sw.disabled = false;
+      sw.removeAttribute('aria-busy');
+    }
     var badge = $('#wl-badge');
     badge.className = 'badge ' + (p.whitelist_enabled ? 'badge-go' : 'badge-warn');
     badge.replaceChildren(icon(p.whitelist_enabled ? 'i-shield' : 'i-alert'), p.whitelist_enabled ? 'Private' : 'Open to anyone with the address');
@@ -2821,10 +3413,10 @@
     setText($('#ops-count'), ops.length ? '(' + ops.length + ')' : '');
     var wlHost = $('#wl-list');
     var opsHost = $('#ops-list');
-    if (wl.length) wlHost.replaceWith(withId(peopleList(wl, 'whitelist'), 'wl-list'));
+    if (wl.length || state.removedPlayers.whitelist) wlHost.replaceWith(withId(peopleList(wl, 'whitelist'), 'wl-list'));
     else wlHost.replaceWith(withId(el('ul', { class: 'people', role: 'list' },
       el('li', { class: 'span-all' }, emptyStateCompact('i-shield', 'Nobody on the whitelist', 'Add your friends\' Minecraft usernames.'))), 'wl-list'));
-    if (ops.length) opsHost.replaceWith(withId(peopleList(ops, 'ops'), 'ops-list'));
+    if (ops.length || state.removedPlayers.ops) opsHost.replaceWith(withId(peopleList(ops, 'ops'), 'ops-list'));
     else opsHost.replaceWith(withId(el('ul', { class: 'people', role: 'list' },
       el('li', { class: 'span-all' }, emptyStateCompact('i-crown', 'No operators', 'Make yourself an operator to use admin commands in-game.'))), 'ops-list'));
   }
@@ -2837,7 +3429,8 @@
     var names = s && RUNNING[s.phase] ? s.players : [];
     setText($('#players-online-count'), names.length ? '(' + names.length + ')' : '');
     if (!names.length) {
-      host.replaceChildren(emptyStateCompact('i-players', s && s.phase === 'online' ? 'Nobody is online right now' : 'The server isn\'t running', 'Players show up here while they\'re connected.'));
+      var copy = onlineEmptyCopy(s);
+      host.replaceChildren(emptyStateCompact('i-players', copy[0].replace(/\.$/, ''), copy[1]));
     } else {
       host.replaceChildren(peopleList(names, null));
     }
@@ -2860,9 +3453,11 @@
         showFieldError(input, err, msg);
         if (msg) { input.focus(); return; }
         var btn = form.querySelector('button[type="submit"]');
-        runBusy(btn, kind === 'ops' ? 'Adding…' : 'Adding…', function () {
+        runBusy(btn, 'Adding…', function () {
           return api('POST', '/api/players/' + kind, { name: name }).then(function () {
             input.value = '';
+            var removed = state.removedPlayers[kind];
+            if (removed && removed.name.toLowerCase() === name.toLowerCase()) clearRemovedPlayer(kind, true);
             toast({ tone: 'ok', title: kind === 'ops' ? name + ' is now an operator' : name + ' added to the whitelist' });
             return loadPlayers(true);
           }, function (e2) {
@@ -2889,6 +3484,7 @@
       }
       confirm.then(function (ok) {
         if (!ok) { sw.checked = !enabled; return; }
+        state.wlSaving = true;
         sw.setAttribute('aria-busy', 'true');
         sw.disabled = true;
         api('PUT', '/api/players/whitelist/enabled', { enabled: enabled }).then(function () {
@@ -2898,8 +3494,10 @@
           sw.checked = !enabled;
           toastError('Couldn\'t change the whitelist', err);
         }).finally(function () {
+          state.wlSaving = false;
           sw.removeAttribute('aria-busy');
           sw.disabled = false;
+          sw.focus();
           loadPlayers(true);
           pollStatus();
         });
@@ -2907,25 +3505,62 @@
     });
   }
 
+  // A removed player stays in the list for a while with an Undo button, so
+  // undoing is one Tab away instead of in a toast at the end of the page.
+  var UNDO_MS = 15000;
+
   function removePlayer(kind, name, button) {
     var path = '/api/players/' + kind + '/' + encodeURIComponent(name);
     runBusy(button, '', function () {
       return api('DELETE', path).then(function () {
-        toast({
-          tone: 'ok',
-          title: kind === 'ops' ? name + ' is no longer an operator' : name + ' removed from the whitelist',
-          actions: [{
-            label: 'Undo',
-            run: function () {
-              api('POST', '/api/players/' + kind, { name: name }).then(function () {
-                toast({ tone: 'ok', title: 'Undone', text: name + ' is back.' });
-                loadPlayers(true);
-              }, function (err) { toastError('Couldn\'t undo', err); });
-            },
-          }],
+        clearRemovedPlayer(kind, true);
+        state.removedPlayers[kind] = { name: name, timer: window.setTimeout(function () { expireRemovedPlayer(kind); }, UNDO_MS) };
+        announce((kind === 'ops' ? name + ' is no longer an operator.' : name + ' was removed from the whitelist.') + ' Undo is next to the list.');
+        return loadPlayers(true).then(function () {
+          var undo = $('[data-undo="' + kind + '"]');
+          if (undo) undo.focus();
         });
-        return loadPlayers(true);
       }, function (err) { toastError('Couldn\'t remove ' + name, err); });
+    });
+  }
+
+  function expireRemovedPlayer(kind) {
+    var removed = state.removedPlayers[kind];
+    if (!removed) return;
+    var active = document.activeElement;
+    if (active && active.getAttribute && active.getAttribute('data-undo') === kind) {
+      // Someone is about to press it: wait until focus moves on.
+      removed.timer = window.setTimeout(function () { expireRemovedPlayer(kind); }, 4000);
+      return;
+    }
+    clearRemovedPlayer(kind);
+  }
+
+  function clearRemovedPlayer(kind, quiet) {
+    var removed = state.removedPlayers[kind];
+    if (!removed) return;
+    window.clearTimeout(removed.timer);
+    delete state.removedPlayers[kind];
+    if (!quiet && state.players) renderPlayers();
+  }
+
+  function undoRemovePlayer(kind, button) {
+    var removed = state.removedPlayers[kind];
+    if (!removed) return;
+    var name = removed.name;
+    window.clearTimeout(removed.timer);
+    runBusy(button, 'Undoing…', function () {
+      return api('POST', '/api/players/' + kind, { name: name }).then(function () {
+        clearRemovedPlayer(kind, true);
+        announce(kind === 'ops' ? name + ' is an operator again.' : name + ' is back on the whitelist.');
+        return loadPlayers(true).then(function () {
+          var again = $('[data-remove="' + kind + ':' + cssEscape(name.toLowerCase()) + '"]');
+          (again || $('#' + (kind === 'ops' ? 'ops' : 'wl') + '-name')).focus();
+        });
+      }, function (err) {
+        removed.timer = window.setTimeout(function () { expireRemovedPlayer(kind); }, UNDO_MS);
+        toastError('Couldn\'t undo', err);
+      });
     });
   }
 
@@ -2947,6 +3582,7 @@
       if (state.settingsDirty) return;
       state.settings = data || {};
       renderSettings();
+      restoreSettingsDraft();
     }, function (err) {
       if (!state.settings) $('#settings-body').replaceChildren(el('section', { class: 'card' }, errorState('Couldn\'t load settings', err, function () { loadSettings(); })));
       else toastError('Couldn\'t refresh settings', err);
@@ -2975,14 +3611,17 @@
             help: 'After a redeploy or restart, start Minecraft right away instead of waiting for the first join.',
           }, rp.auto_start))));
 
+    // Only keys in the schema can be changed for this version. server.properties
+    // may hold others (online-mode on pre-1.7 versions, say); the server would
+    // refuse them, so they aren't drawn.
     var used = {};
     var groups = [];
     SETTINGS_GROUPS.forEach(function (g) {
-      var keys = g.keys.filter(function (k) { return schema[k] || Object.prototype.hasOwnProperty.call(props, k); });
+      var keys = g.keys.filter(function (k) { return !!schema[k]; });
       keys.forEach(function (k) { used[k] = true; });
       if (keys.length) groups.push({ title: g.title, keys: keys });
     });
-    var rest = Object.keys(schema).concat(Object.keys(props)).filter(function (k, i, arr) { return !used[k] && arr.indexOf(k) === i; });
+    var rest = Object.keys(schema).filter(function (k) { return !used[k]; });
     if (rest.length) groups.push({ title: 'Other', keys: rest });
 
     var mcCard = el('section', { class: 'card', 'aria-labelledby': 'mc-settings-title' },
@@ -2992,19 +3631,13 @@
         return el('div', { class: 'settings-group' },
           el('h3', null, g.title),
           el('div', { class: 'settings-grid' }, g.keys.map(function (k) {
-            return settingField('properties', k, schema[k] || guessSchema(k, props[k]), props[k]);
+            return settingField('properties', k, schema[k], props[k]);
           })));
       }) : el('div', { class: 'card-body' }, emptyStateCompact('i-settings', 'No settings available', 'This Minecraft version doesn\'t expose any settings here.')));
 
     body.replaceChildren(rpCard, mcCard);
     setDirty(false);
     renderRestartBanner();
-  }
-
-  function guessSchema(key, value) {
-    if (typeof value === 'boolean' || value === 'true' || value === 'false') return { type: 'bool', label: humanize(key) };
-    if (typeof value === 'number' || /^-?\d+$/.test(String(value))) return { type: 'int', label: humanize(key) };
-    return { type: 'string', label: humanize(key) };
   }
 
   function toBool(v) { return v === true || v === 'true' || v === 1 || v === '1'; }
@@ -3098,13 +3731,59 @@
     return !msg;
   }
 
+  function settingChanged(e) {
+    var v = settingValue(e);
+    if (e.type === 'bool') return v !== e.original;
+    return String(v) !== String(e.original);
+  }
+
   function isSettingsDirty() {
-    return Object.keys(settingsFields).some(function (k) {
-      var e = settingsFields[k];
-      var v = settingValue(e);
-      if (e.type === 'bool') return v !== e.original;
-      return String(v) !== String(e.original);
+    return Object.keys(settingsFields).some(function (k) { return settingChanged(settingsFields[k]); });
+  }
+
+  // Only what the admin changed is sent. Sending everything would also pin
+  // values that come from Railway variables (IDLE_TIMEOUT, AUTO_START) and
+  // undo changes saved from another tab since this one loaded.
+  function changedSettings() {
+    var payload = {};
+    Object.keys(settingsFields).forEach(function (k) {
+      var entry = settingsFields[k];
+      if (!settingChanged(entry)) return;
+      (payload[entry.scope] = payload[entry.scope] || {})[entry.key] = settingValue(entry);
     });
+    return payload;
+  }
+
+  // Unsaved edits survive a trip through the sign-in page (same tab only).
+  function stashSettingsDraft() {
+    if (!state.settingsDirty) return;
+    var draft = {};
+    Object.keys(settingsFields).forEach(function (k) {
+      var entry = settingsFields[k];
+      if (settingChanged(entry)) draft[k] = entry.type === 'bool' ? entry.input.checked : entry.input.value;
+    });
+    sessionStore.set(SESSION_KEYS.settingsDraft, JSON.stringify(draft));
+  }
+
+  function restoreSettingsDraft() {
+    var raw = sessionStore.get(SESSION_KEYS.settingsDraft);
+    if (!raw) return;
+    sessionStore.set(SESSION_KEYS.settingsDraft, null);
+    var draft;
+    try { draft = JSON.parse(raw); } catch (_) { return; }
+    var applied = 0;
+    Object.keys(draft || {}).forEach(function (k) {
+      var entry = settingsFields[k];
+      if (!entry) return;
+      if (entry.type === 'bool') entry.input.checked = !!draft[k];
+      else entry.input.value = String(draft[k]);
+      if (entry.type === 'enum' && entry.input.value !== String(draft[k])) return; // that option is gone
+      if (entry.key === 'online-mode' && entry.type === 'bool') onlineModeWarning(entry);
+      applied++;
+    });
+    if (!applied) return;
+    setDirty(isSettingsDirty());
+    if (state.settingsDirty) toast({ tone: 'info', title: 'Your unsaved changes are back', text: 'Save them, or choose Discard.' });
   }
 
   function setDirty(dirty) {
@@ -3128,11 +3807,8 @@
         if (!validateSetting(entry, false)) { ok = false; first = first || entry.input; }
       });
       if (!ok) { first.focus(); return; }
-      var payload = { properties: {}, railpowered: {} };
-      Object.keys(settingsFields).forEach(function (k) {
-        var entry = settingsFields[k];
-        payload[entry.scope][entry.key] = settingValue(entry);
-      });
+      var payload = changedSettings();
+      if (!Object.keys(payload).length) { setDirty(false); return; }
       runBusy($('#settings-save'), 'Saving…', function () {
         return api('PUT', '/api/settings', payload).then(function (data) {
           setDirty(false);
@@ -3153,6 +3829,7 @@
     });
     $('#settings-discard').addEventListener('click', function () {
       setDirty(false);
+      sessionStore.set(SESSION_KEYS.settingsDraft, null);
       renderSettings();
       toast({ tone: 'info', title: 'Changes discarded' });
     });
@@ -3164,13 +3841,14 @@
   function renderHelp() {
     var s = state.status;
     var setup = s && s.setup;
-    var version = setup ? (setup.resolved_version || setup.minecraft_version) : '';
+    var version = setup ? (exactVersion(setup) || UNKNOWN_LATEST) : '';
     $$('[data-bind="version-plain"]').forEach(function (n) { setText(n, version || 'the version shown on the Overview'); });
     $$('#view-help [data-bind="address"]').forEach(function (n) { setText(n, s && s.join_address ? s.join_address : 'the join address from the Overview'); });
     var timeout = s && s.idle ? s.idle.timeout_seconds : null;
     $$('[data-bind="idle"]').forEach(function (n) {
-      setText(n, timeout > 0 ? formatMinutes(Math.round(timeout / 60)) : (timeout === 0 ? 'a while (sleeping is off right now)' : 'a while'));
+      setText(n, timeout > 0 ? formatMinutes(Math.round(timeout / 60)) : 'a while');
     });
+    $('#help-sleep-off').hidden = timeout !== 0;
   }
 
   /* ================================================================ boot */
@@ -3189,6 +3867,11 @@
       toast({ tone: 'info', title: 'Getting started hidden', text: 'The same tips are always in Help.' });
     });
     if (store.get(KEYS.firstRun) !== '1') $('#firstrun').hidden = false;
+    var returnTo = sessionStore.get(SESSION_KEYS.returnTo);
+    sessionStore.set(SESSION_KEYS.returnTo, null);
+    if (returnTo && /^#\/[a-z]+(\/[A-Za-z0-9_-]+)?$/.test(returnTo) && !window.location.hash && window.history.replaceState) {
+      window.history.replaceState(null, '', window.location.pathname + window.location.search + returnTo);
+    }
     renderMiniLog();
     navigate(true);
     pollStatus();

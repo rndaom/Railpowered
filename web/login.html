@@ -41,9 +41,10 @@
             <p>Sign in to manage your Minecraft server.</p>
           </div>
 
-          <div class="callout tone-bad" id="login-error" role="alert" hidden>
+          <!-- The server fills in {{error}} (empty when there is none), so the message shows without JavaScript too. -->
+          <div class="callout tone-bad login-error" id="login-error" role="alert" data-message="{{error}}">
             <svg class="icon" aria-hidden="true"><use href="#i-alert-circle"/></svg>
-            <p id="login-error-text"></p>
+            <p id="login-error-text">{{error}}</p>
           </div>
 
           <form class="stack" id="login-form" method="post" action="/login" novalidate>
@@ -60,7 +61,8 @@
               <p class="field-error" id="key-error" hidden></p>
               <p class="field-help" id="key-help">
                 This is the <code>ADMIN_KEY</code> you set in Railway, under your service's <strong>Variables</strong> tab.
-                If you didn't set one, Railpowered made one for you: look for “Dashboard key” in the service's deploy logs.
+                If you didn't set one, Railpowered generated one and printed it once, in the logs of the service's first deploy.
+                Can't find it? Set <code>ADMIN_KEY</code> under Variables; Railway redeploys, and you sign in with that.
               </p>
             </div>
             <button class="btn btn-primary btn-lg btn-block" type="submit" id="login-submit">

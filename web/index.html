@@ -61,6 +61,7 @@
     <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16v4"/></symbol>
     <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9.5 20.5h-4a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h4"/><path d="m16 16.5 4.5-4.5L16 7.5"/><path d="M20.5 12H9.5"/></symbol>
     <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21.5s7.5-3.6 7.5-9.6V5.6L12 2.8 4.5 5.6v6.3c0 6 7.5 9.6 7.5 9.6z"/><path d="m9 11.8 2.2 2.2 4-4.2"/></symbol>
+    <symbol id="i-list" viewBox="0 0 24 24"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><path d="M4.5 6.5h.01M4.5 12h.01M4.5 17.5h.01"/></symbol>
     <symbol id="i-crown" viewBox="0 0 24 24"><path d="m3 7.5 4.5 4L12 4.5l4.5 7 4.5-4-1.8 11H4.8z"/><path d="M5 21h14"/></symbol>
     <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></symbol>
     <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M6 3h12M6 21h12"/><path d="M7.5 3v3.2a4.5 4.5 0 0 0 9 0V3"/><path d="M7.5 21v-3.2a4.5 4.5 0 0 1 9 0V21"/></symbol>
@@ -138,7 +139,7 @@
           <div class="banner tone-bad" id="conn-banner" role="alert" hidden>
             <svg class="icon" aria-hidden="true"><use href="#i-plug-off"/></svg>
             <div class="banner-body">
-              <p class="banner-title">Can't reach your server</p>
+              <p class="banner-title" id="conn-title">Can't reach Railpowered</p>
               <p class="banner-text" id="conn-text">The dashboard will keep trying. If Railway is redeploying, this clears up in a minute or two.</p>
             </div>
           </div>
@@ -153,6 +154,15 @@
               <p id="overview-sub">Everything about your Minecraft server, at a glance.</p>
             </div>
           </header>
+
+          <div class="callout tone-warn address-callout" id="address-callout" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg>
+            <div>
+              <p class="callout-title"><strong>Friends can't join yet: add a public address</strong></p>
+              <p>In Railway, open this service, go to <strong>Settings</strong>, then <strong>Networking</strong>, and add a TCP proxy for port <code>25565</code>.</p>
+              <p>The address shows up here after the next deploy. <a href="#/help/address">More help with the address</a></p>
+            </div>
+          </div>
 
           <article class="hero" id="hero" data-phase="unknown" aria-labelledby="phase-word">
             <div class="hero-top">
@@ -186,6 +196,7 @@
             <div class="crash-box" id="crash-box" hidden>
               <strong>What happened</strong>
               <pre id="crash-reason"></pre>
+              <div id="crash-next"></div>
             </div>
             <div class="hero-strip" id="hero-strip"></div>
           </article>
@@ -196,8 +207,8 @@
                 <h2 class="eyebrow title-with-icon" id="firstrun-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg>Getting started</h2>
                 <div class="firstrun-steps">
                   <div>
-                    <strong>Share the join address</strong>
-                    <p>Friends add it in Minecraft under Multiplayer, Add Server. They need Minecraft <span data-bind="version">Java Edition</span>.</p>
+                    <strong id="firstrun-share-title">Share the join address</strong>
+                    <p><span id="firstrun-share-lead">Friends add it in Minecraft under Multiplayer, Add Server.</span> They need Minecraft <span data-bind="version">Java Edition</span>.</p>
                   </div>
                   <div>
                     <strong>Joining wakes the server</strong>
@@ -215,7 +226,7 @@
             </div>
           </section>
 
-          <div class="grid-2">
+          <div class="grid-2 equal">
             <section class="card" aria-labelledby="online-title">
               <div class="card-head">
                 <h2 id="online-title"><svg class="icon" aria-hidden="true"><use href="#i-players"/></svg>Online now <span class="count" id="online-count"></span></h2>
@@ -258,7 +269,7 @@
 
           <section class="card" aria-labelledby="setups-list-title">
             <div class="card-head">
-              <h2 id="setups-list-title">Your setups <span class="count" id="setups-count"></span></h2>
+              <h2 id="setups-list-title"><svg class="icon" aria-hidden="true"><use href="#i-setups"/></svg>Your setups <span class="count" id="setups-count"></span></h2>
             </div>
             <div id="setups-list" class="card-body tight flush"></div>
           </section>
@@ -305,7 +316,7 @@
                 <li class="step" id="step-version">
                   <div class="step-body">
                     <label class="step-title" for="setup-version">Minecraft version</label>
-                    <select class="select" id="setup-version" aria-describedby="version-help"></select>
+                    <select class="select" id="setup-version" aria-describedby="version-help" aria-busy="true"><option value="" disabled selected>Loading versions…</option></select>
                     <p class="field-help" id="version-help">Friends need this exact version selected in their Minecraft launcher.</p>
                   </div>
                 </li>
@@ -329,7 +340,7 @@
                         <input type="file" id="pack-file" accept=".mrpack,.zip,application/zip" aria-labelledby="pack-file-label" aria-describedby="pack-file-help">
                         <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>
                         <strong>Drop a .mrpack or .zip here</strong>
-                        <span class="field-help" id="pack-file-help">or click to choose a file (up to 1 GB)</span>
+                        <span class="field-help" id="pack-file-help">or click to choose a file</span>
                       </label>
                       <div class="file-chip" id="file-chip" hidden>
                         <svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>
@@ -361,8 +372,9 @@
                       </label>
                       <div class="field field-indent" id="new-world-wrap">
                         <label class="field-label" for="new-world-name">New world name</label>
-                        <input class="input" id="new-world-name" autocomplete="off" spellcheck="false" maxlength="32" aria-describedby="new-world-error">
+                        <input class="input" id="new-world-name" autocomplete="off" spellcheck="false" maxlength="32" aria-describedby="new-world-options new-world-error">
                         <p class="field-error" id="new-world-error" hidden></p>
+                        <p class="field-help" id="new-world-options">Generated with the seed and world type from <a href="#/settings">Settings</a>.</p>
                       </div>
                       <label class="radio-line">
                         <input type="radio" name="world-mode" value="existing">
@@ -399,7 +411,10 @@
                     </div>
                     <div class="field" id="upload-progress" hidden>
                       <div class="meter-legend"><span id="upload-label">Uploading…</span><span id="upload-pct" class="tabular">0%</span></div>
-                      <div class="progress" role="progressbar" aria-labelledby="upload-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-bar"><span></span></div>
+                      <div class="upload-row">
+                        <div class="progress" role="progressbar" aria-labelledby="upload-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-bar"><span></span></div>
+                        <button class="btn btn-ghost btn-sm" type="button" id="upload-cancel"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-x"/></svg><span>Cancel upload</span></button>
+                      </div>
                     </div>
                     <div class="form-actions">
                       <button class="btn btn-primary btn-lg" type="submit" id="setup-submit"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Create setup</span></button>
@@ -473,7 +488,7 @@
                   <label for="wl-switch">Only allow players on the whitelist</label>
                   <p class="field-help" id="wl-help">When this is on, only the people below (and operators) can join. Everyone else is turned away.</p>
                 </div>
-                <input type="checkbox" role="switch" class="switch" id="wl-switch" aria-describedby="wl-help">
+                <input type="checkbox" role="switch" class="switch" id="wl-switch" aria-describedby="wl-help" disabled aria-busy="true">
               </div>
               <div class="callout" id="mode-note" hidden></div>
             </div>
@@ -482,7 +497,7 @@
           <div class="grid-2">
             <section class="card" aria-labelledby="wl-title">
               <div class="card-head">
-                <h2 id="wl-title">Whitelist <span class="count" id="wl-count"></span></h2>
+                <h2 id="wl-title"><svg class="icon" aria-hidden="true"><use href="#i-list"/></svg>Whitelist <span class="count" id="wl-count"></span></h2>
               </div>
               <p class="card-sub">Friends who can join when the whitelist is on.</p>
               <div class="card-body stack-sm">
@@ -498,7 +513,7 @@
 
             <section class="card" aria-labelledby="ops-title">
               <div class="card-head">
-                <h2 id="ops-title">Operators <span class="count" id="ops-count"></span></h2>
+                <h2 id="ops-title"><svg class="icon" aria-hidden="true"><use href="#i-crown"/></svg>Operators <span class="count" id="ops-count"></span></h2>
               </div>
               <p class="card-sub">Operators can use cheats and admin commands such as <code>/gamemode</code> and <code>/tp</code>.</p>
               <div class="card-body stack-sm">
@@ -615,6 +630,7 @@
               <div class="card-body prose">
                 <p>When nobody has been online for <strong data-bind="idle">a while</strong>, Railpowered saves the world and stops Minecraft. That frees most of the memory and CPU you pay Railway for.</p>
                 <p>While it sleeps, Railpowered keeps listening on the join address. The next time someone joins, it starts Minecraft again on its own. You can also press Start here at any time.</p>
+                <p id="help-sleep-off" class="callout" hidden><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg><span>Sleeping is turned off, so the server stays on until you stop it. Turn it on in <a href="#/settings">Settings</a>.</span></p>
                 <p>You can change the timer, or turn sleeping off, in <a href="#/settings">Settings</a>.</p>
               </div>
             </section>
@@ -643,7 +659,7 @@
               <details id="faq-address">
                 <summary>The join address is empty<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
                 <div class="faq-body">
-                  <p>Railway gives the server a public address through a <strong>TCP proxy</strong> on port <code>25565</code>. The one-click template adds it for you. If you deployed another way, open your service in Railway, go to Settings, then Networking, and add a TCP proxy for port <code>25565</code>. The address appears here after the next deploy.</p>
+                  <p>Railway gives the server a public address through a <strong>TCP proxy</strong> on port <code>25565</code>. The one-click template adds it for you. If you deployed another way, open your service in Railway, go to Settings, then Networking, and add a TCP proxy for port <code>25565</code>. The address appears on the <a href="#/overview">Overview</a> after the next deploy.</p>
                 </div>
               </details>
               <details>
@@ -658,9 +674,12 @@
               </details>
               <details>
                 <summary>I forgot the admin key<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
-                <div class="faq-body"><p>The key is the <code>ADMIN_KEY</code> variable on your Railway service: open the service, then Variables. You can change it there; Railway redeploys, and everyone is signed out.</p></div>
+                <div class="faq-body">
+                  <p>If you set <code>ADMIN_KEY</code> on your Railway service, that's your key: open the service, then <strong>Variables</strong>. If you didn't, Railpowered generated one and printed it once, in the logs of the service's first deploy.</p>
+                  <p>Either way, setting <code>ADMIN_KEY</code> under Variables replaces the key. Railway redeploys, you sign in with the new key, and everyone else is signed out.</p>
+                </div>
               </details>
-              <details>
+              <details id="faq-crashed">
                 <summary>The server crashed<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
                 <div class="faq-body"><p>The Overview shows the last useful line Minecraft printed, and the <a href="#/console">Console</a> has the full log. Out-of-memory errors usually mean the modpack needs more RAM than your Railway plan gives the service. A crashed server still wakes up when someone joins.</p></div>
               </details>
@@ -680,7 +699,7 @@
       <a class="tab" href="#/setups" data-nav="setups"><svg class="icon" aria-hidden="true"><use href="#i-setups"/></svg><span>Setups</span></a>
       <a class="tab" href="#/worlds" data-nav="worlds"><svg class="icon" aria-hidden="true"><use href="#i-world"/></svg><span>Worlds</span></a>
       <a class="tab" href="#/players" data-nav="players"><svg class="icon" aria-hidden="true"><use href="#i-players"/></svg><span>Players</span></a>
-      <a class="tab" href="#/console" data-nav="console"><svg class="icon" aria-hidden="true"><use href="#i-console"/></svg><span>Console</span></a>
+      <button class="tab" type="button" id="tab-more" aria-controls="sidebar" aria-expanded="false"><svg class="icon" aria-hidden="true"><use href="#i-menu"/></svg><span>More</span></button>
     </nav>
   </div>
 
