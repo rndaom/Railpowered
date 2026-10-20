@@ -12,7 +12,7 @@
 # To bump a JRE, run `python3 .github/scripts/jre_versions.py --write`
 # (a weekly workflow opens an issue when a newer GA release exists).
 
-FROM ubuntu:24.04 AS jre
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS jre
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -66,7 +66,7 @@ RUN set -eu; \
     fetch 25 "$JRE25_RELEASE" "$sha25"
 
 
-FROM ubuntu:24.04 AS runtime
+FROM ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac AS runtime
 
 # python3: the manager (stdlib only, 3.12 on Ubuntu 24.04).
 # ca-certificates: HTTPS to Mojang, Fabric, Forge and Modrinth at runtime.

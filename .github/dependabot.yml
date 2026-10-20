@@ -6,3 +6,9 @@ updates:
     directory: /
     schedule:
       interval: weekly
+  # The ubuntu:24.04 base is pinned by digest in the Dockerfile; this
+  # proposes the new digest when Canonical republishes the tag.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
