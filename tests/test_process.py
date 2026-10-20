@@ -622,6 +622,16 @@ class WakeAndProxyTests(ControllerTestCase):
         self.assertEqual(self.controller._empty_wakes, 0)
         self.assertIsNone(self.controller.snapshot()["idle"]["wake_paused_until"])
 
+    def test_players_found_by_the_idle_check_count_as_a_join(self):
+        self.next_process_kwargs = {"list_reply": MODERN + "There are 1 of a max of 20 players online: Alice"}
+        self.wake_online()
+        self.assertFalse(self.controller.idle_tick(now=self.state.idle_since + 601))
+        self.assertEqual(self.state.players, {"Alice"})
+        self.emit_and_settle(MODERN + "Alice left the game")
+        self.proc.list_reply = self.EMPTY_LIST
+        self.sleep_idle()
+        self.assertIsNone(self.controller.wake_paused_until())
+
     def test_dashboard_starts_and_manual_stops_never_pause_wakes(self):
         self.next_process_kwargs = {"list_reply": self.EMPTY_LIST}
         self.start_online()  # a start from the dashboard, nobody joins

@@ -73,7 +73,9 @@ class TotpCheckerTests(unittest.TestCase):
     def test_codes_outside_the_window_or_malformed_are_refused(self):
         checker = self.checker()
         for code in (auth.totp(SHA1_KEY, self.now + 90), auth.totp(SHA1_KEY, self.now - 90),
-                     "", "12345", "1234567", "abcdef", "07081804"):
+                     "", "12345", "1234567", "abcdef", "07081804",
+                     "٠٨١٨٠٤",  # Arabic-Indic digits
+                     "０８１８０４"):  # full-width digits
             self.assertFalse(checker.check(code), code)
 
     def test_an_invalid_secret_fails_closed(self):

@@ -347,6 +347,9 @@ class ServerController:
         self._wake_paused_until = 0.0
 
     def _note_empty_wake(self) -> None:
+        with self.state.lock:
+            if self.state.phase not in (SLEEPING, CRASHED):
+                return  # started again (from the dashboard) since that run ended
         self._empty_wakes += 1
         pause = EMPTY_WAKE_BACKOFF[min(self._empty_wakes, len(EMPTY_WAKE_BACKOFF)) - 1]
         self._wake_paused_until = time.time() + pause
@@ -912,6 +915,8 @@ class ServerController:
             with self.state.lock:
                 self.state.players = set(names)
                 self.state.idle_since = None
+                self._run_saw_player = True  # a join line the patterns missed
+            self._clear_wake_pause()
             self.log(f"Idle check found players online ({', '.join(names)}); staying up.")
             return False
         minutes = max(1, timeout // 60)

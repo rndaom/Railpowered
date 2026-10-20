@@ -268,7 +268,7 @@ class TotpChecker:
     def check(self, submitted: str) -> bool:
         key = parse_totp_secret(self._raw())
         code = re.sub(r"\s", "", submitted or "")
-        if key is None or not re.fullmatch(rf"\d{{{TOTP_DIGITS}}}", code):
+        if key is None or not re.fullmatch(rf"[0-9]{{{TOTP_DIGITS}}}", code):
             return False
         now = int(self.clock() // TOTP_STEP)
         with self._lock:
