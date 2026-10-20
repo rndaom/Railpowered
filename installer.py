@@ -1516,10 +1516,11 @@ def railpowered_settings(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
-def pending_env_setup() -> dict[str, Any] | None:
-    """If SERVER_TYPE/MINECRAFT_VERSION changed since they were last applied,
-    the setup fields they describe (apply with create_setup, then call
-    acknowledge_env_setup). Returns {"fields", "message"} or None."""
+def env_changed() -> dict[str, Any] | None:
+    """SERVER_TYPE / MINECRAFT_VERSION only choose the first setup. When they
+    changed since they were last acknowledged and describe something other
+    than the active setup, returns the setup they describe (for a log
+    message; nothing is switched). Call acknowledge_env_setup() afterwards."""
     cfg = load_config()
     env = _current_env()
     applied = cfg.get("env_applied") or {}
@@ -1530,24 +1531,12 @@ def pending_env_setup() -> dict[str, Any] | None:
         _warn(f"{warning} The Railway variable change was ignored.")
         acknowledge_env_setup()
         return None
-    fields = {k: setup[k] for k in ("type", "minecraft_version", "level_name")}
-    if any(_fingerprint({**fields, "instance": None}) == _fingerprint(s) for s in cfg["profiles"]) and \
-            _fingerprint(_active_setup(cfg)) == _fingerprint({**fields, "instance": None}):
+    if _fingerprint({**setup, "instance": None, "level_name": ""}) == _fingerprint(
+        {**_active_setup(cfg), "level_name": ""}
+    ):
         acknowledge_env_setup()
         return None
-    fields["level_name"] = _env_world_name(setup)
-    return {
-        "fields": fields,
-        "message": (
-            f"Railway variables now ask for {setup_display_name(setup)}; "
-            "switching to it with its own world."
-        ),
-    }
-
-
-def _env_world_name(setup: dict[str, Any]) -> str:
-    base = f"{setup['type']}-{setup['minecraft_version']}".replace(".", "_")[:32]
-    return base if NAME_RE.match(base) else "world"
+    return setup
 
 
 def acknowledge_env_setup() -> None:

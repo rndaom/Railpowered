@@ -79,11 +79,12 @@ def _note_env_changes() -> None:
     """SERVER_TYPE / MINECRAFT_VERSION only seed the first setup. When they
     change later, say so in the log instead of ignoring them silently."""
     try:
-        pending = installer.pending_env_setup()
-        if pending is not None:
+        asked = installer.env_changed()
+        if asked is not None:
             state.add_log(
-                "SERVER_TYPE / MINECRAFT_VERSION changed in Railway, but they only choose the "
-                "first setup. Switch versions from the dashboard's Setups page instead.",
+                f"SERVER_TYPE / MINECRAFT_VERSION now ask for {installer.setup_display_name(asked)}, "
+                "but they only choose the first setup. Switch versions from the dashboard's "
+                "Setups page instead.",
                 "warn",
             )
             installer.acknowledge_env_setup()
