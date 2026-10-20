@@ -2013,3 +2013,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
 .facts.facts-2 { padding: 20px 0 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .fact > dd.fact-value { font-size: var(--text-base); overflow-wrap: anywhere; }
 .strip-item.strip-end { margin-left: auto; }
+
+@media (max-width: 370px) {
+  .address code { font-size: 0.8125rem; }
+}

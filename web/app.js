@@ -1251,7 +1251,11 @@
     }
     var copyBtn = el('button', { class: 'btn btn-sm address-copy', type: 'button', 'aria-label': 'Copy join address' },
       icon('i-copy', 'icon-sm'), el('span', { class: 'copy-label' }, 'Copy'));
-    var code = el('code', { id: 'join-address' }, address);
+    // If the address has to wrap on a narrow phone, let it break before the port rather than inside it.
+    var colon = address.lastIndexOf(':');
+    var code = colon > 0
+      ? el('code', { id: 'join-address' }, address.slice(0, colon), el('wbr'), address.slice(colon))
+      : el('code', { id: 'join-address' }, address);
     copyBtn.addEventListener('click', function () {
       copyText(address).then(function (ok) {
         if (ok) {
@@ -1689,6 +1693,8 @@
           input.value = '';
           setFollow(true);
           window.setTimeout(pollLogs, 250);
+          // op, deop and whitelist change the lists on the Players page; fetch them again once the server has applied it.
+          if (/^(op|deop|whitelist)\b/i.test(command)) window.setTimeout(function () { loadPlayers(true); }, 1500);
         }, function (err) { toastError('Command not sent', err); });
       }).then(function () { updateConsoleInput(); input.focus(); });
     });
