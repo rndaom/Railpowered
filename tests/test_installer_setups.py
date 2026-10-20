@@ -5,7 +5,7 @@ import os
 import unittest
 from unittest import mock
 
-from test_installer_base import InstallerTestCase, installer
+from test_installer_base import InstallerTestCase, can_symlink, installer
 
 
 class SetupTestCase(InstallerTestCase):
@@ -278,6 +278,48 @@ class FabricSetupTests(SetupTestCase):
         self.assertIn("custom=1", copied)
         self.assertIn("level-name=worlds/modded", copied)
         self.assertTrue(os.path.isfile(os.path.join(run_dir, "eula.txt")))
+
+
+class WorldLinkTests(SetupTestCase):
+    def setUp(self):
+        super().setUp()
+        self.run_dir = self.path("instances", "fabric-1.20.1")
+        os.makedirs(self.run_dir)
+
+    @unittest.skipUnless(can_symlink(), "needs symlink privilege")
+    def test_instance_worlds_link_points_at_shared_worlds(self):
+        installer._relink_instance_world(self.run_dir, "modern")
+        link = os.path.join(self.run_dir, "worlds")
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.path.realpath(link), os.path.realpath(self.path("worlds")))
+        self.assertTrue(os.path.isdir(self.path("worlds", "modern")))
+        installer._relink_instance_world(self.run_dir, "modern")  # idempotent
+        self.assertTrue(os.path.islink(link))
+
+    @unittest.skipUnless(can_symlink(), "needs symlink privilege")
+    def test_instance_local_worlds_are_rescued_not_deleted(self):
+        self.make_world("stuck")
+        local = os.path.join(self.run_dir, "worlds")
+        os.makedirs(os.path.join(local, "stuck"))
+        os.makedirs(os.path.join(local, "solo"))
+        with open(os.path.join(local, "stuck", "level.dat"), "wb") as handle:
+            handle.write(b"instance copy")
+        with open(os.path.join(local, "solo", "level.dat"), "wb") as handle:
+            handle.write(b"solo")
+        installer._relink_instance_world(self.run_dir, "stuck")
+        self.assertTrue(os.path.islink(local))
+        with open(self.path("worlds", "stuck", "level.dat"), "rb") as handle:
+            self.assertEqual(handle.read(), b"level-stuck")  # shared copy untouched
+        self.assertTrue(os.path.isfile(self.path("worlds", "solo", "level.dat")))
+        renamed = [n for n in os.listdir(self.path("worlds")) if n.startswith("stuck-")]
+        self.assertEqual(len(renamed), 1)
+
+    def test_no_symlink_support_is_a_clear_error(self):
+        with mock.patch.object(installer.os, "symlink", side_effect=OSError(1314, "privilege not held")):
+            with self.assertRaises(installer.InstallError) as ctx:
+                installer._relink_instance_world(self.run_dir, "modern")
+        self.assertEqual(ctx.exception.code, "install_failed")
+        self.assertIn("symlink", str(ctx.exception))
 
 
 class V1ShimTests(SetupTestCase):

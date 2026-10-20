@@ -4111,6 +4111,8 @@ def properties_for(cfg: dict[str, Any]) -> dict[str, str]:
 
 def apply_server(cfg: dict[str, Any]) -> RuntimeSpec:
     fields = {k: cfg.get(k) for k in ("type", "minecraft_version", "level_name", "instance", "modpack")}
+    if cfg.get("name") and "profiles" not in cfg:  # result of install_modpack_*
+        fields["name"] = cfg["name"]
     current = _active_setup(load_config())
     candidate = _sanitize_setup({**fields, "id": "pending"})
     if candidate and _fingerprint(candidate) == _fingerprint(current):
@@ -4140,7 +4142,11 @@ def select_world(name: str) -> dict[str, Any]:
 
 
 def backup_path(name: str) -> str:
-    return backup_file(name)
+    """v1 contract: a path that simply doesn't exist for unknown names."""
+    try:
+        return backup_file(name)
+    except InstallError:
+        return os.path.join(paths()["backups"], ".missing")
 
 
 def list_file_names(kind: str) -> tuple[str, list[str]]:

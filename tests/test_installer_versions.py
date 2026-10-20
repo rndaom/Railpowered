@@ -237,6 +237,77 @@ class DownloadTests(InstallerTestCase):
         self.assertFalse(os.path.exists(self.path("big.bin")))
 
 
+class LoaderInstallTests(InstallerTestCase):
+    def setUp(self):
+        super().setUp()
+        self.runs = []
+        self._patch(mock.patch.object(installer.subprocess, "run", side_effect=self.fake_run))
+
+    def fake_run(self, command, **kwargs):
+        self.runs.append((command, kwargs))
+        cwd = kwargs["cwd"]
+        if "--installServer" in command:
+            with open(os.path.join(cwd, "forge-1.7.10-10.13.4.1614-1.7.10-universal.jar"), "wb") as handle:
+                handle.write(b"forge")
+        else:
+            with open(os.path.join(cwd, "fabric-server-launch.jar"), "wb") as handle:
+                handle.write(b"launch")
+        return mock.Mock(returncode=0, stdout="")
+
+    def test_fabric_install_checks_hashes_strips_secrets_and_marks_complete(self):
+        os.environ["ADMIN_KEY"] = "secret"
+        self.net.add(f"{installer.FABRIC_META_URL}/versions/installer", [{"version": "1.1.0", "stable": True}])
+        jar_url = f"{installer.FABRIC_MAVEN_URL}/1.1.0/fabric-installer-1.1.0.jar"
+        self.net.add(jar_url, b"installer")
+        self.net.add(jar_url + ".sha1", sha1(b"installer"))
+        dest = installer.install_fabric("1.20.1", loader="0.16.14")
+        command, kwargs = self.runs[0]
+        self.assertIn("-mcversion", command)
+        self.assertEqual(command[command.index("-loader") + 1], "0.16.14")
+        self.assertTrue(command[0].startswith(self.java_homes[21]))
+        self.assertNotIn("ADMIN_KEY", kwargs["env"])
+        self.assertEqual(kwargs["env"]["JAVA_HOME"], self.java_homes[21])
+        self.assertTrue(installer._install_complete(dest, "fabric", "1.20.1", "0.16.14"))
+        self.net.routes.clear()
+        installer.install_fabric("1.20.1")  # complete: no network, no installer run
+        self.assertEqual(len(self.runs), 1)
+
+    def test_bad_installer_checksum(self):
+        jar_url = f"{installer.FABRIC_MAVEN_URL}/1.1.0/fabric-installer-1.1.0.jar"
+        self.net.add(jar_url, b"installer")
+        self.net.add(jar_url + ".sha1", "0" * 40)
+        with self.assertRaises(installer.InstallError) as ctx:
+            installer.install_fabric("1.20.1", loader="0.16.14")
+        self.assertEqual(ctx.exception.code, "download_failed")
+        self.assertEqual(self.runs, [])
+
+    def test_installer_failure_is_reported(self):
+        def failing(command, **kwargs):
+            raise installer.subprocess.CalledProcessError(1, command, output="line1\nCould not resolve host\n")
+
+        installer.subprocess.run.side_effect = failing
+        jar_url = f"{installer.FABRIC_MAVEN_URL}/1.1.0/fabric-installer-1.1.0.jar"
+        self.net.add(jar_url, b"installer")
+        with self.assertRaises(installer.InstallError) as ctx:
+            installer.install_fabric("1.20.1", loader="0.16.14")
+        self.assertEqual(ctx.exception.code, "install_failed")
+        self.assertIn("Could not resolve host", str(ctx.exception))
+        self.assertFalse(installer._install_complete(installer.instance_dir("fabric", "1.20.1"), "fabric", "1.20.1"))
+
+    def test_forge_1_7_10_preseeds_vanilla_and_uses_java_8(self):
+        self.vanilla_jar("1.7.10")
+        url = installer._forge_installer_url("1.7.10")
+        self.net.add(url, b"forge-installer")
+        dest = installer.install_forge("1.7.10")
+        self.assertTrue(os.path.isfile(os.path.join(dest, "minecraft_server.1.7.10.jar")))
+        command, kwargs = self.runs[0]
+        self.assertTrue(command[0].startswith(self.java_homes[8]))
+        self.assertIn("--installServer", command)
+        self.assertTrue(installer._install_complete(dest, "forge", "1.7.10", "10.13.4.1614-1.7.10"))
+        jar, prefix = installer._modpack_launch(dest, "1.7.10")
+        self.assertTrue(jar.endswith("-universal.jar"))
+
+
 class Log4ShellTests(InstallerTestCase):
     def fake_download(self, url, dest, expected_sha1=None, **kwargs):
         os.makedirs(os.path.dirname(dest), exist_ok=True)
