@@ -634,7 +634,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 self._redirect("/")
                 return
             error = (self.query.get("error") or [""])[0]
-            self._html(web.login_page(error))
+            self._html(web.login_page(error, totp=auth.second_factor.enabled()))
             return
         if path in ("/login", "/api/login") and method == "POST":
             self._login()
@@ -687,6 +687,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         form = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
         key = (form.get("key") or [""])[0]
+        code = (form.get("code") or [""])[0]
         # Reserve the attempt (after the body: a slow body holds no reservation).
         verdict, ticket = auth.limiter.begin(ip)
         if verdict == "limited":
@@ -694,7 +695,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
 
         def check() -> bool:
-            return bool(key) and auth.sessions.check_key(key)
+            if not key or not auth.sessions.check_key(key):
+                return False
+            # The code is only looked at once the key is right, so a wrong
+            # key can't use up a code. Either one wrong is the same failure.
+            return not auth.second_factor.enabled() or auth.second_factor.check(code)
 
         if verdict == "slow":
             ok = auth.limiter.slow_lane(ip, ticket, check)

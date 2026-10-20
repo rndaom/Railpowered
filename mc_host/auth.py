@@ -1,4 +1,5 @@
-"""Dashboard authentication: signed session cookies, logout, login rate limits.
+"""Dashboard authentication: signed session cookies, logout, login rate limits,
+and optional time-based one-time codes (TOTP_SECRET, RFC 6238).
 
 Cookie `__Host-rp_session` (over https; `rp_session` on a local http
 address) = "v1.<issued_unix>.<nonce>.<hmac>". The HMAC key is
@@ -10,12 +11,16 @@ volume (.session-revoked.json) so a restart doesn't bring sessions back.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import collections
 import hashlib
 import hmac
 import ipaddress
 import os
+import re
 import secrets
+import struct
 import threading
 import time
 from typing import Any, Callable
@@ -41,6 +46,10 @@ SLOW_LANE_WAIT = 10.0
 SLOW_LANE_QUEUE = 2
 REVOKED_FILE = ".session-revoked.json"
 MAX_REVOKED = 500
+TOTP_STEP = 30
+TOTP_DIGITS = 6
+TOTP_DRIFT = 1  # steps either side of now, for clocks that are a little off
+TOTP_MIN_SECRET_BYTES = 10  # 16 base32 characters, what authenticator apps make
 
 
 def client_ip(peer: str, forwarded_for: str | None) -> str:
@@ -199,6 +208,76 @@ class RateLimiter:
     def reset(self, ip: str) -> None:
         with self._lock:
             self._by_ip.pop(ip, None)
+
+
+def hotp(key: bytes, counter: int, digits: int = TOTP_DIGITS, digest: str = "sha1") -> str:
+    """RFC 4226 one-time code for ``counter``."""
+    mac = hmac.new(key, struct.pack(">Q", counter), digest).digest()
+    offset = mac[-1] & 0x0F
+    value = int.from_bytes(mac[offset:offset + 4], "big") & 0x7FFFFFFF
+    return str(value % 10 ** digits).zfill(digits)
+
+
+def totp(
+    key: bytes, at: float, digits: int = TOTP_DIGITS, step: int = TOTP_STEP, digest: str = "sha1"
+) -> str:
+    """RFC 6238 code for unix time ``at``."""
+    return hotp(key, int(at // step), digits, digest)
+
+
+def parse_totp_secret(raw: str) -> bytes | None:
+    """The key behind a base32 TOTP secret (spaces, dashes, lower case and
+    missing padding are fine), or None when it isn't one or is too short."""
+    text = re.sub(r"[\s-]", "", raw or "").upper().rstrip("=")
+    if not text or not re.fullmatch(r"[A-Z2-7]+", text):
+        return None
+    try:
+        key = base64.b32decode(text + "=" * (-len(text) % 8))
+    except (binascii.Error, ValueError):
+        return None
+    return key if len(key) >= TOTP_MIN_SECRET_BYTES else None
+
+
+class TotpChecker:
+    """Second sign-in factor, on when TOTP_SECRET is set.
+
+    A secret that doesn't parse fails closed (every code is wrong) so a typo
+    can't silently turn the second factor off; main() says so at boot. A code
+    is accepted once: a step already used can't sign in again."""
+
+    def __init__(
+        self,
+        secret_source: Callable[[], str] | None = None,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._secret_source = secret_source or (lambda: os.environ.get("TOTP_SECRET", ""))
+        self.clock = clock
+        self._lock = threading.Lock()
+        self._last_step: dict[bytes, int] = {}
+
+    def _raw(self) -> str:
+        raw = str(self._secret_source() or "").strip()
+        return "" if raw.startswith("${{") else raw
+
+    def enabled(self) -> bool:
+        return bool(self._raw())
+
+    def valid_secret(self) -> bool:
+        return parse_totp_secret(self._raw()) is not None
+
+    def check(self, submitted: str) -> bool:
+        key = parse_totp_secret(self._raw())
+        code = re.sub(r"\s", "", submitted or "")
+        if key is None or not re.fullmatch(rf"\d{{{TOTP_DIGITS}}}", code):
+            return False
+        now = int(self.clock() // TOTP_STEP)
+        with self._lock:
+            last = self._last_step.get(key, -1)
+            for step in range(now - TOTP_DRIFT, now + TOTP_DRIFT + 1):
+                if step > last and hmac.compare_digest(hotp(key, step), code):
+                    self._last_step = {key: step}
+                    return True
+        return False
 
 
 class SessionManager:
@@ -380,6 +459,7 @@ def session_token(cookie_header: str | None) -> str | None:
 
 sessions = SessionManager()
 limiter = RateLimiter()
+second_factor = TotpChecker()
 
 
 def ensure_session_secret() -> None:

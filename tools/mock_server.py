@@ -2121,6 +2121,7 @@ class Handler(BaseHTTPRequestHandler):
             page = fh.read().decode("utf-8")
         # Same substitution as web.login_page(): every {{error}}, escaped.
         page = page.replace("{{error}}", html.escape(LOGIN_ERRORS.get(error, "")))
+        page = page.replace("{{totp}}", "")  # the mock has no second factor
         self.send_bytes(200, page.encode("utf-8"), CONTENT_TYPES[".html"], {"Cache-Control": "no-store"})
 
     def login(self):

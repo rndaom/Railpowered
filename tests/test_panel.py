@@ -40,6 +40,7 @@ class PanelTestCase(RuntimeTestCase):
         for target, attr, value in (
             (auth, "limiter", auth.RateLimiter()),
             (auth, "sessions", auth.SessionManager()),
+            (auth, "second_factor", auth.TotpChecker()),
             (controller, "proxy", FakeProxy()),
         ):
             patcher = mock.patch.object(target, attr, value)
@@ -51,7 +52,7 @@ class PanelTestCase(RuntimeTestCase):
         with open(os.path.join(self.web_dir, "index.html"), "w", encoding="utf-8") as handle:
             handle.write('<!doctype html><title>Dashboard</title><script src="/static/app.js"></script>')
         with open(os.path.join(self.web_dir, "login.html"), "w", encoding="utf-8") as handle:
-            handle.write('<form method="post" action="/login"><p class="error">{{error}}</p></form>')
+            handle.write('<form method="post" action="/login"><p class="error">{{error}}</p>{{totp}}</form>')
         with open(os.path.join(self.web_dir, "app.js"), "w", encoding="utf-8") as handle:
             handle.write("console.log('hi');")
         with open(os.path.join(self.web_dir, "assets", "logo.svg"), "w", encoding="utf-8") as handle:
@@ -280,6 +281,40 @@ class PagesAndAuthTests(PanelTestCase):
         # (None: answered 503 "busy" from a slot kept for signed-in requests.)
         self.assertTrue(set(locations) <= {"/login?error=1", "/login?error=rate", None}, locations)
         self.assertGreaterEqual(locations.count("/login?error=rate"), 1)
+
+    def test_totp_secret_adds_a_second_factor(self):
+        secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        key = auth.parse_totp_secret(secret)
+        os.environ["TOTP_SECRET"] = secret
+        _, body = self.request("GET", "/login?error=1")
+        self.assertIn(b'name="code"', body)
+        self.assertIn(b"key or code didn&#x27;t match", body)
+
+        def login(key_value: str, code: str):
+            response, _ = self.request(
+                "POST", "/login", body=f"key={key_value}&code={code}".encode(), cookie=False, csrf=False,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+            return response
+
+        code = auth.totp(key, time.time())
+        self.assertEqual(login(TEST_KEY, "").getheader("Location"), "/login?error=1")
+        self.assertEqual(login(TEST_KEY, "000000" if code != "000000" else "111111").getheader("Location"),
+                         "/login?error=1")
+        self.assertEqual(login("wrong", code).getheader("Location"), "/login?error=1")
+        response = login(TEST_KEY, code)
+        if response.getheader("Location") != "/":  # the 30 s step turned over mid-test
+            response = login(TEST_KEY, auth.totp(key, time.time()))
+        self.assertEqual(response.getheader("Location"), "/")
+        self.assertIn("rp_session=v1.", response.getheader("Set-Cookie"))
+        # Three wrong codes were failed attempts like wrong keys.
+        self.assertEqual(len(auth.limiter._all), 3)
+
+    def test_without_totp_the_login_page_has_no_code_field(self):
+        _, body = self.request("GET", "/login?error=1")
+        self.assertNotIn(b'name="code"', body)
+        self.assertNotIn(b"{{totp}}", body)
+        self.assertIn(b"didn&#x27;t match. Check it", body)
 
     def test_https_login_uses_a_host_prefixed_cookie_and_hsts(self):
         response = self.login(headers={"X-Forwarded-Proto": "https"})
@@ -627,7 +662,7 @@ class ApiBasicsTests(PanelTestCase):
         self.assertEqual(set(payload["setup"]), {
             "id", "name", "type", "minecraft_version", "resolved_version", "level_name", "instance"
         })
-        self.assertEqual(set(payload["idle"]), {"timeout_seconds", "seconds_until_sleep"})
+        self.assertEqual(set(payload["idle"]), {"timeout_seconds", "seconds_until_sleep", "wake_paused_until"})
         self.assertIsNone(payload["idle"]["seconds_until_sleep"])
         self.assertEqual(payload["app_version"], config.APP_VERSION)
         self.assertEqual(payload["product"], "Railpowered")

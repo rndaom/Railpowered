@@ -214,6 +214,7 @@ Most settings live in the dashboard and are stored on the volume. Railway variab
 |---|---|---|
 | `ADMIN_KEY` | *required* | Dashboard password. Use a long passphrase. Changing it signs everyone out. If it's unset, a random key is generated, saved on the volume (`.admin-key`) and printed **once** in the deploy log. A weak key (shorter than 12 characters, fewer than 5 different characters, or a well-known password) is refused: the key on the volume is used instead, the deploy log says so loudly and the dashboard shows a banner until you fix it. |
 | `ALLOW_WEAK_ADMIN_KEY` | `false` | `1` accepts a weak `ADMIN_KEY` anyway (not recommended). |
+| `TOTP_SECRET` | *unset* | Optional second sign-in factor. A base32 secret (16+ characters) shared with an authenticator app; the sign-in page then also asks for its 6-digit code. See [Security](#security). |
 | `PORT` | `8080` | Dashboard port. Keep `8080` so Railway's health check and HTTP domain reach it. Ignored if it equals 25565. |
 | `MINECRAFT_VERSION` | `latest` | **First boot only:** the version of the first setup (`latest`, or a version such as `1.21.1`). After that, change versions from the Setups page. A later change is noted in the log and otherwise ignored. |
 | `SERVER_TYPE` | `vanilla` | **First boot only:** `vanilla`, `fabric` or `forge`. Forge needs `MINECRAFT_VERSION` set to `1.16.5`, `1.12.2` or `1.7.10`. Add modpacks from the dashboard. |
@@ -303,12 +304,14 @@ The dashboard sits on a public URL and the join address is easy to scan for. Rai
 - **Sessions:** signed `HttpOnly` cookies (`__Host-` prefixed and `Secure` over HTTPS, `SameSite=Lax`) that last 30 days. They're keyed to a secret on the volume plus `ADMIN_KEY`, so changing the key signs everyone out. Signing out revokes the session for good, even across restarts, and **Sign out everywhere** (in the sidebar) revokes every session at once, this browser's included.
 - **CSRF:** every state-changing API request must carry the `X-Railpowered: 1` header and pass a same-origin check.
 - **Sign-in limits:** 10 failed attempts per address per 10 minutes. Past 60 failures from all addresses, sign-ins go through a slow lane: one key check every 3 seconds, at most two waiting, and everyone else is told "Too many attempts" at once. A wait that times out counts as a failure. During such a flood new sign-ins may be refused, but browsers that are already signed in keep working: some connections are kept for requests with a valid session (and some for `/health`). The key is compared in constant time.
+- **Optional authenticator codes:** set `TOTP_SECRET` and the sign-in page also asks for a 6-digit code from an authenticator app (RFC 6238: SHA-1, 30-second steps; the previous and next code are accepted for clock drift, and each code works once). A wrong key and a wrong code read the same and count the same toward the limits. If `TOTP_SECRET` isn't a valid base32 secret, every sign-in is refused (and the deploy log says why) rather than quietly dropping the second factor.
 - **Headers:** a strict Content Security Policy (no inline scripts), `X-Frame-Options: DENY`, `nosniff`, `Referrer-Policy: same-origin`, and `Cache-Control: no-store` on API responses.
 - **Least privilege:** Minecraft and the manager run as an unprivileged `minecraft` user. `ADMIN_KEY` and other secrets are removed from the JVM's environment. Names of worlds, setups and packs are validated, and every delete is checked to stay inside the volume. Modpack downloads are limited to public addresses, with size limits on downloads and extraction.
 
 **What you should do:**
 
 - Use a **long `ADMIN_KEY`**, and keep Railway variables and logs private.
+- For a **second factor**, create a secret with `python3 -c "import base64,os; print(base64.b32encode(os.urandom(20)).decode())"`, add it to your authenticator app (manual entry, time-based), then set it as `TOTP_SECRET` in the service's Variables. Removing the variable turns the second factor off again.
 - **Turn on the whitelist** (Players page) for a private server. Without it, anyone with a Minecraft account who finds the address can join.
 - **Keep online mode on.** With it off, anyone can join under any name, an operator's included. Old versions (1.6.4 and older) always run offline, so use the whitelist there.
 - **Only install mods and modpacks you trust.** They run with the same permissions as the dashboard.

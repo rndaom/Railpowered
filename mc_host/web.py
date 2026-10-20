@@ -55,6 +55,15 @@ CONTENT_TYPES = {
 }
 STATIC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
+# With TOTP_SECRET set, a wrong key and a wrong code read the same.
+LOGIN_ERROR_TOTP = "That key or code didn't match. Check them and try again."
+TOTP_FIELD = """<div class="field">
+              <label class="field-label" for="code">Authenticator code</label>
+              <input class="input" id="code" name="code" type="text" inputmode="numeric" pattern="[0-9 ]*"
+                     maxlength="8" autocomplete="one-time-code" required aria-describedby="code-help">
+              <p class="field-help" id="code-help">The 6-digit code from the authenticator app you set up with <code>TOTP_SECRET</code>.</p>
+            </div>"""
+
 LOGIN_ERRORS = {
     "1": "That key didn't match. Check it and try again.",
     "rate": "Too many attempts. Wait a few minutes and try again.",
@@ -75,6 +84,7 @@ FALLBACK_LOGIN = """<!DOCTYPE html>
 <form method="post" action="/login">
 <label for="key">Admin key</label>
 <input id="key" type="password" name="key" autocomplete="current-password" required autofocus>
+{{totp}}
 <button type="submit">Open dashboard</button>
 </form>
 <p>Railpowered accepts the
@@ -198,9 +208,13 @@ def version_assets(page: str) -> str:
     return _STATIC_REF.sub(repl, page)
 
 
-def login_page(error: str | None) -> str:
+def login_page(error: str | None, totp: bool = False) -> str:
+    """The sign-in page; ``totp`` adds the authenticator code field."""
     page = _read_page("login.html") or FALLBACK_LOGIN
     message = LOGIN_ERRORS.get(error or "", "")
+    if totp and error == "1":
+        message = LOGIN_ERROR_TOTP
+    page = page.replace("{{totp}}", TOTP_FIELD if totp else "")
     return version_assets(page.replace("{{error}}", html.escape(message)))
 
 

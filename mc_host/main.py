@@ -100,6 +100,20 @@ def announce_admin_key() -> None:
             )
 
 
+def announce_second_factor() -> None:
+    if not auth.second_factor.enabled():
+        return
+    if auth.second_factor.valid_secret():
+        state.add_log("Two-step sign-in is on: the dashboard asks for an authenticator code (TOTP_SECRET).")
+        return
+    message = (
+        "TOTP_SECRET is set but isn't a base32 secret of at least 16 characters, so every "
+        "sign-in is refused until it's fixed (or removed) in Railway's Variables."
+    )
+    print(f"{'!' * 68}\n{message}\n{'!' * 68}", flush=True)
+    state.add_log(message, "error")
+
+
 def _note_env_changes() -> None:
     """SERVER_TYPE / MINECRAFT_VERSION only seed the first setup. When they
     change later, say so in the log instead of ignoring them silently."""
@@ -151,6 +165,7 @@ def main() -> None:
         state.add_log(f"Couldn't clean up after interrupted work: {exc}", "warn")
     _note_env_changes()
     announce_admin_key()
+    announce_second_factor()
     auth.ensure_session_secret()
 
     try:
