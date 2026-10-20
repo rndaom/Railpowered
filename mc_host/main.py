@@ -75,13 +75,26 @@ def announce_admin_key() -> None:
             )
 
 
-def _prepare_runtime() -> None:
+def _note_env_changes() -> None:
+    """SERVER_TYPE / MINECRAFT_VERSION only seed the first setup. When they
+    change later, say so in the log instead of ignoring them silently."""
     try:
-        setup_version = ix.active_setup().get("minecraft_version")
-    except Exception:
-        setup_version = None
+        pending = installer.pending_env_setup()
+        if pending is not None:
+            state.add_log(
+                "SERVER_TYPE / MINECRAFT_VERSION changed in Railway, but they only choose the "
+                "first setup. Switch versions from the dashboard's Setups page instead.",
+                "warn",
+            )
+            installer.acknowledge_env_setup()
+    except Exception as exc:
+        state.add_log(f"Could not compare the Railway variables with the saved setup: {exc}", "warn")
+    for warning in installer.config_warnings(clear=True):
+        state.add_log(warning, "warn")
+
+
+def _prepare_runtime() -> None:
     spec = ix.prepare_runtime()
-    ix.remember_resolved(setup_version, getattr(spec, "version", None))
     state.add_log(
         f"Server files are ready: {getattr(spec, 'type', 'minecraft')} "
         f"{getattr(spec, 'version', '')} on Java {getattr(spec, 'java_major', '?')}."
@@ -101,7 +114,10 @@ def main() -> None:
 
     for warning in config.CONFIG_WARNINGS:
         state.add_log(warning, "warn")
+    # Installer progress ("Downloading Minecraft 1.21.1...") goes to the dashboard log.
+    installer.set_log_handler(state.add_log)
     installer.ensure_layout()
+    _note_env_changes()
     announce_admin_key()
     auth.ensure_session_secret()
 
@@ -116,20 +132,21 @@ def main() -> None:
         state.add_log(f"Join address: {config.MC_PUBLIC_ADDRESS}")
     else:
         state.add_log("The join address appears once a Railway TCP proxy points at port 25565.")
-    idle = config.IDLE_TIMEOUT
+    try:
+        settings = ix.railpowered_settings()
+    except Exception:
+        settings = {"idle_timeout_minutes": config.IDLE_TIMEOUT // 60, "auto_start": config.AUTO_START}
+    idle = settings.get("idle_timeout_minutes") or 0
     state.add_log(
-        f"Heap {config.MIN_MEMORY}-{config.MAX_MEMORY}; default sleep timer "
-        + (f"{idle // 60} min" if idle else "off")
+        f"Heap {config.MIN_MEMORY}-{config.MAX_MEMORY}; sleep timer "
+        + (f"{idle} min" if idle else "off")
         + f"; stop grace {config.STOP_TIMEOUT}s."
     )
 
     controller.ensure_listener()
     threading.Thread(target=controller.idle_loop, name="idle", daemon=True).start()
 
-    try:
-        auto_start = bool(ix.railpowered_settings().get("auto_start"))
-    except Exception:
-        auto_start = config.AUTO_START
+    auto_start = bool(settings.get("auto_start"))
     tasks.submit(
         "prepare",
         "Preparing the server files",

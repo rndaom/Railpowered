@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-import json
 import os
 import struct
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import installer
 from manager import SleepProxy, ThreadingHTTPServer
 
 

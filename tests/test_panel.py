@@ -46,7 +46,7 @@ class PanelTestCase(RuntimeTestCase):
         self.web_dir = os.path.join(self.data_dir, "web")
         os.makedirs(os.path.join(self.web_dir, "assets"))
         with open(os.path.join(self.web_dir, "index.html"), "w", encoding="utf-8") as handle:
-            handle.write("<!doctype html><title>Dashboard</title><script src=/static/app.js></script>")
+            handle.write('<!doctype html><title>Dashboard</title><script src="/static/app.js"></script>')
         with open(os.path.join(self.web_dir, "login.html"), "w", encoding="utf-8") as handle:
             handle.write('<form method="post" action="/login"><p class="error">{{error}}</p></form>')
         with open(os.path.join(self.web_dir, "app.js"), "w", encoding="utf-8") as handle:
@@ -56,6 +56,8 @@ class PanelTestCase(RuntimeTestCase):
         with open(os.path.join(self.data_dir, "secret.txt"), "w", encoding="utf-8") as handle:
             handle.write("top secret")
         os.environ["WEB_DIR"] = self.web_dir
+        # A volume that has been prepared once: the active setup's world exists.
+        os.makedirs(installer.world_path("world"), exist_ok=True)
 
         self.server = PanelServer(("127.0.0.1", 0), PanelHandler)
         self.port = self.server.server_address[1]
@@ -138,6 +140,8 @@ class PagesAndAuthTests(PanelTestCase):
         response, body = self.request("GET", "/")
         self.assertEqual(response.status, 200)
         self.assertIn(b"<title>Dashboard</title>", body)
+        # Assets are linked by content hash so a redeploy can't serve a stale app.js.
+        self.assertRegex(body.decode(), r'src="/static/app\.js\?v=[0-9a-f]{12}"')
         response, _ = self.request("GET", "/login")
         self.assertEqual((response.status, response.getheader("Location")), (302, "/"))
 
@@ -360,9 +364,11 @@ class StaticTests(PanelTestCase):
         response, data = self.request("GET", "/static/app.js", cookie=False)
         self.assertEqual(response.status, 200)
         self.assertEqual(response.getheader("Content-Type"), "text/javascript; charset=utf-8")
-        self.assertEqual(response.getheader("Cache-Control"), "public, max-age=300")
+        self.assertEqual(response.getheader("Cache-Control"), "no-cache")
         self.assertEqual(response.getheader("X-Content-Type-Options"), "nosniff")
         self.assertEqual(data, b"console.log('hi');")
+        response, _ = self.request("GET", "/static/app.js?v=0123456789ab", cookie=False)
+        self.assertEqual(response.getheader("Cache-Control"), "public, max-age=31536000, immutable")
         response, _ = self.request("GET", "/static/assets/logo.svg")
         self.assertEqual(response.getheader("Content-Type"), "image/svg+xml")
 
@@ -500,15 +506,31 @@ class SetupRouteTests(PanelTestCase):
         self.assertEqual(create.call_args[1], {"allow_downgrade": False, "activate": True})
 
     def test_downgrade_guard_is_checked_before_the_task(self):
-        error = ix.install_error("World world was last played on 1.21.1.", "world_downgrade")
-        with mock.patch.object(ix, "check_downgrade", side_effect=error):
-            status, payload = self.api(
-                "POST", "/api/setups",
-                {"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "world",
-                 "create_world": False},
-            )
+        installer.record_world_version("world", "1.21.1", "vanilla")
+        status, payload = self.api(
+            "POST", "/api/setups",
+            {"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "world",
+             "create_world": False},
+        )
         self.assertEqual((status, payload["code"]), (409, "world_downgrade"))
+        # The dialog names the world and both versions.
+        self.assertEqual(
+            (payload["world"], payload["last_version"], payload["version"]),
+            ("world", "1.21.1", "1.20.1"),
+        )
         self.assertIsNone(tasks.running())
+        active = self.api("GET", "/api/setups")[1]["setups"][0]
+        with mock.patch.object(ix, "activate_setup"):
+            other = installer.load_config()
+            other["profiles"].append({**other["profiles"][0], "id": "old", "name": "Old",
+                                      "minecraft_version": "1.20.1", "resolved_version": "1.20.1"})
+            installer.save_config(other)
+            status, payload = self.api("POST", "/api/setups/old/activate", {})
+            self.assertEqual((status, payload["code"]), (409, "world_downgrade"))
+            status, payload = self.api("POST", "/api/setups/old/activate", {"allow_downgrade": True})
+            self.assertEqual(status, 202)
+            tasks.wait_idle(5)
+        self.assertTrue(active["active"])
 
     def test_setup_list_activate_and_delete(self):
         status, payload = self.api("GET", "/api/setups")
@@ -576,8 +598,26 @@ class ModpackRouteTests(PanelTestCase):
             )
             self.assertEqual((status, payload["task"]["kind"]), (202, "modpack"))
             tasks.wait_idle(5)
-        install.assert_called_once_with("https://cdn.modrinth.com/x.mrpack", "pack", level_name="pack")
+        install.assert_called_once_with(
+            "https://cdn.modrinth.com/x.mrpack", "pack", level_name="pack", allow_downgrade=False
+        )
         self.assertEqual(create.call_args[0][0]["name"], "pack")
+        self.assertEqual(create.call_args[1], {"allow_downgrade": False, "activate": True})
+
+    def test_url_install_passes_allow_downgrade(self):
+        fields = {"type": "modpack", "minecraft_version": "1.20.1", "level_name": "world",
+                  "instance": "pack"}
+        with mock.patch.object(ix, "install_modpack_from_url", return_value=fields) as install, \
+                mock.patch.object(ix, "create_setup") as create:
+            status, _ = self.api(
+                "POST", "/api/modpacks",
+                {"url": "https://cdn.modrinth.com/x.mrpack", "name": "pack", "level_name": "world",
+                 "allow_downgrade": True},
+            )
+            self.assertEqual(status, 202)
+            tasks.wait_idle(5)
+        self.assertTrue(install.call_args[1]["allow_downgrade"])
+        self.assertTrue(create.call_args[1]["allow_downgrade"])
 
     def test_upload_requires_length_and_limits_size(self):
         sock = socket.create_connection(("127.0.0.1", self.port), timeout=10)
@@ -590,7 +630,7 @@ class ModpackRouteTests(PanelTestCase):
         while chunk := sock.recv(4096):
             reply += chunk
         self.assertIn(b" 411 ", reply.split(b"\r\n", 1)[0])
-        with mock.patch.object(config, "MAX_UPLOAD_MB", 1):
+        with mock.patch.dict(os.environ, {"MAX_UPLOAD_MB": "1"}):
             status, payload = self.api(
                 "POST", "/api/modpacks/upload?name=pack",
                 headers={"Content-Length": str(2 * 1024 * 1024)}, body=b"",
@@ -608,10 +648,10 @@ class ModpackRouteTests(PanelTestCase):
     def test_upload_streams_to_disk_and_installs(self):
         seen = {}
 
-        def install(path, name, level_name=None):
+        def install(path, name, level_name=None, allow_downgrade=False):
             with open(path, "rb") as handle:
                 seen["data"] = handle.read()
-            seen["args"] = (name, level_name)
+            seen["args"] = (name, level_name, allow_downgrade)
             return {"type": "modpack", "minecraft_version": "1.20.1", "level_name": level_name,
                     "instance": name}
 
@@ -619,13 +659,15 @@ class ModpackRouteTests(PanelTestCase):
         with mock.patch.object(ix, "install_modpack_archive", side_effect=install), \
                 mock.patch.object(ix, "create_setup"):
             status, payload = self.api(
-                "POST", "/api/modpacks/upload?name=pack&level_name=packworld&filename=My%20Pack.mrpack",
+                "POST",
+                "/api/modpacks/upload?name=pack&level_name=packworld&filename=My%20Pack.mrpack"
+                "&allow_downgrade=1",
                 body=data,
             )
             self.assertEqual(status, 202)
             tasks.wait_idle(5)
         self.assertEqual(seen["data"], data)
-        self.assertEqual(seen["args"], ("pack", "packworld"))
+        self.assertEqual(seen["args"], ("pack", "packworld", True))
         self.assertEqual(os.listdir(installer.paths()["modpacks"]), [])
 
 
@@ -641,6 +683,7 @@ class WorldBackupRouteTests(PanelTestCase):
         self.assertEqual(
             set(world), {"name", "size_bytes", "active", "last_version", "last_played", "used_by"}
         )
+        self.assertEqual((world["name"], world["active"]), ("world", True))
         self.assertEqual(self.api("POST", "/api/worlds", {"name": "creative"})[0], 200)
         self.assertEqual(self.api("POST", "/api/worlds", {"name": "creative"})[0], 409)
         self.assertEqual(self.api("POST", "/api/worlds", {"name": "."})[0], 400)
@@ -665,7 +708,10 @@ class WorldBackupRouteTests(PanelTestCase):
         self.assertEqual(status, 200)
         self.assertEqual(set(payload["disk"]), {"used_bytes", "total_bytes", "free_bytes"})
         backup = payload["backups"][0]
-        self.assertEqual(set(backup), {"name", "world", "size_bytes", "created_at", "minecraft_version"})
+        self.assertEqual(
+            set(backup), {"name", "world", "size_bytes", "created_at", "minecraft_version", "kind"}
+        )
+        self.assertEqual(backup["kind"], "manual")
         self.assertEqual(backup["world"], "world")
         response, data = self.request("GET", f"/api/backups/{backup['name']}/download")
         self.assertEqual(response.status, 200)
@@ -708,7 +754,7 @@ class PlayersAndSettingsTests(PanelTestCase):
         )
         self.assertEqual(self.api("POST", "/api/players/ops", {"name": "x');alert(1)//"})[0], 400)
         self.assertEqual(self.api("POST", "/api/players/admins", {"name": "Steve"})[0], 404)
-        with mock.patch.object(ix, "add_player") as add, \
+        with mock.patch.object(ix, "add_player", return_value={"name": "Steve", "uuid": "x"}) as add, \
                 mock.patch.object(ix, "remove_player") as remove, \
                 mock.patch.object(ix, "set_whitelist_enabled") as toggle, \
                 mock.patch.object(controller, "send_command", return_value=True) as send:
@@ -728,12 +774,11 @@ class PlayersAndSettingsTests(PanelTestCase):
             ["op Steve", "whitelist remove Alex", "whitelist on"],
         )
 
-    def test_whitelist_toggle_writes_both_properties_in_shim(self):
+    def test_whitelist_toggle_writes_both_properties(self):
         self.write_properties(motd="Keep me", **{"white_list": "false"})
-        with mock.patch.object(installer, "set_whitelist_enabled", None, create=True):
-            self.assertEqual(
-                self.api("PUT", "/api/players/whitelist/enabled", {"enabled": True})[0], 200
-            )
+        self.assertEqual(
+            self.api("PUT", "/api/players/whitelist/enabled", {"enabled": True})[0], 200
+        )
         props = installer.read_properties()
         self.assertEqual(props["white-list"], "true")
         self.assertEqual(props["enforce-whitelist"], "true")

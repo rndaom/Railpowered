@@ -59,7 +59,6 @@ class ServerState:
         self.idle_since: float | None = None
         self.last_exit: dict[str, Any] | None = None
         self.runtime: Any = None  # installer.RuntimeSpec of the running/last start
-        self.properties_at_start: dict[str, str] | None = None
         self._log: collections.deque[dict[str, Any]] = collections.deque(
             maxlen=LOG_CAPACITY
         )

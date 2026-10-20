@@ -64,14 +64,27 @@ class ControllerTestCase(RuntimeTestCase):
                 side_effect=lambda cfg=None: {"idle_timeout_minutes": self.idle_minutes,
                                               "auto_start": False}
             ),
-            "create_backup": mock.Mock(return_value={"name": "world-1.tar.gz"}),
+            "create_backup": mock.Mock(side_effect=self._fake_create_backup),
         }
+        self.backup_error = None
         self.ix = {}
         for name, value in patches.items():
             patcher = mock.patch.object(ix, name, value)
             self.ix[name] = patcher.start()
             self.addCleanup(patcher.stop)
         self.addCleanup(self._cleanup_processes)
+
+    def _fake_create_backup(self, world, before_tar=None, after_tar=None):
+        # Mirrors installer.create_backup: before_tar, archive, after_tar in a finally.
+        try:
+            if before_tar:
+                before_tar()
+            if self.backup_error:
+                raise self.backup_error
+            return {"name": f"{world}-1.tar.gz"}
+        finally:
+            if after_tar:
+                after_tar()
 
     def _cleanup_processes(self) -> None:
         for proc in self.processes:
@@ -423,9 +436,10 @@ class WakeAndProxyTests(ControllerTestCase):
         self.assertEqual(self.tasks.snapshot()["error"], "download failed")
 
     def test_proxy_info_reads_motd_slots_version_and_whitelist(self):
-        self.ix["read_properties"].return_value = {
-            "motd": "Caf\\u00e9 SMP", "max-players": "8", "white-list": "true"
-        }
+        installer.write_properties({"motd": "Café SMP", "max-players": "8", "white-list": "true"})
+        with open(installer.paths()["properties"], encoding="latin-1") as handle:
+            self.assertIn("motd=Caf\\u00e9 SMP", handle.read())  # stored escaped
+        self.ix["read_properties"].side_effect = lambda: dict(installer.read_properties())
         with mock.patch.object(
             ix, "players",
             return_value={"ops": [{"name": "Owner"}], "whitelist": [{"name": "Steve"}]},
@@ -460,11 +474,11 @@ class BackupTests(ControllerTestCase):
         proc = self.start_online()
         self.controller.backup_world("world")
         self.assertEqual(proc.commands, ["save-off", "save-all flush", "save-on"])
-        self.ix["create_backup"].assert_called_once_with("world")
+        self.assertEqual(self.ix["create_backup"].call_args[0], ("world",))
 
     def test_save_on_runs_even_when_the_backup_fails(self):
         proc = self.start_online()
-        self.ix["create_backup"].side_effect = installer.InstallError("disk full")
+        self.backup_error = installer.InstallError("disk full")
         with self.assertRaises(installer.InstallError):
             self.controller.backup_world("world")
         self.assertEqual(proc.commands[-1], "save-on")
@@ -490,8 +504,9 @@ class CommandLineTests(unittest.TestCase):
         self.assertNotIn("-jar", command)
 
     def test_build_from_command_keeps_installer_flags(self):
-        spec = fake_spec(command=["java", "-Xmx3G", "-XX:+UseZGC", "-jar", "server.jar", "nogui"])
+        spec = fake_spec(jvm_args=["-Xmx3G", "-XX:+UseZGC"])
         command = build_command(spec)
+        self.assertEqual(command[-3:], ["-jar", "server.jar", "nogui"])
         self.assertEqual(command.count("-Xmx3G"), 1)
         self.assertFalse(any(arg.startswith("-Xmx") and arg != "-Xmx3G" for arg in command))
         self.assertNotIn("-XX:+UseG1GC", command)

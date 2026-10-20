@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import os
 import re
@@ -20,7 +21,11 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
 }
-STATIC_CACHE = "public, max-age=300"
+# Bare /static/ URLs are revalidated on every load so a redeploy never mixes an
+# old app.js with a new API; the pages link ?v=<content hash> URLs instead,
+# which never change content and can be cached for good.
+STATIC_CACHE = "no-cache"
+STATIC_CACHE_VERSIONED = "public, max-age=31536000, immutable"
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -148,11 +153,47 @@ def _read_page(name: str) -> str | None:
         return None
 
 
+_hash_cache: dict[str, tuple[tuple[int, int], str]] = {}
+_STATIC_REF = re.compile(r'((?:src|href)=")/static/([A-Za-z0-9._/-]+)(")')
+
+
+def asset_hash(relative: str) -> str | None:
+    """Short content hash of a static file (cached by size and mtime)."""
+    found = static_file(relative)
+    if found is None:
+        return None
+    path = found[0]
+    try:
+        stat = os.stat(path)
+    except OSError:
+        return None
+    key = (stat.st_size, stat.st_mtime_ns)
+    cached = _hash_cache.get(path)
+    if cached and cached[0] == key:
+        return cached[1]
+    with open(path, "rb") as handle:
+        digest = hashlib.sha256(handle.read()).hexdigest()[:12]
+    _hash_cache[path] = (key, digest)
+    return digest
+
+
+def version_assets(page: str) -> str:
+    """Point every /static/ reference in a page at /static/<name>?v=<hash>."""
+
+    def repl(match: re.Match[str]) -> str:
+        digest = asset_hash(match.group(2))
+        if digest is None:
+            return match.group(0)
+        return f"{match.group(1)}/static/{match.group(2)}?v={digest}{match.group(3)}"
+
+    return _STATIC_REF.sub(repl, page)
+
+
 def login_page(error: str | None) -> str:
     page = _read_page("login.html") or FALLBACK_LOGIN
     message = LOGIN_ERRORS.get(error or "", "")
-    return page.replace("{{error}}", html.escape(message))
+    return version_assets(page.replace("{{error}}", html.escape(message)))
 
 
 def index_page() -> str:
-    return _read_page("index.html") or FALLBACK_INDEX
+    return version_assets(_read_page("index.html") or FALLBACK_INDEX)

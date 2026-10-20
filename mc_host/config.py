@@ -291,10 +291,12 @@ if 0 < IDLE_TIMEOUT < 60:
     _warn(f"IDLE_TIMEOUT={IDLE_TIMEOUT} is very short; using 60 seconds.")
     IDLE_TIMEOUT = 60
 AUTO_START = env_bool("AUTO_START", False)
-# Grace period for Minecraft to save and exit. Keep it a few seconds below
-# Railway's drainingSeconds so the world is saved before SIGKILL.
-STOP_TIMEOUT = env_int("STOP_TIMEOUT", 25, minimum=5, maximum=600)
-MAX_UPLOAD_MB = env_int("MAX_UPLOAD_MB", 1024, minimum=1, maximum=16 * 1024)
+# IDLE_TIMEOUT and AUTO_START are parsed here only to warn about bad values at
+# boot; the effective values come from installer.railpowered_settings(), where
+# the dashboard's saved settings override them.
+# Grace period for Minecraft to save and exit. With the kill and join waits in
+# process.py the whole shutdown stays under Railway's drainingSeconds (60).
+STOP_TIMEOUT = env_int("STOP_TIMEOUT", 30, minimum=5, maximum=45)
 MC_PUBLIC_ADDRESS = resolve_public_address()
 
 

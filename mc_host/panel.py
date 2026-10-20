@@ -33,11 +33,6 @@ LOGIN_LIMIT = 4 * 1024
 CHUNK = 64 * 1024
 CONSOLE_MAX = 1000
 GENERIC_500 = "Something went wrong on the server. The log has the details."
-CONFLICT_CODES = {
-    "world_downgrade", "busy", "conflict", "exists", "already_exists", "world_exists",
-    "setup_exists", "instance_exists", "active_setup", "active_world", "in_use",
-    "running", "server_running", "already_running", "not_running", "not_online",
-}
 
 
 class ApiError(Exception):
@@ -46,16 +41,6 @@ class ApiError(Exception):
         self.status = status
         self.code = code
         self.message = message
-
-
-def install_error_status(code: str) -> int:
-    if code == "not_found" or code.endswith("_not_found"):
-        return 404
-    if code in CONFLICT_CODES:
-        return 409
-    if code in ("too_large", "upload_too_large"):
-        return 413
-    return 400
 
 
 # -- routing table -----------------------------------------------------------
@@ -72,6 +57,8 @@ def route(method: str, pattern: str, auth_required: bool = True) -> Callable[[Ca
 
 
 _SEG = r"([^/]+)"
+# <world>[-pre-restore|-pre-downgrade]-YYYYmmdd-HHMMSS[-n].tar.gz
+_BACKUP_WORLD = re.compile(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz$")
 
 
 class PanelServer(ThreadingHTTPServer):
@@ -226,8 +213,12 @@ class PanelHandler(BaseHTTPRequestHandler):
         except ServerError as exc:
             self._fail(is_api, exc.status, exc.code, str(exc))
         except installer.InstallError as exc:
-            code = ix.error_code(exc)
-            self._fail(is_api, install_error_status(code), code, str(exc) or "That didn't work.")
+            if getattr(exc, "detail", None):
+                print(f"{ix.error_code(exc)}: {exc.detail}", flush=True)
+            self._fail(
+                is_api, ix.error_status(exc), ix.error_code(exc),
+                str(exc) or "That didn't work.", ix.error_data(exc),
+            )
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
         except Exception as exc:
@@ -237,12 +228,14 @@ class PanelHandler(BaseHTTPRequestHandler):
             )
             self._fail(is_api, 500, "internal", GENERIC_500)
 
-    def _fail(self, is_api: bool, status: int, code: str, message: str) -> None:
+    def _fail(
+        self, is_api: bool, status: int, code: str, message: str, extra: dict[str, Any] | None = None
+    ) -> None:
         if self._headers_sent:
             self.close_connection = True
             return
         if is_api:
-            self._json({"error": message, "code": code}, status)
+            self._json({**(extra or {}), "error": message, "code": code}, status)
         else:
             self._send(status, message.encode("utf-8"), "text/plain; charset=utf-8")
 
@@ -408,7 +401,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             found = web.static_file(path[len("/static/"):])
             if found is None:
                 raise ApiError(404, "not_found", "Not found.")
-            self._serve_file(*found)
+            # Pages link assets as ?v=<content hash>, so a versioned URL can be
+            # cached for good; a bare URL must be revalidated after a redeploy.
+            versioned = bool((self.query.get("v") or [""])[0])
+            self._serve_file(*found, cache=web.STATIC_CACHE_VERSIONED if versioned else web.STATIC_CACHE)
             return
         if path == "/favicon.ico" and method == "GET":
             found = web.favicon()
@@ -419,10 +415,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         raise ApiError(404, "not_found", "Not found.")
 
-    def _serve_file(self, path: str, content_type: str) -> None:
+    def _serve_file(self, path: str, content_type: str, cache: str = web.STATIC_CACHE) -> None:
         with open(path, "rb") as handle:
             body = handle.read()
-        self._send(200, body, content_type, cache=web.STATIC_CACHE)
+        self._send(200, body, content_type, cache=cache)
 
     def _login(self) -> None:
         ip = self._client_ip()
@@ -448,14 +444,17 @@ class PanelHandler(BaseHTTPRequestHandler):
         self._redirect(target, 303)
 
     def _logout(self) -> None:
-        header_ok = self.headers.get("X-Railpowered") == "1"
-        origin = self._same_origin()
-        if origin is False or (not header_ok and origin is None):
-            raise ApiError(403, "csrf", "Log out from the dashboard.")
+        # The dashboard's fetch sends the X-Railpowered header (plus a hidden
+        # x_railpowered=1 form field); a plain form post is accepted when the
+        # browser shows it came from this origin. A form field alone proves
+        # nothing (any site can set one), so it never stands in for either.
         try:
             self._body(LOGIN_LIMIT)
         except ApiError:
             pass
+        origin = self._same_origin()
+        if origin is False or (origin is None and self.headers.get("X-Railpowered") != "1"):
+            raise ApiError(403, "csrf", "Log out from the dashboard.")
         auth.sessions.revoke(self._token())
         self._redirect("/login", 303, auth.sessions.clear_cookie_header(self._secure()))
 
@@ -549,19 +548,20 @@ class PanelHandler(BaseHTTPRequestHandler):
         if server_type not in ix.SERVER_TYPES:
             raise ApiError(400, "invalid_type", "Pick Vanilla, Fabric or Forge.")
         version = _str(data, "minecraft_version", "latest") or "latest"
-        if not ix.VERSION_RE.match(version):
+        if not ix.valid_version(version):
             raise ApiError(400, "invalid_version", "That Minecraft version doesn't look right.")
         if version == "latest" and server_type == "forge":
             raise ApiError(400, "invalid_version", "Pick a specific Minecraft version for Forge.")
-        forge_builds = getattr(installer, "FORGE_BUILDS", None)
-        if server_type == "forge" and forge_builds and version not in forge_builds:
+        if server_type == "forge" and version not in installer.FORGE_BUILDS:
             raise ApiError(
                 400, "invalid_version",
-                f"Forge is available for {', '.join(sorted(forge_builds))}.",
+                f"Forge is available for {', '.join(installer.FORGE_BUILDS)}.",
             )
         name = _str(data, "name")
-        if len(name) > 48:
-            raise ApiError(400, "invalid_name", "Setup names are at most 48 characters.")
+        if len(name) > ix.SETUP_NAME_MAX:
+            raise ApiError(
+                400, "invalid_name", f"Setup names are at most {ix.SETUP_NAME_MAX} characters."
+            )
         allow_downgrade = _bool(data, "allow_downgrade", False)
         activate = _bool(data, "activate", True)
         create_world = _bool(data, "create_world", True)
@@ -580,8 +580,8 @@ class PanelHandler(BaseHTTPRequestHandler):
             while os.path.exists(os.path.join(worlds_dir, level)):
                 level, counter = f"{base}-{counter}", counter + 1
             create_world = True
-        if not create_world and not allow_downgrade and version != "latest":
-            ix.check_downgrade(level, version)
+        if not create_world and not allow_downgrade:
+            _precheck_downgrade(level, version)
         _require_idle_tasks()
         fields = {
             "name": name or None,
@@ -616,8 +616,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         name = data.get("name")
         if name is not None:
             name = _str(data, "name")
-            if not name or len(name) > 48:
-                raise ApiError(400, "invalid_name", "Setup names are 1-48 characters.")
+            if not name or len(name) > ix.SETUP_NAME_MAX:
+                raise ApiError(
+                    400, "invalid_name", f"Setup names are 1-{ix.SETUP_NAME_MAX} characters."
+                )
         level = data.get("level_name")
         if level is not None:
             level = _check_name(_str(data, "level_name"))
@@ -638,9 +640,11 @@ class PanelHandler(BaseHTTPRequestHandler):
         if setup["active"]:
             self._json({"ok": True, "task": None, "already_active": True})
             return
-        version = setup.get("resolved_version") or setup["minecraft_version"]
-        if not allow_downgrade and version and version != "latest":
-            ix.check_downgrade(setup["level_name"], version)
+        if not allow_downgrade:
+            version = setup["minecraft_version"]
+            if version == "latest":
+                version = setup.get("resolved_version") or "latest"
+            _precheck_downgrade(setup["level_name"], version)
         _require_idle_tasks()
 
         def run(_ctx: Any) -> None:
@@ -663,15 +667,26 @@ class PanelHandler(BaseHTTPRequestHandler):
         self._json({"ok": True})
 
     # -- modpacks -----------------------------------------------------------------
-    def _modpack_task(self, label: str, install: Callable[[], dict[str, Any]], name: str) -> None:
-        def run(_ctx: Any) -> None:
-            fields = dict(install())
+    def _modpack_task(
+        self,
+        label: str,
+        install: Callable[[], dict[str, Any]],
+        name: str,
+        allow_downgrade: bool,
+    ) -> None:
+        def activate(fields: dict[str, Any]) -> Any:
+            fields = dict(fields)
             fields.setdefault("name", name)
-            _run_with_restart(
-                lambda: ix.create_setup(fields, activate=True),
-                restart=True,
-                reason=f"switching to {name}",
-            )
+            return ix.create_setup(fields, allow_downgrade=allow_downgrade, activate=True)
+
+        def run(_ctx: Any) -> None:
+            if controller.running_instance() == name:
+                # Reinstalling the pack that is running: its files are about
+                # to be swapped, so stop it before the install, not after.
+                _run_with_restart(lambda: activate(install()), restart=True, reason=f"updating {name}")
+                return
+            fields = install()
+            _run_with_restart(lambda: activate(fields), restart=True, reason=f"switching to {name}")
 
         task = tasks.submit("modpack", label, run)
         self._json({"task": task.to_dict()}, 202)
@@ -687,11 +702,15 @@ class PanelHandler(BaseHTTPRequestHandler):
         name = _check_name(_str(data, "name"), "Modpack")
         level = _str(data, "level_name") or name
         _check_name(level)
+        allow_downgrade = _bool(data, "allow_downgrade", False)
         _require_idle_tasks()
         self._modpack_task(
             f"Installing modpack {name}",
-            lambda: ix.install_modpack_from_url(url, name, level_name=level),
+            lambda: ix.install_modpack_from_url(
+                url, name, level_name=level, allow_downgrade=allow_downgrade
+            ),
             name,
+            allow_downgrade,
         )
 
     @route("POST", "/api/modpacks/upload")
@@ -701,8 +720,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         _check_name(level)
         filename = ((self.query.get("filename") or [""])[0] or self.headers.get("X-Filename", ""))
         extension = ".mrpack" if filename.lower().endswith(".mrpack") else ".zip"
+        flag = ((self.query.get("allow_downgrade") or [""])[0]).strip().lower()
+        allow_downgrade = flag in ("1", "true", "yes")
         _require_idle_tasks()
-        limit = config.MAX_UPLOAD_MB * 1024 * 1024
+        limit = installer.max_upload_bytes()
         length = self._content_length(limit, required=True)
         modpacks = installer.paths()["modpacks"]
         os.makedirs(modpacks, exist_ok=True)
@@ -727,8 +748,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             raise
 
         def install() -> dict[str, Any]:
+            # The installer leaves the archive alone; the upload is ours to delete.
             try:
-                return ix.install_modpack_archive(final, name, level_name=level)
+                return ix.install_modpack_archive(
+                    final, name, level_name=level, allow_downgrade=allow_downgrade
+                )
             finally:
                 try:
                     os.remove(final)
@@ -736,7 +760,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                     pass
 
         try:
-            self._modpack_task(f"Installing modpack {name}", install, name)
+            self._modpack_task(f"Installing modpack {name}", install, name, allow_downgrade)
         except TaskBusy:
             try:
                 os.remove(final)
@@ -764,16 +788,14 @@ class PanelHandler(BaseHTTPRequestHandler):
     def api_create_world(self) -> None:
         data = self._json_body()
         name = _check_name(_str(data, "name"))
-        if os.path.exists(os.path.join(installer.paths()["worlds"], name)):
-            raise ApiError(409, "world_exists", f"A world named {name} already exists.")
         ix.create_world(name)
         self._json({"ok": True, "worlds": ix.list_worlds()})
 
     @route("DELETE", f"/api/worlds/{_SEG}")
     def api_delete_world(self, name: str) -> None:
         _check_name(name)
-        if not os.path.isdir(os.path.join(installer.paths()["worlds"], name)):
-            raise ApiError(404, "not_found", f"There is no world named {name}.")
+        if not ix.world_exists(name):
+            raise ApiError(404, "world_not_found", f"There is no world named {name}.")
         active = ix.active_setup()
         if active.get("level_name") == name or controller.current_world() == name:
             raise ApiError(
@@ -793,17 +815,16 @@ class PanelHandler(BaseHTTPRequestHandler):
         data = self._json_body()
         world = _str(data, "world") or str(ix.active_setup().get("level_name") or "world")
         _check_name(world)
-        if not os.path.isdir(os.path.join(installer.paths()["worlds"], world)):
-            raise ApiError(404, "not_found", f"There is no world named {world}.")
+        if not ix.world_exists(world):
+            raise ApiError(404, "world_not_found", f"There is no world named {world}.")
         _require_idle_tasks()
         task = tasks.submit("backup", f"Backing up {world}", lambda _ctx: controller.backup_world(world))
         self._json({"task": task.to_dict()}, 202)
 
     def _backup_path(self, name: str) -> str:
-        path = ix.backup_file(name)
-        if not os.path.isfile(path):
-            raise ApiError(404, "not_found", "That backup no longer exists.")
-        return path
+        if not ix.valid_backup_name(name):
+            raise ApiError(400, "invalid_name", "That isn't a backup name.")
+        return ix.backup_file(name)  # 404 backup_not_found when it's gone
 
     @route("POST", f"/api/backups/{_SEG}/restore")
     def api_restore_backup(self, name: str) -> None:
@@ -816,6 +837,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         if effective is None:
             match = next((b for b in ix.list_backups() if b["name"] == name), None)
             effective = (match or {}).get("world")
+        if effective is None:
+            # Unreadable metadata: the file name still says which world it is.
+            named = _BACKUP_WORLD.match(name)
+            effective = named.group(1) if named else None
         if effective and controller.current_world() == effective:
             raise ApiError(409, "server_running", f"Stop the server before restoring {effective}.")
         _require_idle_tasks()
@@ -865,7 +890,8 @@ class PanelHandler(BaseHTTPRequestHandler):
     def api_add_player(self, kind: str) -> None:
         data = self._json_body()
         name = _check_player(_str(data, "name"))
-        ix.add_player(kind, name)
+        added = ix.add_player(kind, name)
+        name = str((added or {}).get("name") or name)  # Mojang's spelling of the name
         controller.send_command(f"op {name}" if kind == "ops" else f"whitelist add {name}")
         self._json({"ok": True, **self._players_payload()})
 
@@ -893,10 +919,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         data = ix.get_settings()
         self._json(
             {
-                "properties": data.get("properties", {}),
-                "railpowered": data.get("railpowered", ix.railpowered_settings()),
+                "properties": data["properties"],
+                "railpowered": data["railpowered"],
                 "restart_required": restart_required(data),
-                "schema": data.get("schema", {}),
+                "schema": data["schema"],
             }
         )
 
@@ -909,25 +935,31 @@ class PanelHandler(BaseHTTPRequestHandler):
         railpowered = {} if railpowered is None else railpowered
         if not isinstance(properties, dict) or not isinstance(railpowered, dict):
             raise ApiError(400, "invalid", "properties and railpowered must be objects.")
-        ix.update_settings(properties, railpowered)
+        result = ix.update_settings(properties, railpowered)
         controller.invalidate_settings()
         if properties:
             state.add_log("Server settings saved.")
-        self._json({"ok": True, "restart_required": restart_required(ix.get_settings())})
+        if railpowered:
+            state.add_log("Railpowered settings saved.")
+        self._json({"ok": True, "restart_required": restart_required(result)})
 
 
 # -- helpers used by handlers and tests -------------------------------------------
 def restart_required(settings: dict[str, Any]) -> bool:
-    if settings.get("restart_required"):
-        return True
-    with state.lock:
-        running = state.process is not None
-        at_start = dict(state.properties_at_start or {})
-    if not running:
-        return False
-    current = ix.read_properties()
-    keys = set(settings.get("schema") or {}) or set(settings.get("properties") or {})
-    return any(current.get(key) != at_start.get(key) for key in keys)
+    """The installer knows whether settings changed since the server was
+    prepared; that only matters while it runs (a stopped server picks the
+    new values up on its next start)."""
+    return controller.is_running() and bool(settings.get("restart_required"))
+
+
+def _precheck_downgrade(level: str, version: str) -> None:
+    """Fail fast (409 world_downgrade, before any task starts) when ``version``
+    is older than the world's last run. "latest" is checked against the
+    newest release known without the network; the installer re-checks."""
+    if version == "latest":
+        version = ix.cached_latest() or ""
+    if version and ix.world_exists(level):
+        ix.check_downgrade(level, version)
 
 
 def build_status() -> dict[str, Any]:
@@ -947,7 +979,11 @@ def build_status() -> dict[str, Any]:
         max_players = int(props.get("max-players", "20"))
     except ValueError:
         max_players = 20
-    java = getattr(runtime, "java_major", None) if runtime is not None else ix.java_major(version)
+    if runtime is not None:
+        java = getattr(runtime, "java_major", None)
+    else:
+        java = ix.java_major(version, str(setup.get("type") or "vanilla"))
+    legacy = ix.is_legacy(version)
     players = snap["players"]
     return {
         "phase": snap["phase"],
@@ -968,11 +1004,11 @@ def build_status() -> dict[str, Any]:
             "instance": setup.get("instance"),
         },
         "java": java,
-        "online_mode": props.get("online-mode", "true").strip() != "false",
-        "whitelist_enabled": props.get("white-list", "false").strip() == "true",
-        "legacy": ix.is_legacy(version),
+        "online_mode": not legacy and props.get("online-mode", "true").strip().lower() != "false",
+        "whitelist_enabled": props.get("white-list", "false").strip().lower() == "true",
+        "legacy": legacy,
         "last_exit": snap["last_exit"],
-        "product": getattr(installer, "APP_NAME", "Railpowered"),
+        "product": installer.APP_NAME,
         "app_version": config.APP_VERSION,
     }
 

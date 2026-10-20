@@ -55,6 +55,11 @@ LIST_LEGACY_RE = re.compile(r"\[INFO\] Connected players: ?(.*)$")
 LIST_NAMES_RE = re.compile(_PREFIX + r"(.*)$")
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 _GC_FLAG = re.compile(r"^-XX:\+Use\w*GC$")
+# Shutdown budget: STOP_TIMEOUT (<= 45s) + KILL_WAIT + MONITOR_JOIN must stay
+# under Railway's drainingSeconds (60, railway.toml) so SIGKILL never lands
+# mid-save.
+KILL_WAIT = 5
+MONITOR_JOIN = 2
 _STACK_FRAME = re.compile(r"^\s+(at |\.\.\. \d+ more)")
 _THROWABLE = re.compile(r"(?:^|[\s:])(?:[\w$]+\.)+[\w$]*(?:Exception|Error)(?::|$)")
 
@@ -103,33 +108,23 @@ def idle_should_stop(
     return now - idle_since >= timeout
 
 
-def build_command(spec: Any) -> list[str]:
-    """Java command line for a RuntimeSpec, adding heap/GC/log4j safety flags."""
-    heap = [f"-Xmx{config.MAX_MEMORY}", f"-Xms{config.MIN_MEMORY}"]
-    gc = ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=200"]
+def memory_flags(existing: list[str]) -> list[str]:
+    """Heap, GC and Log4Shell flags the installer's JVM args don't already set."""
+    added: list[str] = []
+    if not any(arg.startswith("-Xmx") for arg in existing):
+        added += [f"-Xmx{config.MAX_MEMORY}", f"-Xms{config.MIN_MEMORY}"]
+    if not any(_GC_FLAG.match(arg) for arg in existing):
+        added += ["-XX:+UseG1GC", "-XX:MaxGCPauseMillis=200"]
     no_lookups = "-Dlog4j2.formatMsgNoLookups=true"
+    if no_lookups not in existing:
+        added.append(no_lookups)
+    return added
 
-    def extras(existing: list[str]) -> list[str]:
-        added: list[str] = []
-        if not any(arg.startswith("-Xmx") for arg in existing):
-            added += heap
-        if not any(_GC_FLAG.match(arg) for arg in existing):
-            added += gc
-        if no_lookups not in existing:
-            added.append(no_lookups)
-        return added
 
-    command = getattr(spec, "command", None)
-    if command:
-        parts = [str(arg) for arg in command]
-        return [parts[0], *extras(parts[1:]), *parts[1:]]
-    jvm = [str(arg) for arg in getattr(spec, "jvm_args", []) or []]
-    parts = [str(spec.java_bin), *extras(jvm), *jvm]
-    parts += [str(arg) for arg in getattr(spec, "prefix_args", []) or []]
-    if getattr(spec, "jar", ""):
-        parts += ["-jar", str(spec.jar)]
-    parts += [str(arg) for arg in getattr(spec, "extra_args", []) or []]
-    return parts
+def build_command(spec: Any) -> list[str]:
+    """Java command line for an installer.RuntimeSpec plus our memory flags."""
+    existing = [str(arg) for arg in spec.jvm_args]
+    return [str(arg) for arg in spec.build_command(memory_flags(existing))]
 
 
 class _Waiter:
@@ -215,6 +210,13 @@ class ServerController:
                 return None
             return getattr(self.state.runtime, "level_name", None)
 
+    def running_instance(self) -> str | None:
+        """The modpack instance the running server uses, if any."""
+        with self.state.lock:
+            if self.state.process is None or self.state.runtime is None:
+                return None
+            return getattr(self.state.runtime, "instance", None)
+
     # -- the proxy invariant ----------------------------------------------
     def ensure_listener(self) -> bool:
         """Re-arm the sleep proxy unless Minecraft owns (or is taking) the port."""
@@ -256,16 +258,10 @@ class ServerController:
         self._info_cache = (0.0, {})
         self.log(f"Starting Minecraft{f' ({reason})' if reason else ''}…")
         try:
-            try:
-                setup_version = ix.active_setup().get("minecraft_version")
-            except Exception:
-                setup_version = None
             spec = ix.prepare_runtime()
-            ix.remember_resolved(setup_version, getattr(spec, "version", None))
             command = build_command(spec)
-            env = ix.child_env()
-            env.update(getattr(spec, "env", None) or {})
-            properties = ix.read_properties()
+            # os.environ minus ADMIN_KEY and other secrets, plus JAVA_HOME.
+            env = ix.child_env(spec.env)
         except Exception as exc:
             raise self._start_failed(exc) from exc
 
@@ -292,7 +288,6 @@ class ServerController:
                 self.state.process = proc
                 self.state.runtime = spec
                 self.state.start_time = time.time()
-                self.state.properties_at_start = properties
                 self._recent.clear()
         thread = threading.Thread(
             target=self._monitor, args=(proc,), name="minecraft-log", daemon=True
@@ -352,12 +347,12 @@ class ServerController:
             )
             try:
                 proc.kill()
-                proc.wait(timeout=10)
+                proc.wait(timeout=KILL_WAIT)
             except (OSError, subprocess.TimeoutExpired):
                 pass
         monitor = self._monitor_thread
         if monitor is not None and monitor is not threading.current_thread():
-            monitor.join(timeout=5)
+            monitor.join(timeout=MONITOR_JOIN)
         self._finish_exit(proc, expected=True)
         return True
 
@@ -689,8 +684,8 @@ class ServerController:
         if not info or time.time() - cached_at > 5:
             info = {}
             try:
-                props = ix.read_properties()
-                info["motd"] = ix.unescape_property(props.get("motd", "")) or "A Minecraft Server"
+                props = ix.read_properties()  # already unescaped
+                info["motd"] = props.get("motd", "") or "A Minecraft Server"
                 try:
                     info["max_players"] = int(props.get("max-players", "20"))
                 except ValueError:
@@ -723,19 +718,24 @@ class ServerController:
                 "The server is still starting. Back up again once it's online.", "busy"
             )
         legacy = ix.is_legacy(getattr(spec, "version", None))
-        self._write(proc, "save-off")
-        try:
+
+        def before_tar() -> None:
+            # Stop autosaves, flush everything to disk, then archive.
+            self._write(proc, "save-off")
             waiter = self.expect(SAVED_RE)
             self._write(proc, "save-all" if legacy else "save-all flush")
             if not waiter.event.wait(90):
                 self._forget(waiter)
                 self.log("The save didn't confirm within 90s; backing up anyway.", "warn")
-            return ix.create_backup(world)
-        finally:
+
+        def after_tar() -> None:
             with self.state.lock:
                 still_running = self.state.process is proc
             if still_running:
                 self._write(proc, "save-on")
+
+        # The installer runs after_tar in a finally, so save-on always follows.
+        return ix.create_backup(world, before_tar=before_tar, after_tar=after_tar)
 
     # -- status ----------------------------------------------------------------
     def snapshot(self) -> dict[str, Any]:
@@ -746,7 +746,6 @@ class ServerController:
             start_time = self.state.start_time
             last_exit = dict(self.state.last_exit) if self.state.last_exit else None
             runtime = self.state.runtime if self.state.process is not None else None
-            properties_at_start = self.state.properties_at_start if runtime else None
         return {
             "phase": phase,
             "players": players,
@@ -757,7 +756,6 @@ class ServerController:
             },
             "last_exit": last_exit,
             "runtime": runtime,
-            "properties_at_start": properties_at_start,
         }
 
 

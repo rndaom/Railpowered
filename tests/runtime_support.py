@@ -16,7 +16,6 @@ import sys
 import tempfile
 import threading
 import time
-import types
 import unittest
 from unittest import mock
 
@@ -167,7 +166,7 @@ class FakeProcess:
 
 
 def fake_spec(**overrides):
-    """A RuntimeSpec look-alike (independent of installer.RuntimeSpec's fields)."""
+    """A real installer.RuntimeSpec with test defaults (no install happens)."""
     values = dict(
         java_bin="/opt/java/21/bin/java",
         cwd=installer.DATA_DIR,
@@ -182,4 +181,4 @@ def fake_spec(**overrides):
         env={},
     )
     values.update(overrides)
-    return types.SimpleNamespace(**values)
+    return installer.RuntimeSpec(**values)
