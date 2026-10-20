@@ -1,12 +1,14 @@
-.git
-.gitignore
-.env
-README.md
-docs/
-.github/
-.railway/
-tests/
-*.md
-*.log
-.idea/
-.vscode/
+# Allowlist: only what the image needs reaches the build context. Local
+# worlds, jars, keys and caches stay out. Keep in step with the Dockerfile's
+# COPY lines and railway.toml's watchPatterns.
+*
+!manager.py
+!installer.py
+!server.properties
+!start.sh
+!mc_host/
+!web/
+
+**/__pycache__/
+**/*.pyc
+**/.DS_Store
