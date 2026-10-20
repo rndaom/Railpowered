@@ -3497,9 +3497,9 @@ def create_backup(
     except BaseException:
         _discard(tmp)
         raise
-    if kind != "manual":
-        _prune_automatic_backups(world)
     st = os.stat(final)
+    if kind != "manual":
+        _prune_automatic_backups(world, keep_name=name)
     _say(f"Backed up world '{world}' as {name}.")
     return {
         "name": name,
@@ -3527,12 +3527,26 @@ def _auto_backup(world: str, kind: str) -> str | None:
     return create_backup(world, kind=kind)["name"]
 
 
-def _prune_automatic_backups(world: str) -> None:
+def _prune_automatic_backups(world: str, keep_name: str | None = None) -> None:
+    """Keep the newest BACKUP_KEEP automatic backups of ``world`` (0 = all).
+    Manual backups are never pruned; ``keep_name`` (just written) always stays."""
     keep = _env_int("BACKUP_KEEP", 0, minimum=0)
     if keep <= 0:
         return
-    automatic = [b for b in list_backups() if b["world"] == world and b["kind"] != "manual"]
-    for item in automatic[keep:]:
+    automatic = [
+        b for b in list_backups()
+        if b["world"] == world and b["kind"] != "manual" and b["name"] != keep_name
+    ]
+
+    def age(item: dict[str, Any]) -> tuple[str, int]:
+        try:
+            mtime = os.stat(os.path.join(paths()["backups"], item["name"])).st_mtime_ns
+        except OSError:
+            mtime = 0
+        return (str(item["created_at"] or ""), mtime)
+
+    automatic.sort(key=age, reverse=True)
+    for item in automatic[max(0, keep - (1 if keep_name else 0)):]:
         try:
             delete_backup(item["name"])
         except (InstallError, OSError):
