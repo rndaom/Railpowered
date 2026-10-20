@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check or bump the Eclipse Temurin JREs pinned in the Dockerfile.
 
-The Dockerfile pins each JRE (8, 21, 25) by its Adoptium release name and the
+The Dockerfile pins each JRE (8, 17, 21, 25) by its Adoptium release name and the
 SHA-256 of the Linux tarball for amd64 and arm64:
 
     ARG JRE21_RELEASE=jdk-21.0.12.1+1
@@ -28,13 +28,13 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DOCKERFILE = os.path.join(ROOT, "Dockerfile")
-MAJORS = (8, 21, 25)
+MAJORS = (8, 17, 21, 25)
 ARCHES = {"AMD64": "x64", "ARM64": "aarch64"}
 API = (
     "https://api.adoptium.net/v3/assets/latest/{major}/hotspot"
     "?architecture={arch}&image_type=jre&os=linux&vendor=eclipse"
 )
-ARG_RE = re.compile(r"^ARG (JRE(?:8|21|25)_(?:RELEASE|SHA256_AMD64|SHA256_ARM64))=(\S*)$", re.M)
+ARG_RE = re.compile(r"^ARG (JRE(?:8|17|21|25)_(?:RELEASE|SHA256_AMD64|SHA256_ARM64))=(\S*)$", re.M)
 
 
 def fail(message: str) -> None:

@@ -73,6 +73,8 @@ login_page="$(curl -fsS "http://127.0.0.1:$PORT/login")" || fail "/login did not
 grep -Eq 'src="/static/login\.js\?v=[0-9a-f]{12}"' <<<"$login_page" \
   || fail "/login is not the web/ sign-in page (is web/ missing from the image?)"
 curl -fsS -o /dev/null "http://127.0.0.1:$PORT/static/app.js" || fail "/static/app.js did not load"
+# The fonts are self-hosted (the CSP blocks third-party fonts).
+curl -fsS -o /dev/null "http://127.0.0.1:$PORT/static/assets/fonts/IBMPlexSans-Regular-Latin1.woff2"   || fail "the dashboard fonts did not load (is web/assets/fonts missing from the image?)"
 
 [ "$(docker exec "$NAME" cat /proc/1/comm)" = "tini" ] || fail "PID 1 is not tini"
 
@@ -99,7 +101,7 @@ done
 # start.sh writes "eula=true"; the installer later adds a comment line linking the EULA.
 docker exec "$NAME" grep -qx 'eula=true' /server/data/eula.txt || fail "eula.txt is wrong"
 
-for major in 8 21 25; do
+for major in 8 17 21 25; do
   docker exec "$NAME" "/opt/java/$major/bin/java" -version >/dev/null 2>&1 || fail "Java $major does not run"
 done
 
