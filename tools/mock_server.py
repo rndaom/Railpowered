@@ -25,11 +25,17 @@ Ways to reproduce the interesting errors from the UI itself:
     playing "creative" on a newer version.
   * busy: start any task, then start another before it finishes.
   * failed task: use a modpack URL or setup name containing "fail".
+  * damaged backup: restore the "lost-world" backup (it can't be read).
   * 401: open /__mock/expire, then wait for the next poll.
+  * pre-1.7 server: /__mock/reset?scenario=legacy (Minecraft 1.6.4, no online mode).
+
+The mock answers with the same error codes and response shapes as mc_host/panel.py;
+tests/test_mock_server.py checks that, so keep the two in step.
 """
 
 import argparse
 import gzip
+import html
 import json
 import os
 import random
@@ -55,6 +61,7 @@ CSP = (
 MiB = 1024 * 1024
 GiB = 1024 * MiB
 MAX_UPLOAD = GiB
+UPLOAD_HEADROOM = 64 * MiB
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
@@ -75,6 +82,25 @@ VANILLA = [
 ]
 FORGE = ["1.21.1", "1.20.1", "1.19.2", "1.18.2", "1.16.5", "1.12.2"]
 LATEST = VANILLA[0]
+LEGACY_VERSION = "1.6.4"
+
+# What web.login_page() renders into {{error}} (mc_host/web.py LOGIN_ERRORS).
+LOGIN_ERRORS = {
+    "1": "That key didn't match. Check it and try again.",
+    "rate": "Too many attempts. Wait a few minutes and try again.",
+}
+
+# Every error code the mock answers with. Each one exists in the real API
+# (mc_host/panel.py, mc_host/process.py or installer.ERROR_STATUS), except
+# mock_failure from the /__mock/fail hook; tests/test_mock_server.py checks it.
+CODES = {
+    "invalid", "invalid_name", "invalid_type", "invalid_version", "invalid_url",
+    "invalid_player", "invalid_setting", "invalid_archive", "bad_json",
+    "unauthorized", "csrf", "not_found", "method_not_allowed", "length_required", "too_large",
+    "disk_full", "busy", "already_running", "already_stopping", "not_running", "not_online",
+    "world_exists", "world_not_found", "backup_not_found", "player_not_found", "active_setup",
+    "active_world", "server_running", "world_downgrade", "mock_failure",
+}
 
 
 def vkey(version):
@@ -112,6 +138,7 @@ def offline_uuid(name):
 
 class ApiError(Exception):
     def __init__(self, status, message, code, **extra):
+        assert code in CODES, f"the real API has no error code {code!r}"
         super().__init__(message)
         self.status = status
         self.message = message
@@ -125,40 +152,57 @@ class ApiError(Exception):
 
 
 SCHEMA = {
-    "motd": {"type": "string", "label": "Server list message",
-             "help": "Shown under the server name in your friends' server list."},
-    "difficulty": {"type": "enum", "label": "Difficulty",
-                   "options": ["peaceful", "easy", "normal", "hard"]},
-    "gamemode": {"type": "enum", "label": "Game mode for new players",
-                 "options": ["survival", "creative", "adventure", "spectator"],
-                 "help": "Players who have joined before keep the mode they had."},
+    "motd": {"type": "string", "max": 120, "label": "Server description (MOTD)",
+             "help": "Shown under the server name in the multiplayer list."},
+    "difficulty": {"type": "enum", "options": ["peaceful", "easy", "normal", "hard"], "label": "Difficulty",
+                   "help": "Peaceful has no hostile mobs."},
+    "gamemode": {"type": "enum", "options": ["survival", "creative", "adventure", "spectator"],
+                 "label": "Game mode", "help": "The mode new players start in."},
     "hardcore": {"type": "bool", "label": "Hardcore",
-                 "help": "One life each: players become spectators when they die."},
-    "pvp": {"type": "bool", "label": "Players can hurt each other"},
-    "allow-flight": {"type": "bool", "label": "Allow flying",
-                     "help": "Stops players being kicked for flying. Some mods need this."},
-    "allow-nether": {"type": "bool", "label": "Allow the Nether"},
-    "enable-command-block": {"type": "bool", "label": "Command blocks"},
-    "spawn-protection": {"type": "int", "min": 0, "max": 64, "label": "Spawn protection (blocks)",
-                         "help": "Only operators can build this close to spawn. 0 turns it off."},
-    "max-players": {"type": "int", "min": 1, "max": 100, "label": "Maximum players"},
-    "online-mode": {"type": "bool", "label": "Check Minecraft accounts",
-                    "help": "Stops people joining with someone else's name. Leave this on unless you know you need it off."},
-    "view-distance": {"type": "int", "min": 3, "max": 32, "label": "View distance (chunks)",
-                      "help": "How far players can see. Lower numbers run faster on small servers."},
-    "simulation-distance": {"type": "int", "min": 3, "max": 32, "label": "Simulation distance (chunks)",
-                            "help": "How far from players crops grow and mobs move."},
-    "level-seed": {"type": "string", "label": "World seed",
-                   "help": "Only used when a new world is created. Leave it empty for a random world."},
-    "level-type": {"type": "enum", "label": "World type",
-                   "options": [
-                       {"value": "minecraft:normal", "label": "Normal"},
-                       {"value": "minecraft:flat", "label": "Superflat"},
-                       {"value": "minecraft:large_biomes", "label": "Large biomes"},
-                       {"value": "minecraft:amplified", "label": "Amplified"},
-                   ],
-                   "help": "Only used when a new world is created."},
+                 "help": "One life: players become spectators when they die."},
+    "pvp": {"type": "bool", "label": "PvP", "help": "Let players hurt each other."},
+    "max-players": {"type": "int", "min": 1, "max": 500, "label": "Max players",
+                    "help": "How many players can be online at once."},
+    "view-distance": {"type": "int", "min": 3, "max": 32, "label": "View distance",
+                      "help": "Chunks sent to players. Lower values use less memory and CPU."},
+    "simulation-distance": {"type": "int", "min": 3, "max": 32, "label": "Simulation distance",
+                            "help": "Chunks around players where mobs and crops are updated."},
+    "spawn-protection": {"type": "int", "min": 0, "max": 256, "label": "Spawn protection",
+                         "help": "Radius around spawn that only operators can build in (0 = off)."},
+    "allow-flight": {"type": "bool", "label": "Allow flight",
+                     "help": "Don't kick players for flying (needed by some mods)."},
+    "allow-nether": {"type": "bool", "label": "Allow the Nether", "help": "Let players enter the Nether."},
+    "level-seed": {"type": "string", "max": 64, "label": "World seed",
+                   "help": "Only affects new worlds; existing worlds keep their seed."},
+    "level-type": {"type": "enum", "options": ["normal", "flat", "large_biomes", "amplified"],
+                   "label": "World type", "help": "Only affects new worlds."},
+    "online-mode": {"type": "bool", "label": "Online mode",
+                    "help": "Check players' Minecraft accounts with Mojang. Turn off only if you "
+                            "know why: anyone could then join with any name."},
+    "enable-command-block": {"type": "bool", "label": "Command blocks",
+                             "help": "Allow command blocks to run commands."},
 }
+
+
+def is_legacy(version):
+    return vcmp(version, "1.7") < 0
+
+
+def settings_schema(version):
+    """Like installer.settings_schema: keys a version doesn't have are left out."""
+    schema = json.loads(json.dumps(SCHEMA))
+    if vcmp(version, "1.14") < 0:
+        schema["view-distance"]["max"] = 15
+    if vcmp(version, "1.8") < 0:
+        schema["gamemode"]["options"].remove("spectator")
+    if vcmp(version, "1.18") < 0:
+        del schema["simulation-distance"]
+    if is_legacy(version):
+        del schema["online-mode"]  # always off: the old login servers are gone
+    if vcmp(version, "1.7.2") < 0:
+        schema["level-type"]["options"] = ["normal", "flat", "large_biomes"]
+    return schema
+
 
 CHAT = [
     "anyone want to go to the nether", "omw", "bring torches pls", "found diamonds!!", "nice",
@@ -176,6 +220,9 @@ class Mock:
         self.lock = threading.RLock()
         self.sessions = set()
         self.failed_logins = 0
+        # Task ids stay unique across /__mock/reset, like a restarted backend
+        # should; the dashboard must not mix up an old "t1" with a new one.
+        self.task_ids = 0
         self.reset(args.phase)
 
     # ------------------------------------------------------------------ setup
@@ -188,7 +235,6 @@ class Mock:
         self.logs = deque(maxlen=1000)
         self.events = []
         self.task = None
-        self.task_ids = 0
         self.phase = "sleeping"
         self.online_since = None
         self.empty_since = None
@@ -199,16 +245,30 @@ class Mock:
         self.last_exit = None
         self.restart_required = False
         self.failures = {}
+        self.versions_offline = False
+        self.max_upload = MAX_UPLOAD
         self.join_address = "shuttle.proxy.rlwy.net:28415"
         self.friends = ["TheRealZoe", "pixel_pete", "Marrowbone"]
         self.properties = {
             "motd": "Friends only. Be nice!", "difficulty": "normal", "gamemode": "survival",
             "hardcore": False, "pvp": True, "max-players": 10, "view-distance": 10,
             "simulation-distance": 10, "spawn-protection": 16, "allow-flight": False,
-            "allow-nether": True, "level-seed": "", "level-type": "minecraft:normal",
+            "allow-nether": True, "level-seed": "", "level-type": "normal",
             "online-mode": True, "enable-command-block": False,
         }
-        if scenario == "fresh":
+        if scenario == "legacy":
+            # A pre-1.7 server, like the friends' 1.6.4 one: no online mode, no simulation distance.
+            self.whitelist_enabled = True
+            self.ops = ["TheRealZoe"]
+            self.whitelist = ["TheRealZoe", "pixel_pete"]
+            self.setups = [self._setup("classic", "Classic 1.6.4", "vanilla", LEGACY_VERSION, "classic")]
+            self.active = "classic"
+            self.worlds = {"classic": {"size_bytes": 140 * MiB, "last_version": LEGACY_VERSION, "last_played": now - 7200}}
+            self.backups = []
+            self.properties["online-mode"] = False
+            del self.properties["simulation-distance"]
+            self.friends = ["TheRealZoe", "pixel_pete"]
+        elif scenario == "fresh":
             self.whitelist_enabled = False
             self.ops = []
             self.whitelist = []
@@ -239,7 +299,7 @@ class Mock:
             }
             self.backups = []
         self.seed_logs(now, scenario)
-        if scenario != "fresh":
+        if scenario == "default":
             day = 86400
             for world, ts, size, version, safety in [
                 ("survival", self._seed_backup_ts, 268 * MiB, "26.3", False),
@@ -249,6 +309,10 @@ class Mock:
                 ("old-world-2023", now - 280 * day, 820 * MiB, "1.20.1", False),
             ]:
                 self._add_backup(world, ts, size, version, safety)
+            # An archive that can't be read: no world, no version, flagged damaged.
+            self.backups.append({"name": "lost-world-20250602-101500.tar.gz", "world": None, "size_bytes": 12 * MiB,
+                                 "created_at": None, "minecraft_version": None, "kind": "manual", "damaged": True,
+                                 "_ts": now - 140 * day})
         if phase != "sleeping":
             self.force_phase(phase, hold=False, seeded=True)
 
@@ -261,7 +325,8 @@ class Mock:
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(ts))
         name = f"{world}-pre-restore-{stamp}.tar.gz" if safety else f"{world}-{stamp}.tar.gz"
         self.backups.append({"name": name, "world": world, "size_bytes": int(size),
-                             "created_at": iso(ts), "minecraft_version": version, "_ts": ts})
+                             "created_at": iso(ts), "minecraft_version": version,
+                             "kind": "pre-restore" if safety else "manual", "damaged": False, "_ts": ts})
         return name
 
     # ------------------------------------------------------------------ logs
@@ -562,7 +627,7 @@ class Mock:
             self.start_task("prepare", f"Downloading Minecraft {setup['resolved_version']}", 6 if not hold else 3600,
                             needs_stop=True)
         else:
-            raise ApiError(400, "Unknown phase.", "bad_request")
+            raise ApiError(400, "Unknown phase.", "invalid")
 
     # ------------------------------------------------------------------ tasks
 
@@ -638,13 +703,21 @@ class Mock:
             "join_address": self.join_address,
             "setup": public,
             "java": java_for(setup["resolved_version"]) if setup else None,
-            "online_mode": self.properties["online-mode"],
+            "online_mode": self.online_mode(),
             "whitelist_enabled": self.whitelist_enabled,
-            "legacy": False,
+            "legacy": bool(setup and is_legacy(setup["resolved_version"])),
             "last_exit": self.last_exit,
             "product": "Railpowered",
             "app_version": "2.0.0",
+            # Ahead of the backend: the upload limit (MAX_UPLOAD_MB), so the form can check sizes first.
+            "max_upload_bytes": self.max_upload,
         }
+
+    def online_mode(self):
+        setup = self.active_setup()
+        if setup and is_legacy(setup["resolved_version"]):
+            return False
+        return bool(self.properties.get("online-mode", True))
 
     # ------------------------------------------------------------------ API
 
@@ -663,11 +736,13 @@ class Mock:
             lines = [line for line in self.logs if line["seq"] > after]
             return 200, {"lines": lines, "last_seq": self.seq}
         if route == "versions" and method == "GET":
+            vanilla = VANILLA[:10] if self.versions_offline else VANILLA
+            fabric = FABRIC[:6] if self.versions_offline else FABRIC
             return 200, {
-                "vanilla": [{"id": v, "label": f"{v} (latest)" if v == LATEST else v} for v in VANILLA],
-                "fabric": [{"id": v, "label": f"{v} (latest)" if v == LATEST else v} for v in FABRIC],
+                "vanilla": [{"id": v, "label": f"{v} (latest)" if v == LATEST else v} for v in vanilla],
+                "fabric": [{"id": v, "label": f"{v} (latest)" if v == LATEST else v} for v in fabric],
                 "forge": [{"id": v, "label": v} for v in FORGE],
-                "latest": LATEST, "snapshots": False,
+                "latest": LATEST, "snapshots": False, "offline": self.versions_offline,
             }
         if parts[0] == "setups":
             return self.setups_api(method, parts[1:], body)
@@ -681,24 +756,24 @@ class Mock:
             return self.players_api(method, parts[1:], body)
         if route == "settings":
             return self.settings_api(method, body)
-        raise ApiError(404, "There's nothing at that address.", "not_found")
+        raise ApiError(404, "Not found.", "not_found")
 
     def server_action(self, action):
-        busy_msg = None
-        if self.task_running() and self.phase == "preparing":
-            busy_msg = f"Wait for “{self.task['label']}” to finish first."
+        # Like controller.start/stop and api_restart: nothing starts or stops while a task runs.
+        busy_msg = f"Wait for “{self.task['label']}” to finish first." if self.task_running() else None
         if action == "start":
             if busy_msg:
                 raise ApiError(409, busy_msg, "busy")
-            if self.running():
-                raise ApiError(409, "The server is already running.", "already_running")
-            if self.phase == "stopping":
-                raise ApiError(409, "The server is still stopping. Try again in a few seconds.", "busy")
+            if self.running() or self.phase == "stopping":
+                raise ApiError(409, "The server is already stopping." if self.phase == "stopping"
+                               else "The server is already running.", "already_running")
             self.begin_start()
             return 200, {"ok": True}
         if action == "stop":
             if busy_msg:
                 raise ApiError(409, busy_msg, "busy")
+            if self.phase == "stopping":
+                raise ApiError(409, "The server is already stopping.", "already_stopping")
             if not self.running():
                 raise ApiError(409, "The server isn't running.", "not_running")
             self.begin_stop(reason_line="Stop requested from the dashboard. Saving the world first.")
@@ -712,25 +787,31 @@ class Mock:
                 self.begin_stop(then=self.begin_start, reason_line="Restart requested from the dashboard.")
             return 200, {"ok": True}
         if action == "save":
+            # The real endpoint only sends "save-all flush"; Minecraft logs when it's done.
             if self.phase != "online":
-                raise ApiError(409, "The world can only be saved while the server is online.", "not_running")
+                raise ApiError(409, "The server isn't online.", "not_online")
             self.mc("Saving the game (this may take a moment!)")
             self.schedule(0.6, lambda: self.mc("Saved the game"))
             return 200, {"ok": True}
-        raise ApiError(404, "Unknown server action.", "not_found")
+        raise ApiError(404, "Not found.", "not_found")
 
     def console(self, body):
         command = body.get("command")
-        if not isinstance(command, str) or not command.strip():
-            raise ApiError(400, "Type a command first.", "bad_request")
+        if not isinstance(command, str):
+            raise ApiError(400, "Type a command first.", "invalid")
         if "\n" in command or "\r" in command:
-            raise ApiError(400, "Send one command at a time. Line breaks aren't allowed.", "bad_request")
-        if not self.running():
-            raise ApiError(409, "Minecraft isn't running. Start the server to send commands.", "not_running")
-        if self.phase == "starting":
-            raise ApiError(409, "Minecraft is still starting. Try again when it's online.", "not_running")
+            raise ApiError(400, "Send one command at a time (no line breaks).", "invalid")
         command = command.strip()
+        if command.startswith("/"):
+            command = command[1:].lstrip()
+        if not command:
+            raise ApiError(400, "Type a command first.", "invalid")
+        # Commands go to Minecraft's stdin as soon as the process exists, so "starting" works too.
+        if not self.running():
+            raise ApiError(409, "The server isn't running.", "not_running")
         self.panel(f"> {command}")
+        if self.phase == "starting":
+            return 200, {"ok": True}
         word, _, rest = command.partition(" ")
         if word == "list":
             names = ", ".join(self.players)
@@ -776,44 +857,64 @@ class Mock:
 
     # -------------------------------------------------------------- setups
 
+    def setup_list(self):
+        out = []
+        for s in self.setups:
+            item = dict(s)
+            item["active"] = s["id"] == self.active
+            item["summary"] = self.setup_summary(s)
+            out.append(item)
+        return out
+
+    def require_idle(self):
+        if self.task_running():
+            raise ApiError(409, f"Wait for “{self.task['label']}” to finish first.", "busy")
+
+    def check_name(self, value, what="World"):
+        if not NAME_RE.match(str(value or "")):
+            raise ApiError(400, f"{what} names use 1-32 letters, numbers, dots, dashes or underscores, "
+                                "and start with a letter or number.", "invalid_name")
+        return value
+
     def setups_api(self, method, rest, body):
         if not rest:
             if method == "GET":
-                out = []
-                for s in self.setups:
-                    item = dict(s)
-                    item["active"] = s["id"] == self.active
-                    item["summary"] = self.setup_summary(s)
-                    out.append(item)
-                return 200, {"setups": out}
+                return 200, {"setups": self.setup_list()}
             if method == "POST":
                 return self.create_setup(body)
+            raise ApiError(405, "That action isn't supported here.", "method_not_allowed")
         sid = unquote(rest[0])
         setup = self.find_setup(sid)
         if len(rest) == 1 and method == "PATCH":
-            if "name" in body:
-                name = str(body.get("name") or "").strip()
+            name = body.get("name")
+            if name is not None:
+                name = str(name).strip()
                 if not name or len(name) > 48:
                     raise ApiError(400, "Setup names are 1-48 characters.", "invalid_name")
+            level = body.get("level_name")
+            if level is not None:
+                level = self.check_name(str(level).strip())
+                if sid == self.active and self.running() and level != setup["level_name"]:
+                    raise ApiError(409, "Stop the server before changing the world it runs.", "server_running")
+                if level in self.worlds and level != setup["level_name"]:
+                    self.check_downgrade(level, setup["resolved_version"], body.get("allow_downgrade"))
+            self.require_idle()
+            if name is not None:
                 setup["name"] = name
-            if "level_name" in body:
-                level = str(body.get("level_name") or "")
-                if not NAME_RE.match(level):
-                    raise ApiError(400, "World names: " + NAME_RULE, "bad_request")
-                if sid == self.active and self.running():
-                    raise ApiError(409, "Stop the server before changing the world of the active setup.", "conflict")
-                if level not in self.worlds:
-                    raise ApiError(400, f"There's no world called “{level}”.", "bad_request")
+            if level is not None:
+                # Like installer.update_setup: a world that doesn't exist yet is created empty.
+                self.worlds.setdefault(level, {"size_bytes": 0, "last_version": None, "last_played": None})
                 setup["level_name"] = level
-            return 200, {"ok": True}
+            return 200, {"ok": True, "setups": self.setup_list()}
         if len(rest) == 1 and method == "DELETE":
             if sid == self.active:
-                raise ApiError(409, "That's the active setup. Switch to another one before deleting it.", "active_setup")
+                raise ApiError(409, "Switch to another setup before deleting this one.", "active_setup")
+            self.require_idle()
             self.setups = [s for s in self.setups if s["id"] != sid]
             return 200, {"ok": True}
         if len(rest) == 2 and rest[1] == "activate" and method == "POST":
             if sid == self.active:
-                raise ApiError(409, "That setup is already active.", "conflict")
+                return 200, {"ok": True, "task": None, "already_active": True}
             self.check_downgrade(setup["level_name"], setup["resolved_version"], body.get("allow_downgrade"))
             allow = bool(body.get("allow_downgrade"))
 
@@ -826,41 +927,46 @@ class Mock:
                 steps.insert(0, f"Backing up {setup['level_name']} before opening it with an older version")
             task = self.start_task("switch", f"Switching to {setup['name']}", 7, effect=effect, needs_stop=True, steps=steps)
             return 202, {"task": task}
-        raise ApiError(405, "That isn't supported here.", "method_not_allowed")
+        raise ApiError(405, "That action isn't supported here.", "method_not_allowed")
+
+    def downgrade_message(self, world, version):
+        w = self.worlds.get(world)
+        if not w or not w.get("last_version") or vcmp(version, w["last_version"]) >= 0:
+            return None
+        return f"“{world}” was last played on Minecraft {w['last_version']}. Opening it with {version} could damage it."
 
     def check_downgrade(self, world, version, allow):
-        w = self.worlds.get(world)
-        if allow or not w or not w.get("last_version"):
-            return
-        if vcmp(version, w["last_version"]) < 0:
-            raise ApiError(409, f"“{world}” was last played on Minecraft {w['last_version']}. Opening it with {version} could damage it.",
-                           "world_downgrade", world=world, last_version=w["last_version"], version=version)
+        message = None if allow else self.downgrade_message(world, version)
+        if message:
+            w = self.worlds[world]
+            raise ApiError(409, message, "world_downgrade", world=world, last_version=w["last_version"], version=version)
 
     def create_setup(self, body):
-        stype = body.get("type")
+        stype = str(body.get("type") or "vanilla").lower()
+        if stype == "modpack":
+            raise ApiError(400, "Install modpacks from the Modpack section.", "invalid_type")
         if stype not in ("vanilla", "fabric", "forge"):
-            raise ApiError(400, "Choose Vanilla, Fabric or Forge.", "bad_request")
-        version = str(body.get("minecraft_version") or "")
+            raise ApiError(400, "Pick Vanilla, Fabric or Forge.", "invalid_type")
+        version = str(body.get("minecraft_version") or "latest")
         allowed = {"vanilla": VANILLA, "fabric": FABRIC, "forge": FORGE}[stype]
-        if version != "latest" and version not in allowed:
-            raise ApiError(400, f"{stype.title()} isn't available for Minecraft {version or '(none)'}.", "bad_request")
         if version == "latest" and stype == "forge":
-            raise ApiError(400, "Pick a specific Minecraft version for Forge.", "bad_request")
-        level = str(body.get("level_name") or "")
-        if not NAME_RE.match(level):
-            raise ApiError(400, "World names: " + NAME_RULE, "bad_request")
-        create = bool(body.get("create_world"))
+            raise ApiError(400, "Pick a specific Minecraft version for Forge.", "invalid_version")
+        if version != "latest" and version not in allowed:
+            raise ApiError(400, f"{stype.title()} isn't available for Minecraft {version}.", "invalid_version")
+        name = str(body.get("name") or "").strip()
+        if len(name) > 48:
+            raise ApiError(400, "Setup names are at most 48 characters.", "invalid_name")
+        level = self.check_name(str(body.get("level_name") or ""))
+        create = body.get("create_world", True) is not False
         if create and level in self.worlds:
-            raise ApiError(409, f"There's already a world called “{level}”. Pick another name.", "world_exists")
+            raise ApiError(409, f"A world named {level} already exists.", "world_exists")
         if not create and level not in self.worlds:
-            raise ApiError(400, f"There's no world called “{level}”.", "bad_request")
+            raise ApiError(404, f"There is no world named {level}.", "world_not_found")
         resolved = LATEST if version == "latest" else version
         if not create:
             self.check_downgrade(level, resolved, body.get("allow_downgrade"))
         kind = {"vanilla": "Vanilla", "fabric": "Fabric", "forge": "Forge"}[stype]
-        name = str(body.get("name") or "").strip() or f"{kind} {resolved}"
-        if len(name) > 48:
-            raise ApiError(400, "Setup names are at most 48 characters.", "invalid_name")
+        name = name or f"{kind} {resolved}"
         fail = None
         if "fail" in name.lower():
             fail = f"Couldn't download {kind} for Minecraft {resolved}: the download server answered 503. Try again in a few minutes."
@@ -883,29 +989,32 @@ class Mock:
             steps.append("Installing the Fabric loader")
         if stype == "forge":
             steps += ["Running the Forge installer", "Installing libraries"]
-        task = self.start_task("apply", f"Installing {kind} {resolved}", 9 if stype != "forge" else 14,
+        shown = "the latest version" if version == "latest" else version
+        task = self.start_task("apply", f"Installing {kind} {shown}", 9 if stype != "forge" else 14,
                                effect=effect, fail=fail, needs_stop=activate, steps=steps)
         return 202, {"task": task}
 
     def modpack_url(self, body):
         url = str(body.get("url") or "").strip()
-        name = str(body.get("name") or "").strip()
-        if not re.match(r"^https://\S+$", url):
-            raise ApiError(400, "The modpack link should start with https://", "bad_request")
-        if not NAME_RE.match(name):
-            raise ApiError(400, "Pack names: " + NAME_RULE, "bad_request")
-        level = str(body.get("level_name") or name)
+        if not url:
+            raise ApiError(400, "Paste a link to a .mrpack or .zip file.", "invalid_url")
+        if not url.lower().startswith("https://") or len(url) > 2048 or re.search(r"\s", url):
+            raise ApiError(400, "Use an https:// link to a .mrpack or .zip file.", "invalid_url")
+        name = self.check_name(str(body.get("name") or "").strip(), "Modpack")
+        level = str(body.get("level_name") or "").strip() or name
         fail = None
         if "fail" in url.lower():
             fail = "Couldn't download the modpack: the link answered 404 Not Found. Check that it points to the .mrpack or .zip file itself."
         return self.start_modpack(name, level, fail, body.get("allow_downgrade"))
 
     def start_modpack(self, name, level, fail, allow_downgrade):
-        if not NAME_RE.match(level):
-            raise ApiError(400, "World names: " + NAME_RULE, "bad_request")
+        self.check_name(level)
+        self.require_idle()
         version = "1.21.1"
-        if level in self.worlds:
-            self.check_downgrade(level, version, allow_downgrade)
+        # The pack's Minecraft version is only known once it has been read, so,
+        # like the real installer, a downgrade fails the task instead of the request.
+        if not fail and level in self.worlds and not allow_downgrade:
+            fail = self.downgrade_message(level, version)
 
         def effect():
             self.worlds.setdefault(level, {"size_bytes": 0, "last_version": None, "last_played": None})
@@ -940,25 +1049,24 @@ class Mock:
         if not rest and method == "GET":
             return 200, {"worlds": self.world_list()}
         if not rest and method == "POST":
-            name = str(body.get("name") or "")
-            if not NAME_RE.match(name):
-                raise ApiError(400, "World names: " + NAME_RULE, "bad_request")
+            name = self.check_name(str(body.get("name") or "").strip())
             if name in self.worlds:
-                raise ApiError(409, f"There's already a world called “{name}”.", "conflict")
+                raise ApiError(409, f"A world named {name} already exists.", "world_exists")
             self.worlds[name] = {"size_bytes": 0, "last_version": None, "last_played": None}
-            return 200, {"ok": True}
+            return 200, {"ok": True, "worlds": self.world_list()}
         if len(rest) == 1 and method == "DELETE":
-            name = unquote(rest[0])
+            name = self.check_name(unquote(rest[0]))
             if name not in self.worlds:
-                raise ApiError(404, f"There's no world called “{name}”.", "not_found")
+                raise ApiError(404, f"There is no world named {name}.", "world_not_found")
             active = self.active_setup()
             if active and active["level_name"] == name:
-                raise ApiError(409, f"“{name}” belongs to the active setup. Switch to another setup before deleting it.", "conflict")
+                raise ApiError(409, "This is the active setup's world. Switch setups before deleting it.", "active_world")
+            self.require_idle()
             removed = [s["name"] for s in self.setups if s["level_name"] == name]
             self.setups = [s for s in self.setups if s["level_name"] != name]
             del self.worlds[name]
             return 200, {"ok": True, "removed_setups": removed}
-        raise ApiError(405, "That isn't supported here.", "method_not_allowed")
+        raise ApiError(405, "That action isn't supported here.", "method_not_allowed")
 
     # -------------------------------------------------------------- backups
 
@@ -972,9 +1080,10 @@ class Mock:
             out = [{k: v for k, v in b.items() if not k.startswith("_")} for b in self.backups]
             return 200, {"backups": out, "disk": self.disk()}
         if not rest and method == "POST":
-            world = body.get("world") or (self.active_setup() or {}).get("level_name")
+            world = self.check_name(str(body.get("world") or (self.active_setup() or {}).get("level_name") or "world"))
             if world not in self.worlds:
-                raise ApiError(404, f"There's no world called “{world}”.", "not_found")
+                raise ApiError(404, f"There is no world named {world}.", "world_not_found")
+            self.require_idle()
             running = self.running() and self.active_setup()["level_name"] == world
             steps = (["Pausing autosave (save-off)", "Flushing the world to disk (save-all flush)"] if running else []) + ["Compressing the world"]
             if running:
@@ -986,133 +1095,185 @@ class Mock:
             task = self.start_task("backup", f"Backing up {world}", 6, effect=effect, steps=steps)
             return 202, {"task": task}
         name = unquote(rest[0]) if rest else ""
+        if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz$", name):
+            raise ApiError(400, "That isn't a backup name.", "invalid_name")
         backup = next((b for b in self.backups if b["name"] == name), None)
         if not backup:
-            raise ApiError(404, "That backup doesn't exist any more.", "not_found")
+            raise ApiError(404, "That backup doesn't exist any more.", "backup_not_found")
         if len(rest) == 1 and method == "DELETE":
+            self.require_idle()
             self.backups.remove(backup)
             return 200, {"ok": True}
         if len(rest) == 2 and rest[1] == "restore" and method == "POST":
-            target = body.get("target") or backup["world"]
-            if not NAME_RE.match(str(target)):
-                raise ApiError(400, "World names: " + NAME_RULE, "bad_request")
-            if body.get("target") and target in self.worlds and target != backup["world"]:
-                raise ApiError(409, f"There's already a world called “{target}”. Pick another name.", "conflict")
+            target = str(body.get("target") or "").strip() or None
+            if target:
+                self.check_name(target)
+            effective = target or backup["world"]
+            if effective is None:
+                # Like the panel: an unreadable archive's file name still says which world it is.
+                named = re.match(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz$", name)
+                effective = named.group(1) if named else None
             active = self.active_setup()
-            if self.phase in ("starting", "online", "stopping") and active and active["level_name"] == target:
-                raise ApiError(409, f"The server is running “{target}”. Stop it first, or restore into a new world.", "conflict")
-            replacing = target in self.worlds
+            if effective and self.phase in ("starting", "online", "stopping") and active and active["level_name"] == effective:
+                raise ApiError(409, f"Stop the server before restoring {effective}.", "server_running")
+            self.require_idle()
+            fail = None
+            if backup.get("damaged"):
+                fail = "That backup can't be read: the archive is damaged or incomplete. Download it to look inside, or pick another backup."
+            # An existing target is replaced, after a safety copy (installer.restore_backup).
+            replacing = bool(effective) and effective in self.worlds
 
             def effect():
                 if replacing:
-                    cur = self.worlds[target]
-                    self._add_backup(target, time.time(), max(MiB, int(cur["size_bytes"] * 0.62)), cur["last_version"] or LATEST, safety=True)
-                self.worlds[target] = {"size_bytes": int(backup["size_bytes"] / 0.62), "last_version": backup["minecraft_version"],
-                                       "last_played": backup["_ts"]}
-            steps = ([f"Saving the current {target} as a safety backup"] if replacing else []) + ["Unpacking the backup"]
-            task = self.start_task("restore", f"Restoring {target}", 7, effect=effect, steps=steps)
+                    cur = self.worlds[effective]
+                    self._add_backup(effective, time.time(), max(MiB, int(cur["size_bytes"] * 0.62)), cur["last_version"] or LATEST, safety=True)
+                self.worlds[effective] = {"size_bytes": int(backup["size_bytes"] / 0.62), "last_version": backup["minecraft_version"],
+                                          "last_played": backup["_ts"]}
+            steps = ([f"Saving the current {effective} as a safety backup"] if replacing else []) + ["Unpacking the backup"]
+            task = self.start_task("restore", f"Restoring {effective or 'world'} from backup", 7, effect=effect, fail=fail, steps=steps)
             return 202, {"task": task}
-        raise ApiError(405, "That isn't supported here.", "method_not_allowed")
+        raise ApiError(405, "That action isn't supported here.", "method_not_allowed")
 
     # -------------------------------------------------------------- players
 
+    def players_payload(self):
+        return {
+            "online": list(self.players) if self.running() else [],
+            "ops": [{"name": n, "uuid": offline_uuid(n)} for n in self.ops],
+            "whitelist": [{"name": n, "uuid": offline_uuid(n)} for n in self.whitelist],
+            "whitelist_enabled": self.whitelist_enabled,
+            "online_mode": self.online_mode(),
+        }
+
     def players_api(self, method, rest, body):
         if not rest and method == "GET":
-            return 200, {
-                "online": list(self.players) if self.running() else [],
-                "ops": [{"name": n, "uuid": offline_uuid(n)} for n in self.ops],
-                "whitelist": [{"name": n, "uuid": offline_uuid(n)} for n in self.whitelist],
-                "whitelist_enabled": self.whitelist_enabled,
-                "online_mode": self.properties["online-mode"],
-            }
+            return 200, self.players_payload()
         if rest == ["whitelist", "enabled"] and method == "PUT":
             enabled = body.get("enabled")
             if not isinstance(enabled, bool):
-                raise ApiError(400, "Send enabled: true or false.", "bad_request")
+                raise ApiError(400, "enabled must be true or false.", "invalid")
             self.whitelist_enabled = enabled
             if self.running():
                 self.panel(f"> whitelist {'on' if enabled else 'off'}")
                 self.mc("Whitelist is now turned " + ("on" if enabled else "off"))
-            return 200, {"ok": True}
+            return 200, {"ok": True, **self.players_payload()}
         if rest and rest[0] in ("ops", "whitelist"):
             kind = rest[0]
             target = self.ops if kind == "ops" else self.whitelist
-            label = "an operator" if kind == "ops" else "on the whitelist"
             if len(rest) == 1 and method == "POST":
                 name = str(body.get("name") or "").strip()
                 if not PLAYER_RE.match(name):
-                    raise ApiError(400, "Minecraft usernames use 1 to 16 letters, numbers or underscores.", "bad_request")
+                    raise ApiError(400, "Player names are 1-16 letters, numbers or underscores.", "invalid_player")
                 if "nobody" in name.lower():
-                    raise ApiError(404, f"Mojang has no player called “{name}”. Check the spelling.", "not_found")
-                if any(n.lower() == name.lower() for n in target):
-                    raise ApiError(409, f"{name} is already {label}.", "conflict")
-                target.append(name)
-                if self.running():
-                    self.panel(f"> {'op' if kind == 'ops' else 'whitelist add'} {name}")
-                return 200, {"ok": True}
+                    raise ApiError(404, f"Mojang has no player called {name}. Check the spelling.", "player_not_found")
+                # Adding someone who is already there is a no-op, like installer.add_player.
+                if not any(n.lower() == name.lower() for n in target):
+                    target.append(name)
+                    if self.running():
+                        self.panel(f"> {'op' if kind == 'ops' else 'whitelist add'} {name}")
+                return 200, {"ok": True, **self.players_payload()}
             if len(rest) == 2 and method == "DELETE":
                 name = unquote(rest[1])
+                if not PLAYER_RE.match(name):
+                    raise ApiError(400, "Player names are 1-16 letters, numbers or underscores.", "invalid_player")
                 match = next((n for n in target if n.lower() == name.lower()), None)
-                if not match:
-                    raise ApiError(404, f"{name} isn't {label}.", "not_found")
-                target.remove(match)
-                if self.running():
-                    self.panel(f"> {'deop' if kind == 'ops' else 'whitelist remove'} {match}")
-                return 200, {"ok": True}
-        raise ApiError(405, "That isn't supported here.", "method_not_allowed")
+                if match:
+                    target.remove(match)
+                    if self.running():
+                        self.panel(f"> {'deop' if kind == 'ops' else 'whitelist remove'} {match}")
+                return 200, {"ok": True, **self.players_payload()}
+        raise ApiError(405, "That action isn't supported here.", "method_not_allowed")
 
     # -------------------------------------------------------------- settings
 
+    def settings_view(self):
+        """Like installer.get_settings: an unknown on-disk enum value joins the
+        options so the select can show it. Pre-1.7 versions report online-mode
+        off even though their schema leaves it out (the dashboard must not send it back)."""
+        setup = self.active_setup()
+        version = setup["resolved_version"] if setup else LATEST
+        schema = settings_schema(version)
+        values = {}
+        for key, item in schema.items():
+            values[key] = self.properties.get(key)
+            if item["type"] == "enum" and values[key] not in item["options"]:
+                item["options"] = item["options"] + [values[key]]
+        if is_legacy(version):
+            values["online-mode"] = False
+        return version, schema, values
+
     def settings_api(self, method, body):
         if method == "GET":
+            _, schema, values = self.settings_view()
             return 200, {
-                "properties": dict(self.properties),
+                "properties": values,
                 "railpowered": {"idle_timeout_minutes": self.idle_timeout // 60, "auto_start": self.auto_start},
-                "restart_required": self.restart_required,
-                "schema": SCHEMA,
+                "restart_required": self.restart_required and self.running(),
+                "schema": schema,
             }
         if method == "PUT":
-            props = body.get("properties") or {}
-            rp = body.get("railpowered") or {}
+            props = body.get("properties")
+            rp = body.get("railpowered")
+            props = {} if props is None else props
+            rp = {} if rp is None else rp
             if not isinstance(props, dict) or not isinstance(rp, dict):
-                raise ApiError(400, "Send properties and railpowered as objects.", "bad_request")
+                raise ApiError(400, "properties and railpowered must be objects.", "invalid")
+            setup = self.active_setup()
+            version = setup["resolved_version"] if setup else LATEST
+            schema = settings_schema(version)
             clean = {}
             for key, value in props.items():
-                sch = SCHEMA.get(key)
+                sch = schema.get(key)
                 if not sch:
-                    continue
+                    raise ApiError(400, f"'{str(key)[:40]}' can't be changed here on Minecraft {version}.", "invalid_setting")
                 label = sch["label"]
                 if sch["type"] == "int":
                     if isinstance(value, bool) or not isinstance(value, int):
-                        raise ApiError(400, f"{label} must be a whole number.", "bad_request")
+                        raise ApiError(400, f"{label} must be a whole number.", "invalid_setting")
                     if value < sch["min"] or value > sch["max"]:
-                        raise ApiError(400, f"{label} must be between {sch['min']} and {sch['max']}.", "bad_request")
+                        raise ApiError(400, f"{label} must be between {sch['min']} and {sch['max']}.", "invalid_setting")
                 elif sch["type"] == "bool":
                     if not isinstance(value, bool):
-                        raise ApiError(400, f"{label} must be on or off.", "bad_request")
+                        raise ApiError(400, f"{label} must be on or off.", "invalid_setting")
                 elif sch["type"] == "enum":
-                    options = [o["value"] if isinstance(o, dict) else o for o in sch["options"]]
-                    if value not in options:
-                        raise ApiError(400, f"{label} can't be “{value}”.", "bad_request")
+                    # The value already on disk stays allowed (a modpack's own level-type, say).
+                    if value not in sch["options"] and value != self.properties.get(key):
+                        raise ApiError(400, f"{label} must be one of: {', '.join(sch['options'])}.", "invalid_setting")
                 else:
                     value = str(value)
-                    if "\n" in value or len(value) > 200:
-                        raise ApiError(400, f"{label} must be one line of up to 200 characters.", "bad_request")
+                    if "\n" in value or "\r" in value:
+                        raise ApiError(400, f"{label} must be a single line.", "invalid_setting")
+                    if len(value) > sch.get("max", 256):
+                        raise ApiError(400, f"{label} can be at most {sch['max']} characters.", "invalid_setting")
                 clean[key] = value
-            minutes = rp.get("idle_timeout_minutes", self.idle_timeout // 60)
-            if isinstance(minutes, bool) or not isinstance(minutes, int) or not 0 <= minutes <= 1440:
-                raise ApiError(400, "Sleep after must be between 0 and 1440 minutes.", "bad_request")
+            rp_clean = {}
+            for key, value in rp.items():
+                if key == "idle_timeout_minutes":
+                    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 1440:
+                        raise ApiError(400, "Sleep timer must be between 0 (never sleep) and 1440 minutes.", "invalid_setting")
+                elif key == "auto_start":
+                    if not isinstance(value, bool):
+                        raise ApiError(400, "Start on deploy must be on or off.", "invalid_setting")
+                else:
+                    raise ApiError(400, f"Unknown Railpowered setting '{str(key)[:40]}'.", "invalid_setting")
+                rp_clean[key] = value
             changed = any(self.properties.get(k) != v for k, v in clean.items())
             self.properties.update(clean)
             self.max_players = self.properties["max-players"]
-            self.idle_timeout = minutes * 60
-            if self.phase == "online" and not self.players:
-                self.empty_since = time.time()
-            self.auto_start = bool(rp.get("auto_start", self.auto_start))
+            if clean:
+                self.panel("Server settings saved.")
+            if "idle_timeout_minutes" in rp_clean:
+                self.idle_timeout = rp_clean["idle_timeout_minutes"] * 60
+                if self.phase == "online" and not self.players:
+                    self.empty_since = time.time()
+            if "auto_start" in rp_clean:
+                self.auto_start = rp_clean["auto_start"]
+            if rp_clean:
+                self.panel("Railpowered settings saved.")
             if changed and self.running():
                 self.restart_required = True
-            return 200, {"ok": True, "restart_required": self.restart_required}
-        raise ApiError(405, "That isn't supported here.", "method_not_allowed")
+            return 200, {"ok": True, "restart_required": self.restart_required and self.running()}
+        raise ApiError(405, "That action isn't supported here.", "method_not_allowed")
 
     # -------------------------------------------------------------- dev hooks
 
@@ -1148,6 +1309,10 @@ class Mock:
             self.sessions.clear()
         elif name == "address":
             self.join_address = arg("value", "")
+        elif name == "offline":
+            self.versions_offline = arg("set", "1") == "1"
+        elif name == "upload-limit":
+            self.max_upload = int(float(arg("mb", "1024")) * MiB)
         elif name == "reset":
             self.reset(arg("phase", "online"), arg("scenario", "default"))
         elif name == "finish":
@@ -1168,7 +1333,9 @@ HOOKS_HELP = {
     "/__mock/fail?path=/api/status&status=502&times=3": "make the next N requests to a path fail",
     "/__mock/expire": "end every session (the next API call gets 401)",
     "/__mock/address?value=host:port": "change the join address (empty for none)",
-    "/__mock/reset?phase=online&scenario=default|fresh": "start over; fresh = a brand new install",
+    "/__mock/offline?set=1|0": "answer /api/versions as if Mojang can't be reached",
+    "/__mock/upload-limit?mb=256": "change the modpack upload limit (MAX_UPLOAD_MB)",
+    "/__mock/reset?phase=online&scenario=default|fresh|legacy": "start over; fresh = a brand new install, legacy = Minecraft 1.6.4",
     "/__mock/finish": "run every scheduled event now",
 }
 
@@ -1289,7 +1456,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_json(404, {"error": "Unknown hook.", "hooks": HOOKS_HELP})
                 return self.send_json(200, result)
             if path == "/health":
-                return self.send_json(200, {"ok": True})
+                return self.send_json(200, {"status": "ok"})
             if path.startswith("/static/"):
                 rest = path[len("/static/"):]
                 parts = rest.split("/")
@@ -1305,20 +1472,32 @@ class Handler(BaseHTTPRequestHandler):
                     return self.redirect("/login")
                 return self.send_file(os.path.join(web, "index.html"))
             if path == "/login" and method == "GET":
-                return self.send_file(os.path.join(web, "login.html"))
+                if self.authed():
+                    return self.redirect("/")
+                return self.login_page((query.get("error") or [""])[0])
             if path == "/login" and method == "POST":
                 return self.login()
             if path == "/logout" and method == "POST":
                 return self.logout()
             if path == "/api/logout" and method == "GET":
-                return self.logout()
+                # Kept for old bookmarks; a GET never signs anyone out (CSRF-safe).
+                return self.redirect("/")
             if path.startswith("/api/"):
                 return self.api(method, path, query)
             self.send_json(404, {"error": "Not found.", "code": "not_found"})
         except ApiError as err:
+            if err.status == 413 or path == "/api/modpacks/upload":
+                self.close_connection = True
             self.send_json(err.status, err.payload())
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+
+    def login_page(self, error):
+        with open(os.path.join(self.mock.args.web_dir, "login.html"), "rb") as fh:
+            page = fh.read().decode("utf-8")
+        # Same substitution as web.login_page(): every {{error}}, escaped.
+        page = page.replace("{{error}}", html.escape(LOGIN_ERRORS.get(error, "")))
+        self.send_bytes(200, page.encode("utf-8"), CONTENT_TYPES[".html"], {"Cache-Control": "no-store"})
 
     def login(self):
         form = parse_qs(self.read_body(64 * 1024).decode("utf-8", "replace"))
@@ -1334,10 +1513,13 @@ class Handler(BaseHTTPRequestHandler):
         return self.redirect("/", cookie=f"rp_session={token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000")
 
     def logout(self):
-        if self.command == "POST":
-            body = self.read_body(64 * 1024).decode("utf-8", "replace")
-            if self.headers.get("X-Railpowered") != "1" and "x_railpowered=1" not in body:
-                return self.send_json(403, {"error": "This request was blocked. Reload the page and try again.", "code": "csrf"})
+        self.read_body(64 * 1024)
+        # Like panel._logout: the X-Railpowered header, or a browser-sent Origin
+        # that matches this host. A form field alone proves nothing.
+        origin = self.headers.get("Origin")
+        same = None if not origin else urlsplit(origin).netloc == (self.headers.get("Host") or "")
+        if same is False or (same is None and self.headers.get("X-Railpowered") != "1"):
+            raise ApiError(403, "Log out from the dashboard.", "csrf")
         cookie = self.headers.get("Cookie") or ""
         for part in cookie.split(";"):
             k, _, v = part.strip().partition("=")
@@ -1352,9 +1534,9 @@ class Handler(BaseHTTPRequestHandler):
         if is_upload:
             self.close_connection = True
         if not self.authed():
-            raise ApiError(401, "Sign in again.", "unauthorized")
+            raise ApiError(401, "Log in to continue.", "unauthorized")
         if method != "GET" and self.headers.get("X-Railpowered") != "1":
-            raise ApiError(403, "This request was blocked. Reload the page and try again.", "csrf")
+            raise ApiError(403, "This request is missing the dashboard header.", "csrf")
         with self.mock.lock:
             failure = self.mock.failures.get(path)
             if failure and failure[1] > 0:
@@ -1364,14 +1546,14 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(self.mock.args.latency / 1000)
         parts = [p for p in path[len("/api/"):].split("/") if p]
         if not parts:
-            raise ApiError(404, "There's nothing at that address.", "not_found")
+            raise ApiError(404, "Not found.", "not_found")
 
         if parts[0] == "backups" and len(parts) == 3 and parts[2] == "download" and method == "GET":
             name = unquote(parts[1])
             with self.mock.lock:
                 exists = any(b["name"] == name for b in self.mock.backups)
             if not exists:
-                raise ApiError(404, "That backup doesn't exist any more.", "not_found")
+                raise ApiError(404, "That backup doesn't exist any more.", "backup_not_found")
             data = gzip.compress(f"Railpowered mock backup {name}\n".encode())
             return self.send_bytes(200, data, "application/gzip", {
                 "Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
@@ -1384,27 +1566,33 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 body = json.loads(raw)
             except ValueError:
-                raise ApiError(400, "The request body wasn't valid JSON.", "bad_request")
+                raise ApiError(400, "The request body isn't valid JSON.", "bad_json") from None
             if not isinstance(body, dict):
-                raise ApiError(400, "The request body should be a JSON object.", "bad_request")
+                raise ApiError(400, "The request body must be a JSON object.", "bad_json")
         with self.mock.lock:
             self.mock.tick()
             status, payload = self.mock.handle_api(method, parts, query, body)
         self.send_json(status, payload)
 
     def upload(self, query):
-        name = (query.get("name") or [""])[0]
-        level = (query.get("level_name") or [name])[0] or name
-        allow = (query.get("allow_downgrade") or [""])[0] in ("1", "true")
+        name = (query.get("name") or [""])[0].strip()
+        level = (query.get("level_name") or [""])[0].strip() or name
+        allow = (query.get("allow_downgrade") or [""])[0].strip().lower() in ("1", "true", "yes")
+        # Checked before the body is read, like the panel; the connection is then closed.
+        with self.mock.lock:
+            self.mock.check_name(name, "Modpack")
+            self.mock.check_name(level)
+            self.mock.require_idle()
+            limit = self.mock.max_upload
+            free = self.mock.disk()["free_bytes"]
         length = self.headers.get("Content-Length")
         if not length:
-            raise ApiError(411, "The upload needs a Content-Length header.", "length_required")
+            raise ApiError(411, "Send the body with a Content-Length.", "length_required")
         n = int(length)
-        if n > MAX_UPLOAD:
-            raise ApiError(413, "That file is bigger than 1 GB, the most this server accepts.", "too_large")
-        if not NAME_RE.match(name):
-            self.rfile.read(n)
-            raise ApiError(400, "Pack names: " + NAME_RULE, "bad_request")
+        if n > limit:
+            raise ApiError(413, f"That request is too large (limit {limit // MiB} MB).", "too_large")
+        if free < n * 3 + UPLOAD_HEADROOM:
+            raise ApiError(507, "There isn't enough free space on the volume for this pack.", "disk_full")
         # Read slowly so the progress bar has something to show.
         rate = max(1, self.mock.args.upload_kbps) * 1024
         left = n
