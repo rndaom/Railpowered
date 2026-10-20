@@ -1,0 +1,691 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#090c10" media="(prefers-color-scheme: dark)">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="same-origin">
+  <title>Railpowered</title>
+  <link rel="icon" href="/static/assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+  <link rel="stylesheet" href="/static/app.css">
+  <!-- Loaded in <head> on purpose: it applies the saved theme before first paint, then waits for the DOM. -->
+  <script src="/static/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="sprite">
+    <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="9" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.6"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.6"/><rect x="3" y="15" width="7.5" height="6" rx="1.6"/></symbol>
+    <symbol id="i-setups" viewBox="0 0 24 24"><path d="M12 3 2.8 7.6 12 12.2l9.2-4.6z"/><path d="m2.8 12 9.2 4.6 9.2-4.6"/><path d="m2.8 16.4 9.2 4.6 9.2-4.6"/></symbol>
+    <symbol id="i-world" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17"/><path d="M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3z"/></symbol>
+    <symbol id="i-players" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.6a3.5 3.5 0 0 1 0 6.8"/><path d="M18.2 14.2A6.5 6.5 0 0 1 21.5 20"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></symbol>
+    <symbol id="i-console" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="m7 9.5 3 2.5-3 2.5"/><path d="M12.5 15H17"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.6 2.3c-.7.3-1.2 1-1.2 1.7v.5"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.6A8.2 8.2 0 0 1 9.4 4 8.2 8.2 0 1 0 20 14.6z"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.6 6.6a7.6 7.6 0 1 0 10.8 0"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.8v14.4L19 12z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect x="5.5" y="5.5" width="13" height="13" rx="2.2"/></symbol>
+    <symbol id="i-restart" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4v4.5H8"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M5 3.5h10.5l3.5 3.5v12a1.5 1.5 0 0 1-1.5 1.5h-12A1.5 1.5 0 0 1 4 19V5a1.5 1.5 0 0 1 1-1.5z"/><path d="M8 3.5v4h7v-4"/><rect x="7.5" y="12.5" width="9" height="8" rx="1"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2"/><path d="M15.5 8.5V5.5a2 2 0 0 0-2-2h-8a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h3"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m4.5 12.5 5 5 10-11"/></symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m8 12.3 2.8 2.8L16.2 9.5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 4 2.2 18a2 2 0 0 0 1.7 3h16.2a2 2 0 0 0 1.7-3L13.7 4a2 2 0 0 0-3.4 0z"/><path d="M12 9.5v4"/><path d="M12 17.2h.01"/></symbol>
+    <symbol id="i-alert-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5"/><path d="M12 16.3h.01"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.7h.01"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.5v11"/><path d="m7 10 5 5 5-5"/><path d="M4.5 20.5h15"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 15.5v-11"/><path d="m7 9 5-5 5 5"/><path d="M4.5 15.5v3a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-3"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 6.5h16"/><path d="M9 6.5V4.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 6.5l1 13a1.5 1.5 0 0 0 1.5 1.5h7a1.5 1.5 0 0 0 1.5-1.5l1-13"/><path d="M10 11v6M14 11v6"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 24 24"><path d="M16.3 3.8a2.2 2.2 0 0 1 3.1 3.1L8.2 18.1 4 19.2l1.1-4.2z"/><path d="m14.5 5.6 3.1 3.1"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13.5a4.5 4.5 0 0 0 6.8.5l2.8-2.8a4.5 4.5 0 0 0-6.4-6.4l-1.4 1.4"/><path d="M14 10.5a4.5 4.5 0 0 0-6.8-.5l-2.8 2.8a4.5 4.5 0 0 0 6.4 6.4l1.4-1.4"/></symbol>
+    <symbol id="i-archive" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1.2"/><path d="M5 9v9.5A1.5 1.5 0 0 0 6.5 20h11a1.5 1.5 0 0 0 1.5-1.5V9"/><path d="M10 13h4"/></symbol>
+    <symbol id="i-package" viewBox="0 0 24 24"><path d="M20.5 16V8a1.6 1.6 0 0 0-.8-1.4l-6.9-4a1.6 1.6 0 0 0-1.6 0l-6.9 4A1.6 1.6 0 0 0 3.5 8v8a1.6 1.6 0 0 0 .8 1.4l6.9 4a1.6 1.6 0 0 0 1.6 0l6.9-4a1.6 1.6 0 0 0 .8-1.4z"/><path d="M3.8 7.2 12 12l8.2-4.8"/><path d="M12 21.5V12"/><path d="m7.8 4.8 8.4 4.9"/></symbol>
+    <symbol id="i-cube" viewBox="0 0 24 24"><path d="M12 2.8 3.8 7.4v9.2l8.2 4.6 8.2-4.6V7.4z"/><path d="M3.8 7.4 12 12l8.2-4.6"/><path d="M12 12v9.2"/></symbol>
+    <symbol id="i-feather" viewBox="0 0 24 24"><path d="M20 4c-6.5 0-12 4.8-12 11.5V20"/><path d="M20 4c0 7-4.4 11.5-12 11.5"/><path d="M4 20 8 16"/><path d="M11.5 11.8 15 8.5"/></symbol>
+    <symbol id="i-hammer" viewBox="0 0 24 24"><path d="m14.2 4.3 5.5 5.5-2.4 2.4-5.5-5.5z"/><path d="M12.6 8.2 4 16.8a1.8 1.8 0 0 0 2.6 2.6l8.6-8.6"/><path d="m15.5 5.6 1.6-1.6a1.4 1.4 0 0 1 2 0l.9.9a1.4 1.4 0 0 1 0 2l-1.6 1.6"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="m13 6 6 6-6 6"/></symbol>
+    <symbol id="i-arrow-down" viewBox="0 0 24 24"><path d="M12 5v14"/><path d="m6 13 6 6 6-6"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6 6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8.5 20h7M12 16v4"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9.5 20.5h-4a2 2 0 0 1-2-2v-13a2 2 0 0 1 2-2h4"/><path d="m16 16.5 4.5-4.5L16 7.5"/><path d="M20.5 12H9.5"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 21.5s7.5-3.6 7.5-9.6V5.6L12 2.8 4.5 5.6v6.3c0 6 7.5 9.6 7.5 9.6z"/><path d="m9 11.8 2.2 2.2 4-4.2"/></symbol>
+    <symbol id="i-crown" viewBox="0 0 24 24"><path d="m3 7.5 4.5 4L12 4.5l4.5 7 4.5-4-1.8 11H4.8z"/><path d="M5 21h14"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></symbol>
+    <symbol id="i-hourglass" viewBox="0 0 24 24"><path d="M6 3h12M6 21h12"/><path d="M7.5 3v3.2a4.5 4.5 0 0 0 9 0V3"/><path d="M7.5 21v-3.2a4.5 4.5 0 0 1 9 0V21"/></symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24"><path d="M13 2.5 4.5 13.5H11l-1 8 8.5-11H12z"/></symbol>
+    <symbol id="i-signal" viewBox="0 0 24 24"><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4"/><path d="M19.1 4.9a10 10 0 0 1 0 14.2M4.9 19.1a10 10 0 0 1 0-14.2"/></symbol>
+    <symbol id="i-plug-off" viewBox="0 0 24 24"><path d="m3 3 18 18"/><path d="M8.5 16.5a5 5 0 0 1 4-1.9"/><path d="M5 12.9a10 10 0 0 1 4.2-2.6"/><path d="M19 12.9a10 10 0 0 0-2.4-1.7"/><path d="M12 20h.01"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.4-4.4"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M9 5.5v13M15 5.5v13"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6"/><path d="M20 4 11 13"/><path d="M18.5 14v4.5a1.5 1.5 0 0 1-1.5 1.5H5.5A1.5 1.5 0 0 1 4 18.5V7a1.5 1.5 0 0 1 1.5-1.5H10"/></symbol>
+    <symbol id="i-disk" viewBox="0 0 24 24"><rect x="3" y="13" width="18" height="7.5" rx="2"/><path d="M5.2 13 7.6 4.5h8.8l2.4 8.5"/><path d="M7 16.8h.01M10.5 16.8h.01"/></symbol>
+    <symbol id="i-coffee" viewBox="0 0 24 24"><path d="M4.5 9h12v4.5a6 6 0 0 1-6 6 6 6 0 0 1-6-6z"/><path d="M16.5 10.5h1.2a2.6 2.6 0 0 1 0 5.2h-1.6"/><path d="M8.5 2.8V5.5M12.5 2.8V5.5"/></symbol>
+    <symbol id="i-sparkle" viewBox="0 0 24 24"><path d="M12 3.5 13.9 9l5.6 2-5.6 2L12 18.5 10.1 13l-5.6-2 5.6-2z"/><path d="M19 3.5v3M17.5 5h3"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></symbol>
+    <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3.5 3.5V8H8"/><path d="M12 8v4l2.5 1.5"/></symbol>
+    <symbol id="i-loader" viewBox="0 0 24 24"><path d="M12 3v3M12 18v3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M3 12h3M18 12h3M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></symbol>
+  </svg>
+
+  <div class="app" id="app">
+    <header class="topbar">
+      <button class="icon-btn" type="button" id="drawer-open" aria-label="Open menu" aria-controls="sidebar" aria-expanded="false">
+        <svg class="icon icon-lg" aria-hidden="true"><use href="#i-menu"/></svg>
+      </button>
+      <a class="brand" href="#/overview">
+        <img src="/static/assets/logo.svg" alt="" width="28" height="28">
+        <span class="brand-name">Railpowered</span>
+      </a>
+      <a class="pill" href="#/overview" id="topbar-pill" data-phase="unknown">
+        <span class="dot" aria-hidden="true"></span><span class="pill-text">Checking</span>
+      </a>
+    </header>
+
+    <aside class="sidebar" id="sidebar" aria-label="Navigation">
+      <div class="sidebar-head">
+        <a class="brand" href="#/overview">
+          <img src="/static/assets/logo.svg" alt="" width="32" height="32">
+          <span class="brand-name">Railpowered</span>
+        </a>
+        <button class="icon-btn sidebar-close" type="button" id="drawer-close" aria-label="Close menu">
+          <svg class="icon icon-lg" aria-hidden="true"><use href="#i-x"/></svg>
+        </button>
+      </div>
+
+      <a class="sidebar-status" href="#/overview" id="sidebar-status" data-phase="unknown">
+        <span class="pill-row"><span class="dot" aria-hidden="true"></span><span class="pill-text">Checking</span></span>
+        <span class="pill-sub" id="sidebar-status-sub">Connecting to your server</span>
+      </a>
+
+      <nav class="nav" aria-label="Main">
+        <a class="nav-link" href="#/overview" data-nav="overview"><svg class="icon" aria-hidden="true"><use href="#i-overview"/></svg><span>Overview</span></a>
+        <a class="nav-link" href="#/setups" data-nav="setups"><svg class="icon" aria-hidden="true"><use href="#i-setups"/></svg><span>Setups</span></a>
+        <a class="nav-link" href="#/worlds" data-nav="worlds"><svg class="icon" aria-hidden="true"><use href="#i-world"/></svg><span>Worlds &amp; backups</span></a>
+        <a class="nav-link" href="#/players" data-nav="players"><svg class="icon" aria-hidden="true"><use href="#i-players"/></svg><span>Players</span><span class="nav-badge" id="nav-online-count" hidden></span></a>
+        <a class="nav-link" href="#/settings" data-nav="settings"><svg class="icon" aria-hidden="true"><use href="#i-settings"/></svg><span>Settings</span></a>
+        <a class="nav-link" href="#/console" data-nav="console"><svg class="icon" aria-hidden="true"><use href="#i-console"/></svg><span>Console</span></a>
+        <a class="nav-link" href="#/help" data-nav="help"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg><span>Help</span></a>
+      </nav>
+
+      <div class="sidebar-foot">
+        <div class="theme-switch" role="group" aria-label="Colour theme">
+          <button type="button" data-theme-choice="system" aria-pressed="true" title="Match your device"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-monitor"/></svg><span>Auto</span></button>
+          <button type="button" data-theme-choice="light" aria-pressed="false" title="Light theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sun"/></svg><span>Light</span></button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-moon"/></svg><span>Dark</span></button>
+        </div>
+        <button class="btn btn-ghost btn-block btn-start" type="button" id="logout">
+          <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span>Sign out</span>
+        </button>
+        <p class="version-line" id="version-line">Railpowered</p>
+      </div>
+    </aside>
+    <div class="drawer-scrim" id="drawer-scrim" aria-hidden="true"></div>
+
+    <main class="main" id="main" tabindex="-1">
+      <div class="main-inner">
+        <div id="banners" class="stack-sm">
+          <div class="banner tone-bad" id="conn-banner" role="alert" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-plug-off"/></svg>
+            <div class="banner-body">
+              <p class="banner-title">Can't reach your server</p>
+              <p class="banner-text" id="conn-text">The dashboard will keep trying. If Railway is redeploying, this clears up in a minute or two.</p>
+            </div>
+          </div>
+          <div class="banner" id="task-banner" hidden></div>
+        </div>
+
+        <!-- ============================================================ Overview -->
+        <section class="view" id="view-overview" data-view="overview" aria-labelledby="overview-title" hidden>
+          <header class="view-head">
+            <div>
+              <h1 id="overview-title" tabindex="-1">Overview</h1>
+              <p id="overview-sub">Everything about your Minecraft server, at a glance.</p>
+            </div>
+          </header>
+
+          <article class="hero" id="hero" data-phase="unknown" aria-labelledby="phase-word">
+            <div class="hero-top">
+              <div class="lamp" aria-hidden="true"><svg class="icon" id="hero-icon"><use href="#i-loader"/></svg></div>
+              <div class="hero-state">
+                <p class="eyebrow">Server status</p>
+                <h2 class="phase-word" id="phase-word">Checking…</h2>
+                <p class="phase-copy" id="phase-copy">Asking your server how it's doing.</p>
+              </div>
+              <div class="hero-actions" id="hero-actions"></div>
+            </div>
+            <div class="rail" aria-hidden="true"><span class="rail-power"></span></div>
+            <dl class="facts">
+              <div class="fact fact-address">
+                <dt class="eyebrow">Join address</dt>
+                <dd id="fact-address"><span class="skeleton sk-address"></span></dd>
+              </div>
+              <div class="fact">
+                <dt class="eyebrow">Minecraft</dt>
+                <dd id="fact-version"><span class="skeleton sk-version"></span></dd>
+              </div>
+              <div class="fact">
+                <dt class="eyebrow">Players</dt>
+                <dd id="fact-players"><span class="skeleton sk-count"></span></dd>
+              </div>
+              <div class="fact">
+                <dt class="eyebrow" id="fact-time-label">Uptime</dt>
+                <dd id="fact-time"><span class="skeleton sk-time"></span></dd>
+              </div>
+            </dl>
+            <div class="crash-box" id="crash-box" hidden>
+              <strong>What happened</strong>
+              <pre id="crash-reason"></pre>
+            </div>
+            <div class="hero-strip" id="hero-strip"></div>
+          </article>
+
+          <section class="card" id="firstrun" aria-labelledby="firstrun-title" hidden>
+            <div class="firstrun">
+              <div>
+                <h2 class="eyebrow title-with-icon" id="firstrun-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg>Getting started</h2>
+                <div class="firstrun-steps">
+                  <div>
+                    <strong>Share the join address</strong>
+                    <p>Friends add it in Minecraft under Multiplayer, Add Server. They need Minecraft <span data-bind="version">Java Edition</span>.</p>
+                  </div>
+                  <div>
+                    <strong>Joining wakes the server</strong>
+                    <p>While it sleeps, the first person to join sees "waking up" and can reconnect about a minute later.</p>
+                  </div>
+                  <div>
+                    <strong id="firstrun-private-title">Make it private</strong>
+                    <p id="firstrun-private">Turn on the whitelist in <a href="#/players">Players</a> so only your friends can get in.</p>
+                  </div>
+                </div>
+              </div>
+              <button class="icon-btn" type="button" id="firstrun-dismiss" aria-label="Hide getting started">
+                <svg class="icon" aria-hidden="true"><use href="#i-x"/></svg>
+              </button>
+            </div>
+          </section>
+
+          <div class="grid-2">
+            <section class="card" aria-labelledby="online-title">
+              <div class="card-head">
+                <h2 id="online-title"><svg class="icon" aria-hidden="true"><use href="#i-players"/></svg>Online now <span class="count" id="online-count"></span></h2>
+                <a class="btn btn-ghost btn-sm" href="#/players">Manage players<svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-right"/></svg></a>
+              </div>
+              <div class="card-body" id="online-list"></div>
+            </section>
+
+            <section class="card" aria-labelledby="current-title">
+              <div class="card-head">
+                <h2 id="current-title"><svg class="icon" aria-hidden="true"><use href="#i-setups"/></svg>Active setup</h2>
+                <a class="btn btn-ghost btn-sm" href="#/setups">Change<svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-right"/></svg></a>
+              </div>
+              <div class="card-body" id="current-setup"></div>
+            </section>
+          </div>
+
+          <section class="card" aria-labelledby="recent-log-title">
+            <div class="card-head">
+              <h2 id="recent-log-title"><svg class="icon" aria-hidden="true"><use href="#i-console"/></svg>Latest from the server</h2>
+              <a class="btn btn-ghost btn-sm" href="#/console">Open console<svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-right"/></svg></a>
+            </div>
+            <div class="card-body tight">
+              <div class="log compact" id="mini-log" aria-label="Recent server log lines"></div>
+            </div>
+          </section>
+        </section>
+
+        <!-- ============================================================ Setups -->
+        <section class="view" id="view-setups" data-view="setups" aria-labelledby="setups-title" hidden>
+          <header class="view-head">
+            <div>
+              <h1 id="setups-title" tabindex="-1">Setups</h1>
+              <p>A setup is a server type, a Minecraft version and a world. One setup is active at a time, and you can switch back and forth.</p>
+            </div>
+            <div class="view-actions">
+              <a class="btn btn-primary" href="#new-setup" id="jump-new-setup"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New setup</a>
+            </div>
+          </header>
+
+          <section class="card" aria-labelledby="setups-list-title">
+            <div class="card-head">
+              <h2 id="setups-list-title">Your setups <span class="count" id="setups-count"></span></h2>
+            </div>
+            <div id="setups-list" class="card-body tight flush"></div>
+          </section>
+
+          <section class="card" id="new-setup" aria-labelledby="new-setup-title">
+            <div class="card-head">
+              <h2 id="new-setup-title"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg>New setup</h2>
+            </div>
+            <p class="card-sub">Nothing changes until the new setup has finished installing. If anything fails, your current setup keeps working.</p>
+            <form class="card-body" id="setup-form" novalidate>
+              <ol class="steps" role="list">
+                <li class="step" id="step-type">
+                  <fieldset class="step-body step-fieldset">
+                    <legend class="step-title">What kind of server?</legend>
+                    <div class="choices">
+                      <label class="choice">
+                        <input type="radio" name="type" value="vanilla" checked>
+                        <span class="glyph t-vanilla" aria-hidden="true"><svg class="icon"><use href="#i-cube"/></svg></span>
+                        <span class="choice-title">Vanilla</span>
+                        <span class="choice-text">Plain Minecraft, exactly as Mojang ships it.</span>
+                      </label>
+                      <label class="choice">
+                        <input type="radio" name="type" value="fabric">
+                        <span class="glyph t-fabric" aria-hidden="true"><svg class="icon"><use href="#i-feather"/></svg></span>
+                        <span class="choice-title">Fabric</span>
+                        <span class="choice-text">A light mod loader, great for performance mods.</span>
+                      </label>
+                      <label class="choice">
+                        <input type="radio" name="type" value="forge">
+                        <span class="glyph t-forge" aria-hidden="true"><svg class="icon"><use href="#i-hammer"/></svg></span>
+                        <span class="choice-title">Forge</span>
+                        <span class="choice-text">The classic mod loader for older modded versions.</span>
+                      </label>
+                      <label class="choice">
+                        <input type="radio" name="type" value="modpack">
+                        <span class="glyph t-modpack" aria-hidden="true"><svg class="icon"><use href="#i-package"/></svg></span>
+                        <span class="choice-title">Modpack</span>
+                        <span class="choice-text">Install a Modrinth pack or a server zip.</span>
+                      </label>
+                    </div>
+                  </fieldset>
+                </li>
+
+                <li class="step" id="step-version">
+                  <div class="step-body">
+                    <label class="step-title" for="setup-version">Minecraft version</label>
+                    <select class="select" id="setup-version" aria-describedby="version-help"></select>
+                    <p class="field-help" id="version-help">Friends need this exact version selected in their Minecraft launcher.</p>
+                  </div>
+                </li>
+
+                <li class="step" id="step-pack" hidden>
+                  <div class="step-body">
+                    <p class="step-title" id="pack-source-label">Where is the modpack?</p>
+                    <div class="segmented" role="group" aria-labelledby="pack-source-label">
+                      <button type="button" data-pack-source="url" aria-pressed="true"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-link"/></svg>Paste a link</button>
+                      <button type="button" data-pack-source="file" aria-pressed="false"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-upload"/></svg>Upload a file</button>
+                    </div>
+                    <div class="field" id="pack-url-pane">
+                      <label class="field-label" for="pack-url">Modpack link</label>
+                      <input class="input mono" id="pack-url" type="url" inputmode="url" autocomplete="off" spellcheck="false" placeholder="https://cdn.modrinth.com/data/…/pack.mrpack" aria-describedby="pack-url-help pack-url-error">
+                      <p class="field-help" id="pack-url-help">A direct download link to a Modrinth <code>.mrpack</code> or a server <code>.zip</code>. On Modrinth, copy the link of the download button.</p>
+                      <p class="field-error" id="pack-url-error" hidden></p>
+                    </div>
+                    <div class="field" id="pack-file-pane" hidden>
+                      <span class="field-label" id="pack-file-label">Modpack file</span>
+                      <label class="dropzone" id="dropzone">
+                        <input type="file" id="pack-file" accept=".mrpack,.zip,application/zip" aria-labelledby="pack-file-label" aria-describedby="pack-file-help">
+                        <svg class="icon" aria-hidden="true"><use href="#i-upload"/></svg>
+                        <strong>Drop a .mrpack or .zip here</strong>
+                        <span class="field-help" id="pack-file-help">or click to choose a file (up to 1 GB)</span>
+                      </label>
+                      <div class="file-chip" id="file-chip" hidden>
+                        <svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>
+                        <span class="file-name" id="file-name"></span>
+                        <span class="subtle nowrap" id="file-size"></span>
+                        <button class="btn btn-ghost btn-sm" type="button" id="file-clear">Remove</button>
+                      </div>
+                      <p class="field-error" id="pack-file-error" hidden></p>
+                    </div>
+                    <div class="field">
+                      <label class="field-label" for="pack-name">Pack name</label>
+                      <input class="input" id="pack-name" autocomplete="off" spellcheck="false" maxlength="32" placeholder="my-modpack" aria-describedby="pack-name-help pack-name-error">
+                      <p class="field-help" id="pack-name-help">Used for the pack's folder. Letters, numbers, dots, dashes and underscores, up to 32 characters.</p>
+                      <p class="field-error" id="pack-name-error" hidden></p>
+                    </div>
+                  </div>
+                </li>
+
+                <li class="step" id="step-world">
+                  <fieldset class="step-body step-fieldset">
+                    <legend class="step-title">World</legend>
+                    <div class="stack-sm">
+                      <label class="radio-line">
+                        <input type="radio" name="world-mode" value="new" checked>
+                        <span class="radio-copy">
+                          <span>Start a new world <span class="badge badge-accent badge-after">Recommended</span></span>
+                          <span class="field-help">Your other worlds stay exactly as they are.</span>
+                        </span>
+                      </label>
+                      <div class="field field-indent" id="new-world-wrap">
+                        <label class="field-label" for="new-world-name">New world name</label>
+                        <input class="input" id="new-world-name" autocomplete="off" spellcheck="false" maxlength="32" aria-describedby="new-world-error">
+                        <p class="field-error" id="new-world-error" hidden></p>
+                      </div>
+                      <label class="radio-line">
+                        <input type="radio" name="world-mode" value="existing">
+                        <span class="radio-copy">
+                          <span>Use a world you already have</span>
+                          <span class="field-help">Opening a world in a newer version upgrades it for good.</span>
+                        </span>
+                      </label>
+                      <div class="field field-indent" id="existing-world-wrap" hidden>
+                        <label class="field-label" for="existing-world">World</label>
+                        <select class="select" id="existing-world"></select>
+                        <div class="callout tone-warn" id="existing-world-note" hidden></div>
+                      </div>
+                    </div>
+                  </fieldset>
+                </li>
+
+                <li class="step" id="step-finish">
+                  <div class="step-body">
+                    <div class="stack-sm" id="setup-name-wrap">
+                      <label class="step-title" for="setup-name">Setup name <span class="subtle">(optional)</span></label>
+                      <input class="input" id="setup-name" autocomplete="off" maxlength="48">
+                    </div>
+                    <label class="radio-line" id="setup-activate-row">
+                      <input type="checkbox" id="setup-activate" checked>
+                      <span class="radio-copy">
+                        <span>Switch to it when it's ready</span>
+                        <span class="field-help" id="setup-impact">The server is asleep, so nobody is interrupted.</span>
+                      </span>
+                    </label>
+                    <div class="field" id="pack-finish" hidden>
+                      <p class="step-title">When it's installed</p>
+                      <p class="field-help" id="pack-impact"></p>
+                    </div>
+                    <div class="field" id="upload-progress" hidden>
+                      <div class="meter-legend"><span id="upload-label">Uploading…</span><span id="upload-pct" class="tabular">0%</span></div>
+                      <div class="progress" role="progressbar" aria-labelledby="upload-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="upload-bar"><span></span></div>
+                    </div>
+                    <div class="form-actions">
+                      <button class="btn btn-primary btn-lg" type="submit" id="setup-submit"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Create setup</span></button>
+                      <p class="summary-line" id="setup-summary" aria-live="polite"></p>
+                    </div>
+                  </div>
+                </li>
+              </ol>
+            </form>
+          </section>
+        </section>
+
+        <!-- ============================================================ Worlds -->
+        <section class="view" id="view-worlds" data-view="worlds" aria-labelledby="worlds-title" hidden>
+          <header class="view-head">
+            <div>
+              <h1 id="worlds-title" tabindex="-1">Worlds &amp; backups</h1>
+              <p>Each world is a separate save. A backup is a copy of one world that you can restore or download.</p>
+            </div>
+          </header>
+
+          <section class="card" aria-labelledby="worlds-list-title">
+            <div class="card-head">
+              <h2 id="worlds-list-title"><svg class="icon" aria-hidden="true"><use href="#i-world"/></svg>Worlds <span class="count" id="worlds-count"></span></h2>
+              <form class="field-row world-form" id="world-form" novalidate>
+                <label class="sr-only" for="world-name">New world name</label>
+                <input class="input input-sm" id="world-name" autocomplete="off" spellcheck="false" maxlength="32" placeholder="New world name" aria-describedby="world-name-error">
+                <button class="btn btn-sm" type="submit"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg>Create world</button>
+                <p class="field-error" id="world-name-error" hidden></p>
+              </form>
+            </div>
+            <ul class="list list-ruled list-gap" id="worlds-list" role="list"></ul>
+          </section>
+
+          <section class="card" aria-labelledby="backups-list-title">
+            <div class="card-head">
+              <h2 id="backups-list-title"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>Backups <span class="count" id="backups-count"></span></h2>
+              <button class="btn btn-primary btn-sm" type="button" id="backup-active"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-archive"/></svg><span>Back up active world</span></button>
+            </div>
+            <div class="card-body tight stack-sm">
+              <div class="meter" id="disk-meter" hidden>
+                <div class="meter-legend"><span id="disk-used"></span><span id="disk-free"></span></div>
+                <div class="meter-bar" role="img" id="disk-bar-wrap"><span id="disk-bar"></span></div>
+              </div>
+              <div class="callout">
+                <svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>
+                <p>Backups live on the same Railway volume as your worlds. <strong>Download the ones you care about</strong> so a copy exists somewhere else too.</p>
+              </div>
+            </div>
+            <ul class="list list-ruled" id="backups-list" role="list"></ul>
+          </section>
+        </section>
+
+        <!-- ============================================================ Players -->
+        <section class="view" id="view-players" data-view="players" aria-labelledby="players-title" hidden>
+          <header class="view-head">
+            <div>
+              <h1 id="players-title" tabindex="-1">Players</h1>
+              <p>Choose who can join, and who gets admin powers in the game.</p>
+            </div>
+          </header>
+
+          <section class="card" aria-labelledby="access-title">
+            <div class="card-head">
+              <h2 id="access-title"><svg class="icon" aria-hidden="true"><use href="#i-shield"/></svg>Who can join</h2>
+              <span class="badge" id="wl-badge"></span>
+            </div>
+            <div class="card-body stack-sm">
+              <div class="switch-row">
+                <div class="switch-copy">
+                  <label for="wl-switch">Only allow players on the whitelist</label>
+                  <p class="field-help" id="wl-help">When this is on, only the people below (and operators) can join. Everyone else is turned away.</p>
+                </div>
+                <input type="checkbox" role="switch" class="switch" id="wl-switch" aria-describedby="wl-help">
+              </div>
+              <div class="callout" id="mode-note" hidden></div>
+            </div>
+          </section>
+
+          <div class="grid-2">
+            <section class="card" aria-labelledby="wl-title">
+              <div class="card-head">
+                <h2 id="wl-title">Whitelist <span class="count" id="wl-count"></span></h2>
+              </div>
+              <p class="card-sub">Friends who can join when the whitelist is on.</p>
+              <div class="card-body stack-sm">
+                <form class="field-row" id="wl-form" novalidate>
+                  <label class="sr-only" for="wl-name">Player name to whitelist</label>
+                  <input class="input" id="wl-name" autocomplete="off" spellcheck="false" maxlength="16" placeholder="Minecraft username" aria-describedby="wl-error">
+                  <button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Add</span></button>
+                  <p class="field-error" id="wl-error" hidden></p>
+                </form>
+                <ul class="people" id="wl-list" role="list"></ul>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="ops-title">
+              <div class="card-head">
+                <h2 id="ops-title">Operators <span class="count" id="ops-count"></span></h2>
+              </div>
+              <p class="card-sub">Operators can use cheats and admin commands such as <code>/gamemode</code> and <code>/tp</code>.</p>
+              <div class="card-body stack-sm">
+                <form class="field-row" id="ops-form" novalidate>
+                  <label class="sr-only" for="ops-name">Player name to make operator</label>
+                  <input class="input" id="ops-name" autocomplete="off" spellcheck="false" maxlength="16" placeholder="Minecraft username" aria-describedby="ops-error">
+                  <button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Make operator</span></button>
+                  <p class="field-error" id="ops-error" hidden></p>
+                </form>
+                <ul class="people" id="ops-list" role="list"></ul>
+              </div>
+            </section>
+          </div>
+
+          <section class="card" aria-labelledby="players-online-title">
+            <div class="card-head">
+              <h2 id="players-online-title"><svg class="icon" aria-hidden="true"><use href="#i-players"/></svg>Online now <span class="count" id="players-online-count"></span></h2>
+            </div>
+            <div class="card-body" id="players-online"></div>
+          </section>
+        </section>
+
+        <!-- ============================================================ Settings -->
+        <section class="view" id="view-settings" data-view="settings" aria-labelledby="settings-title" hidden>
+          <header class="view-head">
+            <div>
+              <h1 id="settings-title" tabindex="-1">Settings</h1>
+              <p>Game rules for your server and how Railpowered looks after it. Changes are saved on the volume and survive redeploys.</p>
+            </div>
+          </header>
+
+          <div class="banner tone-warn" id="restart-banner" hidden>
+            <svg class="icon" aria-hidden="true"><use href="#i-restart"/></svg>
+            <div class="banner-body">
+              <p class="banner-title">Restart to apply your changes</p>
+              <p class="banner-text">Minecraft reads these settings when it starts. They take effect after a restart, or the next time the server wakes up.</p>
+            </div>
+            <div class="banner-actions">
+              <button class="btn btn-sm" type="button" id="restart-now"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-restart"/></svg><span>Restart now</span></button>
+            </div>
+          </div>
+
+          <form class="stack" id="settings-form" novalidate>
+            <div id="settings-body" class="stack">
+              <section class="card"><div class="skeleton-rows"><span class="skeleton sk-40"></span><span class="skeleton sk-70"></span><span class="skeleton sk-55"></span></div></section>
+            </div>
+            <div class="savebar" id="savebar" hidden>
+              <p><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>You have unsaved changes</p>
+              <div class="actions">
+                <button class="btn btn-ghost" type="button" id="settings-discard">Discard</button>
+                <button class="btn btn-primary" type="submit" id="settings-save"><svg class="icon" aria-hidden="true"><use href="#i-check"/></svg><span>Save changes</span></button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <!-- ============================================================ Console -->
+        <section class="view" id="view-console" data-view="console" aria-labelledby="console-title" hidden>
+          <header class="view-head">
+            <div>
+              <h1 id="console-title" tabindex="-1">Console</h1>
+              <p>The live server log. Commands you send here run as the server itself, with full operator power.</p>
+            </div>
+          </header>
+
+          <section class="card console-card" aria-label="Server log and console">
+            <div class="log-toolbar">
+              <div class="search">
+                <svg class="icon" aria-hidden="true"><use href="#i-search"/></svg>
+                <label class="sr-only" for="log-filter">Filter log lines</label>
+                <input class="input" id="log-filter" type="search" placeholder="Filter lines" autocomplete="off" spellcheck="false">
+              </div>
+              <span class="subtle text-xs" id="log-stats"></span>
+              <span class="spacer"></span>
+              <button class="btn btn-sm" type="button" id="follow-toggle" aria-pressed="true"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-down"/></svg><span>Following</span></button>
+            </div>
+            <div class="log-wrap">
+              <div class="log" id="log" role="log" aria-live="off" aria-label="Server log" tabindex="0"></div>
+              <button class="btn btn-sm jump" type="button" id="jump-latest" hidden><svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-down"/></svg><span>Jump to latest</span></button>
+            </div>
+            <form class="console-input" id="console-form" novalidate>
+              <span class="prompt" aria-hidden="true">&gt;</span>
+              <label class="sr-only" for="console-cmd">Console command</label>
+              <input class="input" id="console-cmd" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="1000" placeholder="say Hello from the dashboard" aria-describedby="console-hint">
+              <button class="btn btn-primary" type="submit" id="console-send"><span>Send</span></button>
+            </form>
+            <p class="console-hint" id="console-hint">Press Enter to send, and the up and down arrows to reuse earlier commands. No slash needed.</p>
+          </section>
+        </section>
+
+        <!-- ============================================================ Help -->
+        <section class="view" id="view-help" data-view="help" aria-labelledby="help-title" hidden>
+          <header class="view-head">
+            <div>
+              <h1 id="help-title" tabindex="-1">Help</h1>
+              <p>How your friends join, what sleeping means, and what to do when something looks wrong.</p>
+            </div>
+          </header>
+
+          <div class="grid-2">
+            <section class="card" aria-labelledby="join-help-title">
+              <div class="card-head"><h2 id="join-help-title"><svg class="icon" aria-hidden="true"><use href="#i-players"/></svg>How friends join</h2></div>
+              <div class="card-body">
+                <ol class="guide-steps">
+                  <li><div><strong>Open Minecraft: Java Edition</strong><p>In the launcher, pick version <strong data-bind="version-plain">the server's version</strong>. Bedrock (console and phone) can't join.</p></div></li>
+                  <li><div><strong>Add the server</strong><p>Multiplayer, then Add Server, then paste <strong class="mono" data-bind="address">the join address</strong>.</p></div></li>
+                  <li><div><strong>Join</strong><p>If the server is asleep, the first try says it's waking up. Wait about a minute and join again.</p></div></li>
+                </ol>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="sleep-help-title">
+              <div class="card-head"><h2 id="sleep-help-title"><svg class="icon" aria-hidden="true"><use href="#i-moon"/></svg>Sleeping, explained</h2></div>
+              <div class="card-body prose">
+                <p>When nobody has been online for <strong data-bind="idle">a while</strong>, Railpowered saves the world and stops Minecraft. That frees most of the memory and CPU you pay Railway for.</p>
+                <p>While it sleeps, Railpowered keeps listening on the join address. The next time someone joins, it starts Minecraft again on its own. You can also press Start here at any time.</p>
+                <p>You can change the timer, or turn sleeping off, in <a href="#/settings">Settings</a>.</p>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="versions-help-title">
+              <div class="card-head"><h2 id="versions-help-title"><svg class="icon" aria-hidden="true"><use href="#i-setups"/></svg>Changing versions safely</h2></div>
+              <div class="card-body prose">
+                <p>Give each new version its <strong>own world</strong>. That's the default in <a href="#/setups">New setup</a>.</p>
+                <p>Minecraft can upgrade a world to a newer version, but it can't take it back. If you try to open a world on an older version than it was last played on, Railpowered stops you and offers a new world instead.</p>
+                <p>Before you upgrade a world you love, <a href="#/worlds">back it up</a>.</p>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="backup-help-title">
+              <div class="card-head"><h2 id="backup-help-title"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>Backups</h2></div>
+              <div class="card-body prose">
+                <p>A backup is a copy of one world. Restoring it replaces that world, and Railpowered first saves a safety backup of the world as it is right now, so a restore never loses anything.</p>
+                <p>Restoring never touches your setups, settings or player lists. Backups live on the same volume as the worlds, so download the important ones.</p>
+              </div>
+            </section>
+          </div>
+
+          <section class="card" aria-labelledby="faq-title">
+            <div class="card-head spaced"><h2 id="faq-title"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Troubleshooting</h2></div>
+            <div class="faq">
+              <details id="faq-address">
+                <summary>The join address is empty<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+                <div class="faq-body">
+                  <p>Railway gives the server a public address through a <strong>TCP proxy</strong> on port <code>25565</code>. The one-click template adds it for you. If you deployed another way, open your service in Railway, go to Settings, then Networking, and add a TCP proxy for port <code>25565</code>. The address appears here after the next deploy.</p>
+                </div>
+              </details>
+              <details>
+                <summary>My friend sees "Outdated client" or "Outdated server"<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+                <div class="faq-body"><p>Their launcher version has to match the server exactly. The server runs Minecraft <strong data-bind="version-plain">the version shown on the Overview</strong>. In the Minecraft launcher, open Installations, create one for that version, and play with it.</p></div>
+              </details>
+              <details>
+                <summary>Friends can't connect at all<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+                <div class="faq-body">
+                  <p>Check the address has no typos and includes the port after the colon. If the server is asleep, the first attempt only wakes it, so wait a minute and try again. If the whitelist is on, make sure they're on it in <a href="#/players">Players</a>.</p>
+                </div>
+              </details>
+              <details>
+                <summary>I forgot the admin key<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+                <div class="faq-body"><p>The key is the <code>ADMIN_KEY</code> variable on your Railway service: open the service, then Variables. You can change it there; Railway redeploys, and everyone is signed out.</p></div>
+              </details>
+              <details>
+                <summary>The server crashed<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
+                <div class="faq-body"><p>The Overview shows the last useful line Minecraft printed, and the <a href="#/console">Console</a> has the full log. Out-of-memory errors usually mean the modpack needs more RAM than your Railway plan gives the service. A crashed server still wakes up when someone joins.</p></div>
+              </details>
+            </div>
+          </section>
+        </section>
+
+        <footer class="page-foot">
+          <p>By running this server you agree to the <a href="https://www.minecraft.net/eula" target="_blank" rel="noopener noreferrer">Minecraft EULA</a>, which Railpowered accepts on your behalf when it starts Minecraft.</p>
+          <p>Minecraft is a trademark of Mojang. Railpowered is not affiliated with Mojang or Microsoft.</p>
+        </footer>
+      </div>
+    </main>
+
+    <nav class="tabbar" aria-label="Main">
+      <a class="tab" href="#/overview" data-nav="overview"><svg class="icon" aria-hidden="true"><use href="#i-overview"/></svg><span>Overview</span></a>
+      <a class="tab" href="#/setups" data-nav="setups"><svg class="icon" aria-hidden="true"><use href="#i-setups"/></svg><span>Setups</span></a>
+      <a class="tab" href="#/worlds" data-nav="worlds"><svg class="icon" aria-hidden="true"><use href="#i-world"/></svg><span>Worlds</span></a>
+      <a class="tab" href="#/players" data-nav="players"><svg class="icon" aria-hidden="true"><use href="#i-players"/></svg><span>Players</span></a>
+      <a class="tab" href="#/console" data-nav="console"><svg class="icon" aria-hidden="true"><use href="#i-console"/></svg><span>Console</span></a>
+    </nav>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite" aria-relevant="additions"></div>
+  <div class="sr-only" id="announcer" aria-live="polite" aria-atomic="true"></div>
+  <dialog class="dialog" id="dialog" aria-labelledby="dialog-title" aria-describedby="dialog-body"></dialog>
+</body>
+</html>
