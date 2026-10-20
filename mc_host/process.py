@@ -54,6 +54,10 @@ SAVED_RE = re.compile(_PREFIX + _SYS + r"(?:Saved the game|Saved the world|Save 
 LIST_COUNT_RE = re.compile(
     _PREFIX + _SYS + r"There are (\d+)(?: of a max(?: of)? |/)(\d+) players online:(.*)$"
 )
+# Reply to `whitelist on|off` (1.13+, 1.7-1.12, and 1.6.4 wording).
+WHITELIST_RE = re.compile(
+    _PREFIX + _SYS + r"(?:Whitelist is (?:now|already) turned (?:on|off)|Turned (?:on|off) (?:the whitelist|white-listing))"
+)
 LIST_LEGACY_RE = re.compile(r"\[INFO\] Connected players: ?(.*)$")
 LIST_NAMES_RE = re.compile(_PREFIX + _SYS + r"(.*)$")
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
@@ -446,6 +450,22 @@ class ServerController:
         if proc is None or phase not in (STARTING, ONLINE):
             return False
         return self._write(proc, command)
+
+    def set_whitelist(self, enabled: bool, timeout: float = 5.0) -> None:
+        """Turn the whitelist on or off, live when Minecraft is running.
+
+        Minecraft saves its in-memory server.properties while it handles
+        `whitelist on|off`, which would overwrite keys written just before
+        (enforce-whitelist went back to false). So the command goes first and
+        the installer writes the file once Minecraft has confirmed."""
+        waiter = self.expect(WHITELIST_RE)
+        try:
+            if self.send_command("whitelist on" if enabled else "whitelist off"):
+                if not waiter.event.wait(timeout):
+                    self.log("Minecraft didn't confirm the whitelist change; saving it anyway.", "warn")
+        finally:
+            self._forget(waiter)
+        ix.set_whitelist_enabled(enabled)
 
     def expect(self, regex: re.Pattern[str]) -> _Waiter:
         waiter = _Waiter(regex)

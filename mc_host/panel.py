@@ -908,8 +908,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         if "enabled" not in data:
             raise ApiError(400, "invalid", "enabled must be true or false.")
         enabled = _bool(data, "enabled")
-        ix.set_whitelist_enabled(enabled)
-        controller.send_command("whitelist on" if enabled else "whitelist off")
+        controller.set_whitelist(enabled)
         controller.invalidate_settings()
         self._json({"ok": True, **self._players_payload()})
 

@@ -19,6 +19,7 @@ from mc_host.process import (
     ServerBusy,
     ServerController,
     StartFailed,
+    WHITELIST_RE,
     build_command,
     idle_should_stop,
 )
@@ -511,6 +512,53 @@ class BackupTests(ControllerTestCase):
         self.controller.start()
         with self.assertRaises(installer.InstallError):
             self.controller.backup_world("world")
+
+
+class WhitelistTests(ControllerTestCase):
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(ix, "set_whitelist_enabled", side_effect=self._record_write)
+        self.write = patcher.start()
+        self.addCleanup(patcher.stop)
+        self.seen_at_write: list[list[str]] = []
+
+    def _record_write(self, enabled):
+        self.seen_at_write.append([e["text"] for e in self.state.logs_after()["lines"]])
+
+    def test_properties_are_written_after_minecraft_confirms(self):
+        # Minecraft saves server.properties while handling `whitelist on`;
+        # writing first would lose enforce-whitelist.
+        proc = self.start_online()
+        self.controller.set_whitelist(True)
+        self.assertEqual(proc.commands, ["whitelist on"])
+        self.write.assert_called_once_with(True)
+        self.assertTrue(any(t.endswith("Whitelist is now turned on") for t in self.seen_at_write[0]))
+
+    def test_stopped_server_only_writes_the_file(self):
+        started = time.monotonic()
+        self.controller.set_whitelist(False)
+        self.assertLess(time.monotonic() - started, 1)
+        self.write.assert_called_once_with(False)
+        self.assertEqual(self.processes, [])
+
+    def test_missing_confirmation_still_writes_with_a_warning(self):
+        proc = self.start_online()
+        with mock.patch.object(proc, "on_command", side_effect=proc.commands.append):
+            self.controller.set_whitelist(True, timeout=0.1)
+        self.write.assert_called_once_with(True)
+        self.assertTrue(any("didn't confirm the whitelist" in e["text"]
+                            for e in self.state.logs_after()["lines"]))
+
+    def test_reply_wording_across_versions(self):
+        for line in (
+            "[12:00:00] [Server thread/INFO]: System chat: Whitelist is now turned on",
+            "[12:00:00] [Server thread/INFO]: Whitelist is already turned off",
+            "[12:00:00] [Server thread/INFO]: Turned on the whitelist",
+            "2026-10-20 12:00:00 [INFO] Turned off white-listing",
+        ):
+            with self.subTest(line=line):
+                self.assertTrue(WHITELIST_RE.search(line))
+        self.assertIsNone(WHITELIST_RE.search("[12:00:00] [Server thread/INFO]: <Steve> Whitelist is now turned on"))
 
 
 class CommandLineTests(unittest.TestCase):

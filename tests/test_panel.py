@@ -746,6 +746,17 @@ class PlayersAndSettingsTests(PanelTestCase):
         super().setUp()
         self.login()
 
+    @staticmethod
+    def _console_reply(command: str) -> bool:
+        # A running Minecraft answers `whitelist on|off`; the toggle waits for it.
+        if command.startswith("whitelist o"):
+            line = f"[12:00:00] [Server thread/INFO]: Whitelist is now turned {command[10:]}"
+            with controller._waiters_lock:
+                waiters = [w for w in controller._waiters if w.regex.search(line)]
+            for waiter in waiters:
+                waiter.event.set()
+        return True
+
     def test_players_routes_validate_and_send_console_commands(self):
         status, payload = self.api("GET", "/api/players")
         self.assertEqual(status, 200)
@@ -757,7 +768,7 @@ class PlayersAndSettingsTests(PanelTestCase):
         with mock.patch.object(ix, "add_player", return_value={"name": "Steve", "uuid": "x"}) as add, \
                 mock.patch.object(ix, "remove_player") as remove, \
                 mock.patch.object(ix, "set_whitelist_enabled") as toggle, \
-                mock.patch.object(controller, "send_command", return_value=True) as send:
+                mock.patch.object(controller, "send_command", side_effect=self._console_reply) as send:
             self.assertEqual(self.api("POST", "/api/players/ops", {"name": "Steve"})[0], 200)
             self.assertEqual(self.api("DELETE", "/api/players/whitelist/Alex")[0], 200)
             self.assertEqual(

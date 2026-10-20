@@ -158,6 +158,8 @@ class FakeProcess:
         self.commands.append(command)
         if command.startswith("save-all"):
             self.emit("[12:00:01] [Server thread/INFO]: Saved the game")
+        elif command in ("whitelist on", "whitelist off"):
+            self.emit(f"[12:00:01] [Server thread/INFO]: Whitelist is now turned {command[10:]}")
         elif command == "list" and self.list_reply is not None:
             self.emit(self.list_reply)
         elif command == "stop" and self.stops_on_command:
