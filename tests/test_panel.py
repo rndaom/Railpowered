@@ -30,7 +30,7 @@ from mc_host.state import state
 STATUS_KEYS = {
     "phase", "task", "players", "player_count", "max_players", "uptime", "idle",
     "join_address", "setup", "java", "online_mode", "whitelist_enabled", "legacy",
-    "last_exit", "product", "app_version",
+    "last_exit", "product", "app_version", "max_upload_bytes",
 }
 
 
@@ -567,6 +567,15 @@ class StaticTests(PanelTestCase):
         self.assertEqual(response.getheader("Cache-Control"), "public, max-age=31536000, immutable")
         response, _ = self.request("GET", "/static/assets/logo.svg")
         self.assertEqual(response.getheader("Content-Type"), "image/svg+xml")
+        fonts = os.path.join(self.web_dir, "assets", "fonts")
+        os.makedirs(fonts, exist_ok=True)
+        with open(os.path.join(fonts, "Plex.woff2"), "wb") as handle:
+            handle.write(b"wOF2")
+        response, data = self.request("GET", "/static/assets/fonts/Plex.woff2", cookie=False)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.getheader("Content-Type"), "font/woff2")
+        self.assertEqual(response.getheader("Cache-Control"), "public, max-age=604800")
+        self.assertEqual(data, b"wOF2")
 
     def test_traversal_and_odd_names_are_404(self):
         for path in (
@@ -579,6 +588,9 @@ class StaticTests(PanelTestCase):
             "/static/index.py",
             "/static/",
             "/static/assets/",
+            "/static/assets/fonts/",
+            "/static/assets/other/x.svg",
+            "/static/assets/fonts/../../secret.txt",
             "/static//etc/passwd",
             "/static/C:%5cwindows%5cwin.ini",
         ):

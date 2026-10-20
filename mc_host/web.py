@@ -28,6 +28,9 @@ SECURITY_HEADERS = {
 # which never change content and can be cached for good.
 STATIC_CACHE = "no-cache"
 STATIC_CACHE_VERSIONED = "public, max-age=31536000, immutable"
+# Fonts are linked from app.css without a version; they only change when the
+# font release does, so a week of caching is safe and saves a refetch per load.
+STATIC_CACHE_FONTS = "public, max-age=604800"
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -55,6 +58,7 @@ STATIC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 LOGIN_ERRORS = {
     "1": "That key didn't match. Check it and try again.",
     "rate": "Too many attempts. Wait a few minutes and try again.",
+    "expired": "You were signed out because the key changed or the session ran out. Sign in again.",
 }
 
 FALLBACK_LOGIN = """<!DOCTYPE html>
@@ -112,11 +116,14 @@ def _inside(base: str, path: str) -> bool:
 def static_file(relative: str) -> tuple[str, str] | None:
     """(absolute path, content type) for /static/<relative>, or None.
 
-    Only `<name>` or `assets/<name>` with a strict name and a known extension.
+    Only `<name>`, `assets/<name>` or `assets/fonts/<name>` with a strict
+    name and a known extension.
     """
     parts = relative.split("/")
     if len(parts) == 2 and parts[0] == "assets":
         name = parts[1]
+    elif len(parts) == 3 and parts[:2] == ["assets", "fonts"]:
+        name = parts[2]
     elif len(parts) == 1:
         name = parts[0]
     else:

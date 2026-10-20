@@ -643,7 +643,13 @@ class PanelHandler(BaseHTTPRequestHandler):
             # Pages link assets as ?v=<content hash>, so a versioned URL can be
             # cached for good; a bare URL must be revalidated after a redeploy.
             versioned = bool((self.query.get("v") or [""])[0])
-            self._serve_file(*found, cache=web.STATIC_CACHE_VERSIONED if versioned else web.STATIC_CACHE)
+            if versioned:
+                cache = web.STATIC_CACHE_VERSIONED
+            elif found[1].startswith("font/"):
+                cache = web.STATIC_CACHE_FONTS
+            else:
+                cache = web.STATIC_CACHE
+            self._serve_file(*found, cache=cache)
             return
         if path == "/favicon.ico" and method == "GET":
             found = web.favicon()
@@ -1398,6 +1404,13 @@ def build_status() -> dict[str, Any]:
     if runtime is not None and getattr(runtime, "version", None):
         setup["resolved_version"] = runtime.version
     version = setup.get("resolved_version")
+    if not version:
+        # Never started on "latest": show the release it will most likely get
+        # (cached manifest or newest jar on the volume; no network here).
+        try:
+            version = installer._display_version(setup)
+        except Exception:
+            version = None
     props = ix.read_properties()
     try:
         max_players = int(props.get("max-players", "20"))
@@ -1434,6 +1447,7 @@ def build_status() -> dict[str, Any]:
         "last_exit": last_exit,
         "product": installer.APP_NAME,
         "app_version": config.APP_VERSION,
+        "max_upload_bytes": installer.max_upload_bytes(),
     }
 
 

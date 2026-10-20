@@ -4185,8 +4185,6 @@ def get_settings() -> dict[str, Any]:
         values[key] = _typed(item, key, raw.get(key))
         if item["type"] == "enum" and values[key] not in item["options"]:
             item["options"] = item["options"] + [values[key]]
-    if is_legacy_protocol(version):
-        values["online-mode"] = False
     return {
         "properties": values,
         "railpowered": railpowered_settings(cfg),
@@ -4245,6 +4243,7 @@ def update_settings(
         cfg = load_config()
         version = _active_version(cfg)
         schema = settings_schema(version)
+        saved = _saved_properties(cfg)
         updates: dict[str, str] = {}
         for key, value in (props or {}).items():
             if key not in schema:
@@ -4252,7 +4251,15 @@ def update_settings(
                     f"'{str(key)[:40]}' can't be changed here on Minecraft {version}.",
                     code="invalid_setting",
                 )
-            text = _validate_property(key, schema[key], value)
+            item = schema[key]
+            if item["type"] == "enum" and isinstance(value, str):
+                current = _typed(item, key, saved.get(key))
+                if current not in item["options"] and _normalize_enum(key, value) == current:
+                    # get_settings offers the value already on disk (a modpack's
+                    # level-type, say) as an extra option; saving it unchanged
+                    # must not fail, and there is nothing to write.
+                    continue
+            text = _validate_property(key, item, value)
             if schema[key]["type"] == "enum":
                 text = _format_enum(key, text, version)
             updates[key] = text

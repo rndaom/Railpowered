@@ -149,7 +149,23 @@ class SettingsApiTests(PropertiesTestCase):
         self.set_version("1.2.5")
         settings = installer.get_settings()
         self.assertNotIn("online-mode", settings["schema"])
+        self.assertNotIn("online-mode", settings["properties"])
         self.assertNotIn("enable-command-block", settings["schema"])
+
+    def test_saving_the_unlisted_enum_value_on_disk_is_accepted(self):
+        # A modpack can ship a level-type the schema doesn't list; the
+        # dashboard offers it as an option, so saving it back must work.
+        self.set_version("1.21.1")
+        self.write("server.properties", "level-type=biomesoplenty\\:bop\nmotd=old\n")
+        settings = installer.get_settings()
+        value = settings["properties"]["level-type"]
+        self.assertIn(value, settings["schema"]["level-type"]["options"])
+        installer.update_settings({"level-type": value, "motd": "new"})
+        props = self.props()
+        self.assertEqual(props["motd"], "new")
+        self.assertEqual(installer.get_settings()["properties"]["level-type"], value)
+        with self.assertRaises(installer.InstallError):
+            installer.update_settings({"level-type": "something-else"})
 
     def test_numeric_legacy_values_read_as_names(self):
         self.set_version("1.12.2")

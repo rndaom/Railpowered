@@ -10,6 +10,7 @@ uses it to re-arm the sleep proxy (contract §0 invariant).
 from __future__ import annotations
 
 import itertools
+import secrets
 import threading
 import time
 import traceback
@@ -90,6 +91,9 @@ class TaskRunner:
         self.current: Task | None = None
         self.last: Task | None = None
         self._ids = itertools.count(1)
+        # Task ids carry a per-boot prefix so a "t1" after a redeploy is never
+        # mistaken for the "t1" a dashboard remembers from before it.
+        self._boot = secrets.token_hex(3)
         self._idle = threading.Event()
         self._idle.set()
 
@@ -142,7 +146,7 @@ class TaskRunner:
                 raise TaskBusy(self.current)
             if guard is not None:
                 guard()
-            task = Task(id=f"t{next(self._ids)}", kind=kind, label=label)
+            task = Task(id=f"t{self._boot}-{next(self._ids)}", kind=kind, label=label)
             self.current = task
             self._idle.clear()
         thread = threading.Thread(
