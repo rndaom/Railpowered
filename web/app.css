@@ -898,7 +898,6 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
   padding: var(--space-6) var(--space-8) var(--space-6);
 }
 .fact { min-width: 0; display: grid; gap: 6px; align-content: start; }
-.fact dt { }
 .fact dd {
   display: flex;
   align-items: center;
@@ -1132,6 +1131,9 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
   gap: var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 .person {
   display: flex;
@@ -1346,6 +1348,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
 .choice:has(input:disabled) { opacity: 0.55; cursor: not-allowed; }
 
 .radio-line {
+  cursor: pointer;
   display: flex;
   align-items: flex-start;
   gap: var(--space-3);
@@ -1966,3 +1969,47 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
   .sidebar, .topbar, .tabbar, .toasts { display: none !important; }
   .app { display: block; }
 }
+
+/* ------------------------------------------------------------------ small helpers
+   Last in the file on purpose: these one-job classes replace inline styles, so
+   they win over the component rules above, the way the inline styles did. */
+
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }
+.min-w-0 { min-width: 0; }
+.span-all { grid-column: 1 / -1; }
+.text-xs { font-size: var(--text-xs); }
+.text-sm { font-size: var(--text-sm); }
+.card-body.flush { padding: 0; }
+.btn-start { justify-content: flex-start; }
+.title-with-icon { display: flex; gap: var(--space-2); align-items: center; }
+.card-head.spaced { padding-bottom: var(--space-4); }
+.list-ruled { border-top: 1px solid var(--border); }
+.list-ruled.list-gap { margin-top: var(--space-4); }
+.field-row > .field-error { flex-basis: 100%; }
+.field-error.is-warn { color: var(--warn-text); }
+.field-indent { padding-left: 30px; }
+.input-sm { height: var(--control-h-sm); }
+.badge-after { margin-left: var(--space-1); }
+.step-fieldset { border: 0; margin: 0; padding: 3px 0 0; }
+.step-fieldset > legend { padding: 0; margin-bottom: var(--space-3); }
+.world-form { flex: 1 1 320px; justify-content: flex-end; max-width: 440px; }
+.input-with-range { display: flex; gap: 10px; align-items: center; }
+.more-note { margin-top: var(--space-2); font-size: var(--text-sm); }
+.log-empty.log-empty-sm { padding: 20px var(--space-4); }
+.dialog-body ul.used-by { margin-top: var(--space-1); }
+.card-head h2 img { border-radius: 4px; }
+
+.sk-address { width: 220px; }
+.sk-version { width: 80px; }
+.sk-count { width: 48px; }
+.sk-time { width: 64px; }
+.sk-40 { width: 40%; }
+.sk-55 { width: 55%; }
+.sk-70 { width: 70%; }
+
+/* The active setup card on the Overview. */
+.setup-ident { display: flex; gap: 12px; align-items: center; }
+.setup-ident-name { font-weight: var(--weight-semibold); overflow-wrap: anywhere; }
+.facts.facts-2 { padding: 20px 0 0; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fact > dd.fact-value { font-size: var(--text-base); overflow-wrap: anywhere; }
+.strip-item.strip-end { margin-left: auto; }

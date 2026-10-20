@@ -1331,7 +1331,7 @@
       if (bits.length) items.push(el('span', { class: 'strip-item' }, icon('i-clock', 'icon-sm'), bits.join(' · ')));
     }
     if (s.java) {
-      items.push(el('span', { class: 'strip-item', style: { 'margin-left': 'auto' } }, icon('i-coffee', 'icon-sm'), 'Java ' + s.java));
+      items.push(el('span', { class: 'strip-item strip-end' }, icon('i-coffee', 'icon-sm'), 'Java ' + s.java));
     }
     var key = s.phase + '|' + timeout + '|' + (live.untilSleep != null) + '|' + s.java + '|' + (s.last_exit ? s.last_exit.at : '');
     if (strip.getAttribute('data-key') === key && items.length) { tickHero(); return; }
@@ -1381,7 +1381,7 @@
         list.replaceChildren(emptyStateCompact('i-players', msg, sub));
       } else {
         fill(list, peopleList(names.slice(0, 12), null),
-          names.length > 12 ? el('p', { class: 'subtle', style: { 'margin-top': '8px', 'font-size': 'var(--text-sm)' } }, 'and ' + (names.length - 12) + ' more') : null);
+          names.length > 12 ? el('p', { class: 'subtle more-note' }, 'and ' + (names.length - 12) + ' more') : null);
       }
     }
 
@@ -1394,12 +1394,12 @@
         cur.replaceChildren(emptyStateCompact('i-setups', 'No active setup', 'Create one in Setups to choose a version.'));
       } else {
         cur.replaceChildren(
-          el('div', { style: { display: 'flex', gap: '12px', 'align-items': 'center' } },
+          el('div', { class: 'setup-ident' },
             el('span', { class: 'glyph t-' + setup.type }, icon(TYPE_ICON[setup.type] || 'i-cube')),
-            el('div', { style: { 'min-width': '0' } },
-              el('p', { style: { 'font-weight': '600', 'overflow-wrap': 'anywhere' } }, setup.name || setupSummary(setup)),
-              el('p', { class: 'subtle', style: { 'font-size': 'var(--text-sm)' } }, (setup.type === 'modpack' ? 'Modpack' : TYPE_LABEL[setup.type] || setup.type) + ' server'))),
-          el('dl', { class: 'facts', style: { padding: '20px 0 0', 'grid-template-columns': 'repeat(2, minmax(0, 1fr))' } },
+            el('div', { class: 'min-w-0' },
+              el('p', { class: 'setup-ident-name' }, setup.name || setupSummary(setup)),
+              el('p', { class: 'subtle text-sm' }, (setup.type === 'modpack' ? 'Modpack' : TYPE_LABEL[setup.type] || setup.type) + ' server'))),
+          el('dl', { class: 'facts facts-2' },
             fact('Minecraft', versionLabel(setup) || '—'),
             fact('World', setup.level_name || '—'),
             setup.type === 'modpack' ? fact('Pack', setup.instance || '—') : fact('Java', s.java ? 'Java ' + s.java : '—'),
@@ -1424,7 +1424,7 @@
   }
 
   function fact(label, value) {
-    return el('div', { class: 'fact' }, el('dt', { class: 'eyebrow' }, label), el('dd', { style: { 'font-size': 'var(--text-base)', 'overflow-wrap': 'anywhere' } }, value));
+    return el('div', { class: 'fact' }, el('dt', { class: 'eyebrow' }, label), el('dd', { class: 'fact-value' }, value));
   }
 
   function emptyStateCompact(iconName, title, text) {
@@ -1436,12 +1436,12 @@
   function peopleList(names, kind) {
     var online = {};
     ((state.status && RUNNING[state.status.phase] && state.status.players) || []).forEach(function (n) { online[String(n).toLowerCase()] = true; });
-    return el('ul', { class: 'people', role: 'list', style: { padding: '0', margin: '0' } }, names.map(function (entry) {
+    return el('ul', { class: 'people', role: 'list' }, names.map(function (entry) {
       var name = typeof entry === 'string' ? entry : entry.name;
       var isOnline = online[String(name).toLowerCase()];
       return el('li', { class: 'person' },
         avatar(name),
-        el('div', { style: { 'min-width': '0' } },
+        el('div', { class: 'min-w-0' },
           el('p', { class: 'person-name' }, name),
           kind ? el('p', { class: 'person-sub' }, isOnline ? 'Online now' : (kind === 'ops' ? 'Operator' : 'Can join')) : el('p', { class: 'person-sub' }, 'Playing')),
         kind ? el('button', {
@@ -1573,7 +1573,7 @@
     var box = $('#mini-log');
     var recent = logState.lines.slice(-6);
     if (!recent.length) {
-      box.replaceChildren(el('div', { class: 'log-empty', style: { padding: '20px 16px' } }, logState.loaded ? 'Nothing logged yet.' : 'Loading…'));
+      box.replaceChildren(el('div', { class: 'log-empty log-empty-sm' }, logState.loaded ? 'Nothing logged yet.' : 'Loading…'));
       return;
     }
     var frag = document.createDocumentFragment();
@@ -2143,18 +2143,19 @@
     var msg = '';
     if (!value) msg = live ? '' : 'Give the pack a name.';
     else if (!NAME_RE.test(value)) msg = NAME_RULE;
-    showFieldError(input, $('#pack-name-error'), msg);
+    var hint = $('#pack-name-error');
+    hint.classList.remove('is-warn');
+    showFieldError(input, hint, msg);
     if (!msg && value) {
       var exists = (state.setups || []).some(function (s) { return s.instance && s.instance.toLowerCase() === value.toLowerCase(); });
       if (exists) {
-        var hint = $('#pack-name-error');
+        // A note, not an error: reinstalling under the same name is allowed.
         hint.replaceChildren(icon('i-info'), el('span', null, 'A pack with this name is installed already. Installing replaces it once the new download succeeds.'));
         hint.hidden = false;
-        hint.style.color = 'var(--warn-text)';
+        hint.classList.add('is-warn');
         input.removeAttribute('aria-invalid');
         return true;
       }
-      $('#pack-name-error').style.color = '';
     }
     return !msg;
   }
@@ -2543,7 +2544,7 @@
         el('p', null, 'This permanently deletes ', el('strong', null, world.name), ' (' + formatBytes(world.size_bytes) + '). It can\'t be undone.'),
         used.length ? el('div', { class: 'callout tone-warn' }, icon('i-alert'), el('div', null,
           el('p', null, el('strong', null, used.length === 1 ? 'This setup uses it and will be removed too:' : 'These setups use it and will be removed too:')),
-          el('ul', { style: { 'margin-top': '4px' } }, used.map(function (n) { return el('li', null, n); })))) : null,
+          el('ul', { class: 'used-by' }, used.map(function (n) { return el('li', null, n); })))) : null,
         el('p', null, 'Backups of this world are kept. Want a copy first? Choose ', el('strong', null, 'Back up first'), '.'),
         el('div', { class: 'field' },
           el('label', { class: 'field-label', for: 'confirm-world' }, 'Type ', el('code', null, world.name), ' to confirm'),
@@ -2686,7 +2687,7 @@
     var newRadio = el('input', { type: 'radio', name: 'restore-mode', value: 'new' });
     var runningNote = el('div', { class: 'callout tone-warn', hidden: true }, icon('i-alert'),
       el('p', null, el('strong', null, 'The server is using “' + world + '” right now.'), ' Stop the server first, or restore into a new world instead.'));
-    var nameWrap = el('div', { class: 'field', style: { 'padding-left': '30px' }, hidden: true },
+    var nameWrap = el('div', { class: 'field field-indent', hidden: true },
       el('label', { class: 'field-label', for: 'restore-name' }, 'New world name'), newName, nameError);
     return openDialog({
       tone: 'primary', icon: 'i-rotate',
@@ -2814,11 +2815,11 @@
     var wlHost = $('#wl-list');
     var opsHost = $('#ops-list');
     if (wl.length) wlHost.replaceWith(withId(peopleList(wl, 'whitelist'), 'wl-list'));
-    else wlHost.replaceWith(withId(el('ul', { class: 'people', role: 'list', style: { padding: '0', margin: '0' } },
-      el('li', { style: { 'grid-column': '1 / -1' } }, emptyStateCompact('i-shield', 'Nobody on the whitelist', 'Add your friends\' Minecraft usernames.'))), 'wl-list'));
+    else wlHost.replaceWith(withId(el('ul', { class: 'people', role: 'list' },
+      el('li', { class: 'span-all' }, emptyStateCompact('i-shield', 'Nobody on the whitelist', 'Add your friends\' Minecraft usernames.'))), 'wl-list'));
     if (ops.length) opsHost.replaceWith(withId(peopleList(ops, 'ops'), 'ops-list'));
-    else opsHost.replaceWith(withId(el('ul', { class: 'people', role: 'list', style: { padding: '0', margin: '0' } },
-      el('li', { style: { 'grid-column': '1 / -1' } }, emptyStateCompact('i-crown', 'No operators', 'Make yourself an operator to use admin commands in-game.'))), 'ops-list'));
+    else opsHost.replaceWith(withId(el('ul', { class: 'people', role: 'list' },
+      el('li', { class: 'span-all' }, emptyStateCompact('i-crown', 'No operators', 'Make yourself an operator to use admin commands in-game.'))), 'ops-list'));
   }
 
   function withId(node, id) { node.id = id; return node; }
@@ -2954,7 +2955,7 @@
     var body = $('#settings-body');
 
     var rpCard = el('section', { class: 'card', 'aria-labelledby': 'rp-settings-title' },
-      el('div', { class: 'card-head' }, el('h2', { id: 'rp-settings-title' }, el('img', { src: '/static/assets/favicon.svg', alt: '', width: '18', height: '18', style: { 'border-radius': '4px' } }), 'Railpowered')),
+      el('div', { class: 'card-head' }, el('h2', { id: 'rp-settings-title' }, el('img', { src: '/static/assets/favicon.svg', alt: '', width: '18', height: '18' }), 'Railpowered')),
       el('p', { class: 'card-sub' }, 'How Railpowered looks after the server.'),
       el('div', { class: 'settings-group' },
         el('div', { class: 'settings-grid' },
@@ -3038,9 +3039,9 @@
         min: sch.min != null ? sch.min : null, max: sch.max != null ? sch.max : null, 'aria-describedby': describedBy,
       });
       input.value = original;
-      var range = sch.min != null && sch.max != null ? el('span', { class: 'subtle', style: { 'font-size': 'var(--text-xs)' } }, sch.min + ' to ' + sch.max) : null;
+      var range = sch.min != null && sch.max != null ? el('span', { class: 'subtle text-xs' }, sch.min + ' to ' + sch.max) : null;
       field = el('div', { class: 'field' }, el('label', { class: 'field-label', for: id }, label),
-        el('div', { style: { display: 'flex', gap: '10px', 'align-items': 'center' } }, input, range), help, err);
+        el('div', { class: 'input-with-range' }, input, range), help, err);
     } else {
       original = value == null ? '' : String(value);
       input = el('input', { class: 'input', id: id, type: 'text', autocomplete: 'off', spellcheck: key === 'motd' ? 'true' : 'false', 'aria-describedby': describedBy });

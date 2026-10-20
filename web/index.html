@@ -20,7 +20,7 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
-  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden">
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="sprite">
     <symbol id="i-overview" viewBox="0 0 24 24"><rect x="3" y="3" width="7.5" height="9" rx="1.6"/><rect x="13.5" y="3" width="7.5" height="5" rx="1.6"/><rect x="13.5" y="11" width="7.5" height="10" rx="1.6"/><rect x="3" y="15" width="7.5" height="6" rx="1.6"/></symbol>
     <symbol id="i-setups" viewBox="0 0 24 24"><path d="M12 3 2.8 7.6 12 12.2l9.2-4.6z"/><path d="m2.8 12 9.2 4.6 9.2-4.6"/><path d="m2.8 16.4 9.2 4.6 9.2-4.6"/></symbol>
     <symbol id="i-world" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3.5 9h17M3.5 15h17"/><path d="M12 3c2.4 2.5 3.6 5.5 3.6 9s-1.2 6.5-3.6 9c-2.4-2.5-3.6-5.5-3.6-9S9.6 5.5 12 3z"/></symbol>
@@ -124,7 +124,7 @@
           <button type="button" data-theme-choice="light" aria-pressed="false" title="Light theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sun"/></svg><span>Light</span></button>
           <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-moon"/></svg><span>Dark</span></button>
         </div>
-        <button class="btn btn-ghost btn-block" type="button" id="logout" style="justify-content:flex-start">
+        <button class="btn btn-ghost btn-block btn-start" type="button" id="logout">
           <svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span>Sign out</span>
         </button>
         <p class="version-line" id="version-line">Railpowered</p>
@@ -168,19 +168,19 @@
             <dl class="facts">
               <div class="fact fact-address">
                 <dt class="eyebrow">Join address</dt>
-                <dd id="fact-address"><span class="skeleton" style="width:220px"></span></dd>
+                <dd id="fact-address"><span class="skeleton sk-address"></span></dd>
               </div>
               <div class="fact">
                 <dt class="eyebrow">Minecraft</dt>
-                <dd id="fact-version"><span class="skeleton" style="width:80px"></span></dd>
+                <dd id="fact-version"><span class="skeleton sk-version"></span></dd>
               </div>
               <div class="fact">
                 <dt class="eyebrow">Players</dt>
-                <dd id="fact-players"><span class="skeleton" style="width:48px"></span></dd>
+                <dd id="fact-players"><span class="skeleton sk-count"></span></dd>
               </div>
               <div class="fact">
                 <dt class="eyebrow" id="fact-time-label">Uptime</dt>
-                <dd id="fact-time"><span class="skeleton" style="width:64px"></span></dd>
+                <dd id="fact-time"><span class="skeleton sk-time"></span></dd>
               </div>
             </dl>
             <div class="crash-box" id="crash-box" hidden>
@@ -193,7 +193,7 @@
           <section class="card" id="firstrun" aria-labelledby="firstrun-title" hidden>
             <div class="firstrun">
               <div>
-                <h2 class="eyebrow" id="firstrun-title" style="display:flex;gap:8px;align-items:center"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg>Getting started</h2>
+                <h2 class="eyebrow title-with-icon" id="firstrun-title"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sparkle"/></svg>Getting started</h2>
                 <div class="firstrun-steps">
                   <div>
                     <strong>Share the join address</strong>
@@ -260,7 +260,7 @@
             <div class="card-head">
               <h2 id="setups-list-title">Your setups <span class="count" id="setups-count"></span></h2>
             </div>
-            <div id="setups-list" class="card-body tight" style="padding:0"></div>
+            <div id="setups-list" class="card-body tight flush"></div>
           </section>
 
           <section class="card" id="new-setup" aria-labelledby="new-setup-title">
@@ -271,8 +271,8 @@
             <form class="card-body" id="setup-form" novalidate>
               <ol class="steps" role="list">
                 <li class="step" id="step-type">
-                  <fieldset class="step-body" style="border:0;margin:0;padding:3px 0 0">
-                    <legend class="step-title" style="padding:0;margin-bottom:12px">What kind of server?</legend>
+                  <fieldset class="step-body step-fieldset">
+                    <legend class="step-title">What kind of server?</legend>
                     <div class="choices">
                       <label class="choice">
                         <input type="radio" name="type" value="vanilla" checked>
@@ -349,17 +349,17 @@
                 </li>
 
                 <li class="step" id="step-world">
-                  <fieldset class="step-body" style="border:0;margin:0;padding:3px 0 0">
-                    <legend class="step-title" style="padding:0;margin-bottom:12px">World</legend>
+                  <fieldset class="step-body step-fieldset">
+                    <legend class="step-title">World</legend>
                     <div class="stack-sm">
                       <label class="radio-line">
                         <input type="radio" name="world-mode" value="new" checked>
                         <span class="radio-copy">
-                          <span>Start a new world <span class="badge badge-accent" style="margin-left:4px">Recommended</span></span>
+                          <span>Start a new world <span class="badge badge-accent badge-after">Recommended</span></span>
                           <span class="field-help">Your other worlds stay exactly as they are.</span>
                         </span>
                       </label>
-                      <div class="field" id="new-world-wrap" style="padding-left:30px">
+                      <div class="field field-indent" id="new-world-wrap">
                         <label class="field-label" for="new-world-name">New world name</label>
                         <input class="input" id="new-world-name" autocomplete="off" spellcheck="false" maxlength="32" aria-describedby="new-world-error">
                         <p class="field-error" id="new-world-error" hidden></p>
@@ -371,7 +371,7 @@
                           <span class="field-help">Opening a world in a newer version upgrades it for good.</span>
                         </span>
                       </label>
-                      <div class="field" id="existing-world-wrap" style="padding-left:30px" hidden>
+                      <div class="field field-indent" id="existing-world-wrap" hidden>
                         <label class="field-label" for="existing-world">World</label>
                         <select class="select" id="existing-world"></select>
                         <div class="callout tone-warn" id="existing-world-note" hidden></div>
@@ -386,7 +386,7 @@
                       <label class="step-title" for="setup-name">Setup name <span class="subtle">(optional)</span></label>
                       <input class="input" id="setup-name" autocomplete="off" maxlength="48">
                     </div>
-                    <label class="radio-line" id="setup-activate-row" style="cursor:pointer">
+                    <label class="radio-line" id="setup-activate-row">
                       <input type="checkbox" id="setup-activate" checked>
                       <span class="radio-copy">
                         <span>Switch to it when it's ready</span>
@@ -424,14 +424,14 @@
           <section class="card" aria-labelledby="worlds-list-title">
             <div class="card-head">
               <h2 id="worlds-list-title"><svg class="icon" aria-hidden="true"><use href="#i-world"/></svg>Worlds <span class="count" id="worlds-count"></span></h2>
-              <form class="field-row" id="world-form" novalidate style="flex:1 1 320px;justify-content:flex-end;max-width:440px">
+              <form class="field-row world-form" id="world-form" novalidate>
                 <label class="sr-only" for="world-name">New world name</label>
-                <input class="input" id="world-name" autocomplete="off" spellcheck="false" maxlength="32" placeholder="New world name" aria-describedby="world-name-error" style="height:var(--control-h-sm)">
+                <input class="input input-sm" id="world-name" autocomplete="off" spellcheck="false" maxlength="32" placeholder="New world name" aria-describedby="world-name-error">
                 <button class="btn btn-sm" type="submit"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-plus"/></svg>Create world</button>
-                <p class="field-error" id="world-name-error" hidden style="flex-basis:100%"></p>
+                <p class="field-error" id="world-name-error" hidden></p>
               </form>
             </div>
-            <ul class="list" id="worlds-list" role="list" style="margin-top:var(--space-4);border-top:1px solid var(--border)"></ul>
+            <ul class="list list-ruled list-gap" id="worlds-list" role="list"></ul>
           </section>
 
           <section class="card" aria-labelledby="backups-list-title">
@@ -449,7 +449,7 @@
                 <p>Backups live on the same Railway volume as your worlds. <strong>Download the ones you care about</strong> so a copy exists somewhere else too.</p>
               </div>
             </div>
-            <ul class="list" id="backups-list" role="list" style="border-top:1px solid var(--border)"></ul>
+            <ul class="list list-ruled" id="backups-list" role="list"></ul>
           </section>
         </section>
 
@@ -490,9 +490,9 @@
                   <label class="sr-only" for="wl-name">Player name to whitelist</label>
                   <input class="input" id="wl-name" autocomplete="off" spellcheck="false" maxlength="16" placeholder="Minecraft username" aria-describedby="wl-error">
                   <button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Add</span></button>
-                  <p class="field-error" id="wl-error" hidden style="flex-basis:100%"></p>
+                  <p class="field-error" id="wl-error" hidden></p>
                 </form>
-                <ul class="people" id="wl-list" role="list" style="padding:0;margin:0"></ul>
+                <ul class="people" id="wl-list" role="list"></ul>
               </div>
             </section>
 
@@ -506,9 +506,9 @@
                   <label class="sr-only" for="ops-name">Player name to make operator</label>
                   <input class="input" id="ops-name" autocomplete="off" spellcheck="false" maxlength="16" placeholder="Minecraft username" aria-describedby="ops-error">
                   <button class="btn" type="submit"><svg class="icon" aria-hidden="true"><use href="#i-plus"/></svg><span>Make operator</span></button>
-                  <p class="field-error" id="ops-error" hidden style="flex-basis:100%"></p>
+                  <p class="field-error" id="ops-error" hidden></p>
                 </form>
-                <ul class="people" id="ops-list" role="list" style="padding:0;margin:0"></ul>
+                <ul class="people" id="ops-list" role="list"></ul>
               </div>
             </section>
           </div>
@@ -543,7 +543,7 @@
 
           <form class="stack" id="settings-form" novalidate>
             <div id="settings-body" class="stack">
-              <section class="card"><div class="skeleton-rows"><span class="skeleton" style="width:40%"></span><span class="skeleton" style="width:70%"></span><span class="skeleton" style="width:55%"></span></div></section>
+              <section class="card"><div class="skeleton-rows"><span class="skeleton sk-40"></span><span class="skeleton sk-70"></span><span class="skeleton sk-55"></span></div></section>
             </div>
             <div class="savebar" id="savebar" hidden>
               <p><svg class="icon" aria-hidden="true"><use href="#i-edit"/></svg>You have unsaved changes</p>
@@ -571,7 +571,7 @@
                 <label class="sr-only" for="log-filter">Filter log lines</label>
                 <input class="input" id="log-filter" type="search" placeholder="Filter lines" autocomplete="off" spellcheck="false">
               </div>
-              <span class="subtle" id="log-stats" style="font-size:var(--text-xs)"></span>
+              <span class="subtle text-xs" id="log-stats"></span>
               <span class="spacer"></span>
               <button class="btn btn-sm" type="button" id="follow-toggle" aria-pressed="true"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-arrow-down"/></svg><span>Following</span></button>
             </div>
@@ -638,7 +638,7 @@
           </div>
 
           <section class="card" aria-labelledby="faq-title">
-            <div class="card-head" style="padding-bottom:var(--space-4)"><h2 id="faq-title"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Troubleshooting</h2></div>
+            <div class="card-head spaced"><h2 id="faq-title"><svg class="icon" aria-hidden="true"><use href="#i-help"/></svg>Troubleshooting</h2></div>
             <div class="faq">
               <details id="faq-address">
                 <summary>The join address is empty<svg class="icon" aria-hidden="true"><use href="#i-chevron-down"/></svg></summary>
