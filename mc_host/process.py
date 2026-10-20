@@ -35,24 +35,27 @@ from .tasks import TaskRunner
 # "[INFO] " (1.2.5-1.6). Chat lines put "<name>", "[name]" or "* name" right
 # after that prefix, so anchoring the player name there makes them unspoofable.
 _PREFIX = r"(?:\]: |\[INFO\] )"
+# 26.x logs system messages (joins, leaves, command replies) as
+# "System chat: <text>". Player chat never starts with it.
+_SYS = r"(?:System chat: )?"
 _ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
 DONE_RE = re.compile(_PREFIX + r"Done \(\d")
 JOIN_RES = (
     re.compile(
-        r"\]: ([A-Za-z0-9_]{1,16})(?: \(formerly known as [A-Za-z0-9_]{1,16}\))? joined the game$"
+        r"\]: " + _SYS + r"([A-Za-z0-9_]{1,16})(?: \(formerly known as [A-Za-z0-9_]{1,16}\))? joined the game$"
     ),
     re.compile(r"\[INFO\] ([A-Za-z0-9_]{1,16}) ?\[/[^\]]*\] logged in with entity id"),
 )
 LEAVE_RES = (
-    re.compile(r"\]: ([A-Za-z0-9_]{1,16}) left the game$"),
+    re.compile(r"\]: " + _SYS + r"([A-Za-z0-9_]{1,16}) left the game$"),
     re.compile(r"\[INFO\] ([A-Za-z0-9_]{1,16}) lost connection: "),
 )
-SAVED_RE = re.compile(_PREFIX + r"(?:Saved the game|Saved the world|Save complete\.?)$")
+SAVED_RE = re.compile(_PREFIX + _SYS + r"(?:Saved the game|Saved the world|Save complete\.?)$")
 LIST_COUNT_RE = re.compile(
-    _PREFIX + r"There are (\d+)(?: of a max(?: of)? |/)(\d+) players online:(.*)$"
+    _PREFIX + _SYS + r"There are (\d+)(?: of a max(?: of)? |/)(\d+) players online:(.*)$"
 )
 LIST_LEGACY_RE = re.compile(r"\[INFO\] Connected players: ?(.*)$")
-LIST_NAMES_RE = re.compile(_PREFIX + r"(.*)$")
+LIST_NAMES_RE = re.compile(_PREFIX + _SYS + r"(.*)$")
 PLAYER_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
 _GC_FLAG = re.compile(r"^-XX:\+Use\w*GC$")
 # Shutdown budget: STOP_TIMEOUT (<= 45s) + KILL_WAIT + MONITOR_JOIN must stay

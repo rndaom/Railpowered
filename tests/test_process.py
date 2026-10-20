@@ -235,6 +235,16 @@ class PlayerTrackingTests(ControllerTestCase):
         self.emit_and_settle("2012-03-01 12:00:00 [INFO] Steve lost connection: disconnect.quitting")
         self.assertEqual(self.state.players, {"Alex"})
 
+    def test_26x_system_chat_lines(self):
+        # 26.x logs joins, leaves and command replies as "System chat: ...".
+        self.start_online()
+        self.emit_and_settle(MODERN + "System chat: Alice joined the game")
+        self.emit_and_settle(MODERN + "System chat: Bob joined the game")
+        self.emit_and_settle(MODERN + "<Bob> System chat: Ghost joined the game")
+        self.assertEqual(self.state.players, {"Alice", "Bob"})
+        self.emit_and_settle(MODERN + "System chat: Bob left the game")
+        self.assertEqual(self.state.players, {"Alice"})
+
     def test_ansi_codes_are_stripped(self):
         self.start_online()
         self.emit_and_settle("\x1b[32m" + MODERN + "Alice joined the game\x1b[0m")
@@ -280,6 +290,15 @@ class IdleTests(ControllerTestCase):
         since = self.state.idle_since
         self.assertFalse(self.controller.idle_tick(now=since + 120))
         self.assertEqual(self.state.phase, "online")
+        self.assertEqual(self.state.players, {"Steve"})
+
+    def test_list_reconcile_26x_system_chat_reply(self):
+        self.next_process_kwargs = {
+            "list_reply": MODERN + "System chat: There are 1 of a max of 20 players online: Steve"
+        }
+        self.start_online()
+        since = self.state.idle_since
+        self.assertFalse(self.controller.idle_tick(now=since + 120))
         self.assertEqual(self.state.players, {"Steve"})
 
     def test_list_reconcile_old_two_line_format(self):
