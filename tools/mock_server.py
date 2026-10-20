@@ -741,7 +741,30 @@ class Mock:
             self.mc("Set the time to 1000")
         elif word == "weather":
             self.mc("Set the weather to clear")
-        elif word in ("op", "deop", "whitelist", "kick", "gamemode", "tp", "give"):
+        elif word in ("op", "deop") and NAME_RE.match(rest.strip() or "-"):
+            # Like the real server, console op/deop changes the lists the Players page shows.
+            name = rest.strip()
+            known = next((n for n in self.ops if n.lower() == name.lower()), None)
+            if word == "op" and not known:
+                self.ops.append(name)
+                self.mc(f"Made {name} a server operator")
+            elif word == "deop" and known:
+                self.ops.remove(known)
+                self.mc(f"Made {known} no longer a server operator")
+            else:
+                self.mc("Nothing changed. The player already has that status", "warn")
+        elif word == "whitelist" and rest.split(" ")[0] in ("add", "remove") and len(rest.split(" ")) == 2:
+            action, name = rest.split(" ")
+            known = next((n for n in self.whitelist if n.lower() == name.lower()), None)
+            if action == "add" and not known:
+                self.whitelist.append(name)
+                self.mc(f"Added {name} to the whitelist")
+            elif action == "remove" and known:
+                self.whitelist.remove(known)
+                self.mc(f"Removed {known} from the whitelist")
+            else:
+                self.mc("Nothing changed. The player is already in that state", "warn")
+        elif word in ("whitelist", "kick", "gamemode", "tp", "give"):
             self.mc(f"Made the change: {command}")
         elif word == "help":
             for line in ["/advancement (grant|revoke)", "/ban <targets> [<reason>]", "/gamemode <gamemode> [<target>]", "/list", "/say <message>", "/time (add|query|set)", "/weather (clear|rain|thunder)"]:
