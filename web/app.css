@@ -81,6 +81,7 @@
   --input-bg: #ffffff;
   --border: #e1e4e9;
   --border-strong: #c9ced6;
+  --control-border: #7d8796; /* inputs and switch tracks: 3:1 or better on the surfaces they sit on */
   --text: #11151b;
   --text-2: #475161;
   --text-3: #5f6979;
@@ -145,6 +146,7 @@
     --input-bg: #0c1015;
     --border: #222a34;
     --border-strong: #323b48;
+    --control-border: #626d7d;
     --text: #e8ecf1;
     --text-2: #a9b2bf;
     --text-3: #8a94a3;
@@ -167,7 +169,7 @@
     --warn-text: #fcd34d; --warn-solid: #fbbf24; --warn-soft: rgba(251, 191, 36, 0.12);
     --halt-text: #fdba74; --halt-solid: #fb923c; --halt-soft: rgba(251, 146, 60, 0.13);
     --sleep-text: #b4bdfd; --sleep-solid: #818cf8; --sleep-soft: rgba(129, 140, 248, 0.14);
-    --danger-text: #fca5a5; --danger-solid: #d2342c; --danger-hover: #e0453d; --danger-soft: rgba(248, 113, 113, 0.12);
+    --danger-text: #fca5a5; --danger-solid: #d2342c; --danger-hover: #bd2c25; --danger-soft: rgba(248, 113, 113, 0.12);
     --idle-text: #a9b2bf; --idle-solid: #6b7584; --idle-soft: rgba(139, 149, 163, 0.12);
 
     --log-bg: #0b0e12;
@@ -194,6 +196,7 @@
   --input-bg: #0c1015;
   --border: #222a34;
   --border-strong: #323b48;
+  --control-border: #626d7d;
   --text: #e8ecf1;
   --text-2: #a9b2bf;
   --text-3: #8a94a3;
@@ -216,7 +219,7 @@
   --warn-text: #fcd34d; --warn-solid: #fbbf24; --warn-soft: rgba(251, 191, 36, 0.12);
   --halt-text: #fdba74; --halt-solid: #fb923c; --halt-soft: rgba(251, 146, 60, 0.13);
   --sleep-text: #b4bdfd; --sleep-solid: #818cf8; --sleep-soft: rgba(129, 140, 248, 0.14);
-  --danger-text: #fca5a5; --danger-solid: #d2342c; --danger-hover: #e0453d; --danger-soft: rgba(248, 113, 113, 0.12);
+  --danger-text: #fca5a5; --danger-solid: #d2342c; --danger-hover: #bd2c25; --danger-soft: rgba(248, 113, 113, 0.12);
   --idle-text: #a9b2bf; --idle-solid: #6b7584; --idle-soft: rgba(139, 149, 163, 0.12);
 
   --log-bg: #0b0e12;
@@ -1243,7 +1246,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
   min-width: 0;
   height: var(--control-h);
   padding: 0 var(--space-3);
-  border: 1px solid var(--border-strong);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius);
   background: var(--input-bg);
   color: var(--text);
@@ -1252,7 +1255,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
   transition: border-color var(--dur-fast), box-shadow var(--dur-fast);
 }
 .input::placeholder { color: var(--text-3); opacity: 1; }
-.input:hover, .select:hover { border-color: color-mix(in srgb, var(--text-3) 70%, var(--border-strong)); }
+.input:hover, .select:hover { border-color: var(--text-3); }
 .input:focus-visible, .select:focus-visible, .textarea:focus-visible {
   outline: none;
   border-color: var(--focus);
@@ -1284,7 +1287,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
   height: 24px;
   margin: 0;
   border-radius: var(--radius-pill);
-  background: var(--border-strong);
+  background: var(--control-border);
   cursor: pointer;
   transition: background-color var(--dur) var(--ease-out);
 }
@@ -1301,7 +1304,7 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--space-5) 0; }
   transition: transform var(--dur) var(--ease-out);
 }
 .switch:checked { background: var(--accent-border); }
-.switch:checked::after { transform: translateX(18px); }
+.switch:checked::after { transform: translateX(18px); background: var(--text-inverse); }
 .switch:disabled { opacity: 0.5; cursor: not-allowed; }
 .switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .switch-row {

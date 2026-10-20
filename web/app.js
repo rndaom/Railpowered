@@ -1264,7 +1264,7 @@
           }, 1800);
         } else {
           selectText(code);
-          toast({ tone: 'info', title: 'Press Ctrl+C to copy', text: 'Your browser blocked automatic copying, so the address is selected for you.' });
+          toast({ tone: 'info', title: 'Copy it with the keyboard', text: 'Your browser blocked automatic copying, so the address is selected for you. Press Ctrl+C, or Cmd+C on a Mac.' });
         }
       });
     });
@@ -1310,7 +1310,7 @@
       } else if (live.untilSleep != null) {
         var pct = Math.max(0, Math.min(100, (live.untilSleep / timeout) * 100));
         items.push(el('span', { class: 'strip-item' }, icon('i-moon', 'icon-sm'),
-          el('span', null, 'Sleeps in ', el('strong', { id: 'sleep-countdown', class: 'tabular' }, formatClock(live.untilSleep)), ' if nobody joins')));
+          el('span', { id: 'sleep-line' }, sleepLine(live.untilSleep))));
         var meter = el('span', { class: 'idle-meter', 'aria-hidden': 'true' }, el('span', { id: 'sleep-meter' }));
         meter.firstChild.style.width = pct + '%';
         items.push(meter);
@@ -1340,14 +1340,21 @@
     strip.replaceChildren.apply(strip, items);
   }
 
+  function sleepLine(seconds) {
+    if (seconds > 0) return ['Sleeps in ', el('strong', { id: 'sleep-countdown', class: 'tabular' }, formatClock(seconds)), ' if nobody joins'];
+    return 'Going to sleep now, since nobody is on.';
+  }
+
   // Once a second: keep countdowns and timers moving between polls.
   function tickHero() {
     var s = state.status;
     if (!s) return;
     var live = liveStatus();
-    var cd = $('#sleep-countdown');
-    if (cd && live.untilSleep != null) {
-      setText(cd, formatClock(live.untilSleep));
+    var line = $('#sleep-line');
+    if (line && live.untilSleep != null) {
+      var cd = $('#sleep-countdown');
+      if (cd && live.untilSleep > 0) setText(cd, formatClock(live.untilSleep));
+      else if (cd || live.untilSleep > 0) fill(line, sleepLine(live.untilSleep));
       var meter = $('#sleep-meter');
       var timeout = s.idle.timeout_seconds || 1;
       if (meter) meter.style.width = Math.max(0, Math.min(100, (live.untilSleep / timeout) * 100)) + '%';
@@ -1635,26 +1642,26 @@
 
   /* ---------------------------------------------------------------- console input */
 
-  var history = { items: [], index: -1, draft: '' };
+  var cmdHistory = { items: [], index: -1, draft: '' };
 
   function initConsole() {
-    try { history.items = JSON.parse(store.get(KEYS.history) || '[]').filter(function (x) { return typeof x === 'string'; }).slice(-50); } catch (_) { history.items = []; }
+    try { cmdHistory.items = JSON.parse(store.get(KEYS.history) || '[]').filter(function (x) { return typeof x === 'string'; }).slice(-50); } catch (_) { cmdHistory.items = []; }
     var input = $('#console-cmd');
     var form = $('#console-form');
     input.addEventListener('keydown', function (e) {
       if (e.key === 'ArrowUp') {
-        if (!history.items.length) return;
+        if (!cmdHistory.items.length) return;
         e.preventDefault();
-        if (history.index === -1) { history.draft = input.value; history.index = history.items.length; }
-        history.index = Math.max(0, history.index - 1);
-        input.value = history.items[history.index];
+        if (cmdHistory.index === -1) { cmdHistory.draft = input.value; cmdHistory.index = cmdHistory.items.length; }
+        cmdHistory.index = Math.max(0, cmdHistory.index - 1);
+        input.value = cmdHistory.items[cmdHistory.index];
         moveCaretToEnd(input);
       } else if (e.key === 'ArrowDown') {
-        if (history.index === -1) return;
+        if (cmdHistory.index === -1) return;
         e.preventDefault();
-        history.index++;
-        if (history.index >= history.items.length) { history.index = -1; input.value = history.draft; }
-        else input.value = history.items[history.index];
+        cmdHistory.index++;
+        if (cmdHistory.index >= cmdHistory.items.length) { cmdHistory.index = -1; input.value = cmdHistory.draft; }
+        else input.value = cmdHistory.items[cmdHistory.index];
         moveCaretToEnd(input);
       }
     });
@@ -1665,11 +1672,11 @@
       if (/[\r\n]/.test(command)) { toast({ tone: 'bad', title: 'One command at a time', text: 'Commands can\'t contain line breaks.' }); return; }
       runBusy($('#console-send'), 'Sending', function () {
         return api('POST', '/api/console', { command: command }).then(function () {
-          if (history.items[history.items.length - 1] !== command) history.items.push(command);
-          history.items = history.items.slice(-50);
-          history.index = -1;
-          history.draft = '';
-          store.set(KEYS.history, JSON.stringify(history.items));
+          if (cmdHistory.items[cmdHistory.items.length - 1] !== command) cmdHistory.items.push(command);
+          cmdHistory.items = cmdHistory.items.slice(-50);
+          cmdHistory.index = -1;
+          cmdHistory.draft = '';
+          store.set(KEYS.history, JSON.stringify(cmdHistory.items));
           input.value = '';
           setFollow(true);
           window.setTimeout(pollLogs, 250);
