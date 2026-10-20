@@ -72,5 +72,7 @@ share and to scan for, so a few habits matter:
   dashboard ends every session at once; changing `ADMIN_KEY` does too.
 - **Download backups you care about.** Backups live on the same Railway volume
   as the worlds, so deleting the volume or the service deletes them too.
+  "Upload backup" on the Backups page brings a downloaded one back. Only upload
+  backups you made or trust: a world can carry command blocks and data packs.
 - **Keep Railway variables and logs private.** Don't share screenshots of the
   Variables page or the dashboard key.

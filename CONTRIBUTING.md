@@ -98,6 +98,8 @@ Useful variables while developing:
 | `ADMIN_KEY` | generated | Dashboard key. If unset, one is generated, saved in the data directory and printed in the log. |
 | `PORT` | `8080` | Dashboard port. |
 | `AUTO_START` | `false` | Start Minecraft at boot instead of on the first join. |
+| `MINECRAFT_VERSION` | `latest` | First boot only: the version of the first setup. |
+| `SERVER_TYPE` | `vanilla` | First boot only: `vanilla`, `fabric` or `forge` (Forge needs a pinned `MINECRAFT_VERSION`: 1.16.5, 1.12.2 or 1.7.10). |
 | `IDLE_TIMEOUT` | `600` | Seconds with nobody online before Minecraft sleeps (`0` = never, at most `86400`: the dashboard allows up to one day). |
 | `START_TIMEOUT` | `900` | Seconds a start may take before Minecraft is stopped and reported as crashed (`0` = no limit; at least `120`, at most `21600`). |
 | `MC_MAX_MEMORY` / `MC_MIN_MEMORY` | `auto` / `256M` | Java heap limits. |
@@ -105,7 +107,7 @@ Useful variables while developing:
 | `JAVA_8_HOME`, `JAVA_17_HOME`, `JAVA_21_HOME`, `JAVA_25_HOME` | `/opt/java/<n>` | Where each Java lives. Set only the ones you have: Railpowered picks the smallest installed Java the version needs (a Java 25 also runs 1.20.5+), then falls back to `java` on `PATH`. |
 | `WEB_DIR` | `/server/web`, then `./web` | Where the dashboard files are served from. |
 | `WEB_PORT` | unset | Dashboard port; overrides `PORT` (either is ignored if it equals the Minecraft port). |
-| `MC_PUBLIC_ADDRESS` | unset | Join address shown in the dashboard, when Railway's TCP proxy variables don't give it. |
+| `MC_PUBLIC_ADDRESS` | unset | Join address shown in the dashboard, when Railway's TCP proxy variables (`RAILWAY_TCP_PROXY_DOMAIN`, `RAILWAY_TCP_PROXY_PORT`) don't give it. |
 | `BACKUP_KEEP` | `0` | Automatic backups (before a restore, a downgrade or an upgrade) kept per world; older ones are deleted. `0` keeps all. Manual and uploaded backups are never deleted. |
 | `MAX_UPLOAD_MB` | `1024` | Largest modpack or backup upload, and largest modpack download. |
 | `MAX_EXTRACT_MB` | `8192` | Largest unpacked modpack (also limited by free space). |
@@ -151,7 +153,7 @@ Run the same checks as CI before you open a pull request:
 
 ```bash
 python -m unittest discover -s tests      # all tests, no network needed
-shellcheck start.sh .github/scripts/*.sh  # if you changed a shell script
+shellcheck start.sh .github/scripts/*.sh tests/e2e/*.sh  # if you changed a shell script
 docker build -t railpowered .             # if you changed the Dockerfile,
                                           # start.sh or the file layout
 .github/scripts/smoke_test.sh railpowered # boots the image and checks it
@@ -161,9 +163,13 @@ On Windows, tests that need symlinks or bash skip themselves when those are not
 available; CI runs the full suite on Linux.
 
 CI (`.github/workflows/ci.yml`) runs the tests on Python 3.12 and 3.13 on
-Linux, and on 3.12 on Windows, compiles every Python file, runs ShellCheck and
-`node --check` on the dashboard scripts, and builds the image and smoke-tests
-it.
+Linux, and on 3.12 on Windows, compiles every Python file, runs ShellCheck,
+actionlint, hadolint and `node --check` on the dashboard scripts, and builds
+the image and smoke-tests it. On pull requests, `.github/workflows/e2e.yml`
+also builds the image and plays it through with `tests/e2e/run_docker.sh`
+(start, sleep and wake, a live backup, a Fabric setup, the idle timer, a stop
+with Minecraft online and a redeploy). You can run that locally with Docker:
+`tests/e2e/run_docker.sh railpowered`.
 
 ## Conventions
 
