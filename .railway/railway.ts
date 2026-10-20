@@ -52,7 +52,8 @@ export default defineRailway(() => {
       },
       SERVER_TYPE: {
         value: "vanilla",
-        description: "First deploy only: vanilla or fabric. Add Forge or modpacks later from the dashboard.",
+        description:
+          "First deploy only: vanilla, fabric or forge (Forge needs MINECRAFT_VERSION set to 1.16.5, 1.12.2 or 1.7.10). Add modpacks or other versions later from the dashboard.",
       },
       AUTO_START: {
         value: "false",
@@ -62,7 +63,7 @@ export default defineRailway(() => {
       IDLE_TIMEOUT: {
         value: "600",
         description:
-          "Seconds with nobody online before Minecraft goes to sleep (600 = 10 minutes, 0 = never). The dashboard setting overrides this.",
+          "Seconds with nobody online before Minecraft goes to sleep (600 = 10 minutes, 0 = never, at most 86400 = one day). The dashboard setting overrides this.",
       },
       MC_MAX_MEMORY: {
         value: "auto",

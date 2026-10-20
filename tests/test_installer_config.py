@@ -187,7 +187,7 @@ class EnvironmentTests(InstallerTestCase):
         setup = installer.load_config()["profiles"][0]
         self.assertEqual((setup["type"], setup["minecraft_version"]), ("fabric", "1.20.1"))
         self.assertEqual(setup["name"], "Fabric 1.20.1")
-        self.assertIsNone(installer.pending_env_setup())
+        self.assertIsNone(installer.env_changed())
 
     def test_invalid_env_is_reported_not_silently_ignored(self):
         os.environ["SERVER_TYPE"] = "paper"
@@ -195,16 +195,20 @@ class EnvironmentTests(InstallerTestCase):
         self.assertEqual(setup["type"], "vanilla")
         self.assertTrue(any("SERVER_TYPE='paper'" in w for w in installer.config_warnings()))
 
-    def test_later_env_change_is_offered_once(self):
+    def test_later_env_change_is_reported_once_and_switches_nothing(self):
         installer.load_config()
         os.environ["SERVER_TYPE"] = "fabric"
         os.environ["MINECRAFT_VERSION"] = "1.21.1"
-        pending = installer.pending_env_setup()
-        self.assertEqual(pending["fields"]["type"], "fabric")
-        self.assertEqual(pending["fields"]["minecraft_version"], "1.21.1")
-        self.assertNotEqual(pending["fields"]["level_name"], "world")
+        asked = installer.env_changed()
+        self.assertEqual((asked["type"], asked["minecraft_version"]), ("fabric", "1.21.1"))
+        self.assertEqual(installer.active_setup()["type"], "vanilla")
         installer.acknowledge_env_setup()
-        self.assertIsNone(installer.pending_env_setup())
+        self.assertIsNone(installer.env_changed())
+
+    def test_env_matching_the_active_setup_is_not_a_change(self):
+        installer.load_config()
+        os.environ["SERVER_TYPE"] = "vanilla"
+        self.assertIsNone(installer.env_changed())
 
     def test_railpowered_settings_from_env_and_overrides(self):
         os.environ["IDLE_TIMEOUT"] = "90"

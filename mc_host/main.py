@@ -79,11 +79,12 @@ def _note_env_changes() -> None:
     """SERVER_TYPE / MINECRAFT_VERSION only seed the first setup. When they
     change later, say so in the log instead of ignoring them silently."""
     try:
-        pending = installer.pending_env_setup()
-        if pending is not None:
+        asked = installer.env_changed()
+        if asked is not None:
             state.add_log(
-                "SERVER_TYPE / MINECRAFT_VERSION changed in Railway, but they only choose the "
-                "first setup. Switch versions from the dashboard's Setups page instead.",
+                f"SERVER_TYPE / MINECRAFT_VERSION now ask for {installer.setup_display_name(asked)}, "
+                "but they only choose the first setup. Switch versions from the dashboard's "
+                "Setups page instead.",
                 "warn",
             )
             installer.acknowledge_env_setup()
@@ -117,6 +118,12 @@ def main() -> None:
     # Installer progress ("Downloading Minecraft 1.21.1...") goes to the dashboard log.
     installer.set_log_handler(state.add_log)
     installer.ensure_layout()
+    # Before anything can start a task: put back what a redeploy cut short
+    # (a pack swap, a restore) and reclaim hidden staging and temp files.
+    try:
+        installer.recover_interrupted()
+    except Exception as exc:  # never keep the server from booting
+        state.add_log(f"Couldn't clean up after interrupted work: {exc}", "warn")
     _note_env_changes()
     announce_admin_key()
     auth.ensure_session_secret()

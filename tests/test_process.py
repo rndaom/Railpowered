@@ -52,7 +52,7 @@ class ControllerTestCase(RuntimeTestCase):
             stop_timeout=2,
         )
         patches = {
-            "prepare_runtime": mock.Mock(side_effect=lambda cfg=None: self.spec),
+            "prepare_runtime": mock.Mock(side_effect=lambda cfg=None, **_kw: self.spec),
             "child_env": mock.Mock(return_value={"PATH": "/usr/bin"}),
             "read_properties": mock.Mock(return_value={"motd": "Hi", "max-players": "8"}),
             "active_setup": mock.Mock(
@@ -61,6 +61,7 @@ class ControllerTestCase(RuntimeTestCase):
             ),
             "record_world_version": mock.Mock(),
             "sync_access_lists_from_runtime": mock.Mock(),
+            "apply_pending_properties": mock.Mock(return_value=False),
             "railpowered_settings": mock.Mock(
                 side_effect=lambda cfg=None: {"idle_timeout_minutes": self.idle_minutes,
                                               "auto_start": False}
@@ -172,6 +173,20 @@ class StartAndReadyTests(ControllerTestCase):
         self.assertEqual(self.state.last_exit["reason"], "Mojang is unreachable")
         self.assertTrue(self.proxy.active)
 
+    def test_downgrade_refusal_keeps_its_code_and_can_be_confirmed(self):
+        self.ix["prepare_runtime"].side_effect = installer.InstallError(
+            "World 'world' has been played on Minecraft 1.21.1.", code="world_downgrade",
+            data={"world": "world", "last_version": "1.21.1", "version": "1.20.1"},
+        )
+        with self.assertRaises(StartFailed) as caught:
+            self.controller.start()
+        error = caught.exception
+        self.assertEqual((error.code, error.status, error.data["last_version"]), ("world_downgrade", 409, "1.21.1"))
+        self.ix["prepare_runtime"].side_effect = lambda cfg=None, **_kw: self.spec
+        self.controller.start(allow_downgrade=True)
+        self.ix["prepare_runtime"].assert_called_with(allow_downgrade=True)
+        self.assertEqual(self.state.phase, "starting")
+
     def test_missing_java_is_reported_plainly(self):
         def boom(*args, **kwargs):
             raise FileNotFoundError(2, "No such file", "/opt/java/8/bin/java")
@@ -266,8 +281,22 @@ class IdleTests(ControllerTestCase):
 
     def test_idle_timer_does_not_run_while_booting(self):
         self.controller.start()
-        self.assertFalse(self.controller.idle_tick(now=time.time() + 10_000))
+        self.assertFalse(self.controller.idle_tick(now=time.time() + 600))
         self.assertEqual(self.state.phase, "starting")
+
+    def test_start_watchdog_stops_a_server_that_never_gets_ready(self):
+        self.controller.start()
+        proc = self.proc
+        proc.emit(MODERN + "Loading mods: 312")
+        self.assertFalse(self.controller.idle_tick(now=time.time() + 60))
+        with mock.patch.object(main_module.config, "START_TIMEOUT", 900):
+            self.assertTrue(self.controller.idle_tick(now=time.time() + 901))
+        self.assertEqual(proc.commands[-1], "stop")
+        self.assertEqual(self.state.phase, "crashed")
+        self.assertIn("didn't finish starting within 15 minutes", self.state.last_exit["reason"])
+        self.assertTrue(self.proxy.active)
+        # Joins don't wake it straight back into the same hang.
+        self.assertTrue(self.controller.wake_blocked())
 
     def test_idle_stop_saves_stops_and_rearms_proxy(self):
         self.next_process_kwargs = {
@@ -400,6 +429,46 @@ class StopAndCrashTests(ControllerTestCase):
         self.assertEqual(len(self.processes), 2)
         self.assertEqual(self.state.phase, "starting")
 
+    def test_shutdown_waits_for_a_stop_already_in_progress(self):
+        self.next_process_kwargs = {"stops_on_command": False}
+        self.controller.stop_timeout = 0.5
+        proc = self.start_online()
+        stopper = threading.Thread(target=self.controller.stop, kwargs={"reason": "idle"})
+        stopper.start()
+        self.assertTrue(wait_for(lambda: self.state.phase == "stopping"))
+        self.controller.shutdown()
+        # Returning means the container may end: Java must be gone by then.
+        self.assertIsNotNone(proc.poll())
+        stopper.join(5)
+        self.assertFalse(self.proxy.active)
+
+    def test_shutdown_during_prepare_never_launches_java(self):
+        gate = threading.Event()
+
+        def slow_prepare(cfg=None):
+            gate.wait(5)
+            return self.spec
+
+        self.ix["prepare_runtime"].side_effect = slow_prepare
+        errors = []
+
+        def start():
+            try:
+                self.controller.start(reason="a player joined")
+            except Exception as exc:  # noqa: BLE001 - recorded for the assertion
+                errors.append(exc)
+
+        thread = threading.Thread(target=start)
+        thread.start()
+        self.assertTrue(wait_for(lambda: self.state.phase == "starting"))
+        self.controller.shutdown()
+        gate.set()
+        thread.join(5)
+        self.assertEqual(self.popen_calls, [])
+        self.assertIsInstance(errors[0], ServerBusy)
+        self.assertEqual(self.state.phase, "sleeping")
+        self.assertFalse(self.proxy.active)
+
     def test_shutdown_stops_server_even_during_a_task(self):
         proc = self.start_online()
         release = threading.Event()
@@ -411,6 +480,86 @@ class StopAndCrashTests(ControllerTestCase):
             self.tasks.wait_idle(5)
         self.assertEqual(proc.commands, ["save-all flush", "stop"])
         self.assertFalse(self.proxy.active)
+
+
+class LifecycleGuardTests(ControllerTestCase):
+    def _block_prepare(self):
+        gate = threading.Event()
+
+        def slow_prepare(cfg=None):
+            gate.wait(5)
+            return self.spec
+
+        self.ix["prepare_runtime"].side_effect = slow_prepare
+        thread = threading.Thread(target=self.controller.start)
+        thread.start()
+        self.assertTrue(wait_for(lambda: self.state.phase == "starting"))
+        self.addCleanup(thread.join, 5)
+        self.addCleanup(gate.set)
+        return gate
+
+    def test_tasks_are_refused_while_a_start_is_preparing(self):
+        self._block_prepare()
+        self.assertFalse(self.controller.is_running())
+        self.assertTrue(self.controller.lifecycle_active())
+        self.assertEqual(self.controller.current_world(), "world")  # what Java is about to open
+        with self.assertRaises(ServerBusy):
+            self.tasks.submit("switch", "Switching", lambda ctx: None, guard=self.controller.ensure_quiet)
+        self.assertIsNone(self.tasks.running())
+
+    def test_tasks_are_refused_while_stopping(self):
+        self.next_process_kwargs = {"stops_on_command": False}
+        self.controller.stop_timeout = 0.5
+        self.start_online()
+        stopper = threading.Thread(target=self.controller.stop)
+        stopper.start()
+        self.assertTrue(wait_for(lambda: self.state.phase == "stopping"))
+        with self.assertRaises(ServerBusy):
+            self.tasks.submit("restore", "Restoring", lambda ctx: None, guard=self.controller.ensure_quiet)
+        stopper.join(5)
+        self.tasks.submit("restore", "Restoring", lambda ctx: None, guard=self.controller.ensure_quiet)
+        self.tasks.wait_idle(5)
+
+    def test_settle_waits_out_a_prepare_and_reports_a_restart(self):
+        gate = self._block_prepare()
+        threading.Timer(0.2, gate.set).start()
+        self.assertFalse(self.controller.settle(5))
+        self.assertTrue(self.controller.is_running())
+
+    def test_clear_crash_after_a_switch(self):
+        self.ix["prepare_runtime"].side_effect = installer.InstallError(
+            "Java 8 is missing", code="java_missing")
+        with self.assertRaises(StartFailed):
+            self.controller.start()
+        self.assertEqual(self.state.last_exit["setup_id"], None)
+        self.assertTrue(self.controller.wake_blocked())
+        self.assertEqual(self.controller.proxy_info()["mode"], "crashed")
+        self.assertFalse(self.controller.request_wake("Steve"))
+        self.assertTrue(self.controller.clear_crash("Switched setups."))
+        self.assertEqual(self.state.phase, "sleeping")
+        self.assertIsNone(self.state.last_exit)
+        self.assertFalse(self.controller.wake_blocked())
+        self.assertFalse(self.controller.clear_crash())  # nothing to clear
+
+    def test_transient_failure_backs_off_for_a_while(self):
+        self.ix["prepare_runtime"].side_effect = installer.InstallError("Mojang is unreachable")
+        with self.assertRaises(StartFailed):
+            self.controller.start()
+        self.assertTrue(self.controller.wake_blocked())
+        self.assertFalse(self.controller.wake_blocked(now=time.time() + 301))
+
+    def test_crash_after_being_online_still_wakes(self):
+        proc = self.start_online()
+        proc.exit(1)
+        self.assertTrue(wait_for(lambda: self.state.phase == "crashed"))
+        self.assertFalse(self.controller.wake_blocked())
+        self.assertEqual(self.controller.proxy_info()["mode"], "sleeping")
+
+    def test_whitelist_gate_fails_closed(self):
+        self.ix["read_properties"].return_value = {"white-list": "True"}
+        with mock.patch.object(ix, "players", side_effect=installer.InstallError("unreadable")):
+            info = self.controller.proxy_info()
+        self.assertEqual(info["allowed"], set())
 
 
 class WakeAndProxyTests(ControllerTestCase):
@@ -522,7 +671,7 @@ class WhitelistTests(ControllerTestCase):
         self.addCleanup(patcher.stop)
         self.seen_at_write: list[list[str]] = []
 
-    def _record_write(self, enabled):
+    def _record_write(self, enabled, keep=None):
         self.seen_at_write.append([e["text"] for e in self.state.logs_after()["lines"]])
 
     def test_properties_are_written_after_minecraft_confirms(self):
@@ -531,21 +680,22 @@ class WhitelistTests(ControllerTestCase):
         proc = self.start_online()
         self.controller.set_whitelist(True)
         self.assertEqual(proc.commands, ["whitelist on"])
-        self.write.assert_called_once_with(True)
+        # The properties as they were before Minecraft rewrote the file.
+        self.write.assert_called_once_with(True, keep={"motd": "Hi", "max-players": "8"})
         self.assertTrue(any(t.endswith("Whitelist is now turned on") for t in self.seen_at_write[0]))
 
     def test_stopped_server_only_writes_the_file(self):
         started = time.monotonic()
         self.controller.set_whitelist(False)
         self.assertLess(time.monotonic() - started, 1)
-        self.write.assert_called_once_with(False)
+        self.assertEqual(self.write.call_args.args, (False,))
         self.assertEqual(self.processes, [])
 
     def test_missing_confirmation_still_writes_with_a_warning(self):
         proc = self.start_online()
         with mock.patch.object(proc, "on_command", side_effect=proc.commands.append):
             self.controller.set_whitelist(True, timeout=0.1)
-        self.write.assert_called_once_with(True)
+        self.assertEqual(self.write.call_args.args, (True,))
         self.assertTrue(any("didn't confirm the whitelist" in e["text"]
                             for e in self.state.logs_after()["lines"]))
 

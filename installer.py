@@ -80,18 +80,21 @@ CONFIG_SCHEMA = 2
 SERVER_TYPES = ("vanilla", "fabric", "forge", "modpack")
 TYPE_LABELS = {"vanilla": "Vanilla", "fabric": "Fabric", "forge": "Forge", "modpack": "Modpack"}
 
-NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$")
+# Anchored with \Z, not $: "$" also matches before a trailing newline, so a
+# URL-decoded "Notch%0A" would otherwise pass as a name.
+NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,31}\Z")
 WORLD_NAME_RE = NAME_RE  # v1 name, kept for callers
 NAME_RULE = (
     "1 to 32 characters: letters, numbers, dot, dash and underscore, "
     "starting with a letter or number"
 )
-VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,39}$")
-PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}$")
-BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.tar\.gz$")
+VERSION_RE = re.compile(r"^[0-9][0-9A-Za-z._+-]{0,39}\Z")
+PLAYER_NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
+BACKUP_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.tar\.gz\Z")
 SETUP_NAME_MAX = 48
 RESERVED_INSTANCE_PREFIXES = ("fabric-", "forge-")
 
+IDLE_MAX_MINUTES = 1440  # sleep timer limit (one day), shared with config.py
 MANIFEST_TTL = 600  # seconds a version list counts as fresh
 FABRIC_TTL = 3600
 NETWORK_RETRY_AFTER = 60  # seconds before retrying a host that just failed
@@ -125,6 +128,7 @@ OLDEST_SERVER_JAR = (1, 2, 5)  # 1.0-1.2.4 have no official server download
 
 JAVA_HOMES = {
     8: os.environ.get("JAVA_8_HOME", "/opt/java/8"),
+    17: os.environ.get("JAVA_17_HOME", "/opt/java/17"),
     21: os.environ.get("JAVA_21_HOME", "/opt/java/21"),
     25: os.environ.get("JAVA_25_HOME", "/opt/java/25"),
 }
@@ -216,6 +220,8 @@ ERROR_STATUS = {
     "instance_not_found": 404,
     "player_not_found": 404,
     "world_exists": 409,
+    "in_use": 409,
+    "storage_not_found": 404,
     "active_setup": 409,
     "active_world": 409,
     "world_downgrade": 409,
@@ -272,6 +278,9 @@ class RuntimeSpec:
     setup_id: str = ""
     instance: str | None = None
     warnings: list[str] = field(default_factory=list)
+    # Set when this start opens the world with an older version than it has
+    # seen: {"world", "version", "from", "backup"}.
+    downgrade: dict[str, Any] | None = None
 
     def build_command(self, extra_jvm_args: list[str] | tuple[str, ...] = ()) -> list[str]:
         """java [extra_jvm_args] [jvm_args] [@argfiles] [-jar jar] nogui"""
@@ -512,9 +521,11 @@ def _resolve_host(host: str) -> list[str]:
     return [str(info[4][0]).split("%")[0] for info in infos]
 
 
-def _check_public_url(url: str) -> None:
+def _check_public_url(url: str) -> str:
     """Refuse links to private, loopback or link-local addresses (user-supplied
-    modpack links must not reach Railway's internal network)."""
+    modpack links must not reach Railway's internal network). Returns the
+    vetted address; the download connects to exactly that address, so a name
+    that resolves differently a moment later (DNS rebinding) can't slip by."""
     host = urlparse(url).hostname or ""
     try:
         addresses = _resolve_host(host)
@@ -522,6 +533,7 @@ def _check_public_url(url: str) -> None:
         raise InstallError(
             f"Couldn't find the server '{host}'. Check the link.", code="invalid_url", detail=str(exc)
         ) from exc
+    vetted: list[str] = []
     for address in addresses:
         try:
             ip = ipaddress.ip_address(address)
@@ -533,6 +545,38 @@ def _check_public_url(url: str) -> None:
                 code="invalid_url",
                 detail=f"{host} -> {address}",
             )
+        vetted.append(str(ip))
+    if not vetted:
+        raise InstallError(f"Couldn't find the server '{host}'. Check the link.", code="invalid_url")
+    return vetted[0]
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS to a vetted IP address; the certificate is still checked
+    against the link's host name (SNI and hostname verification)."""
+
+    def __init__(self, host: str, *args: Any, pinned_ip: str, **kwargs: Any) -> None:
+        super().__init__(host, *args, **kwargs)
+        self.pinned_ip = pinned_ip
+
+        def create(address: tuple[str, int], timeout: Any = None, source: Any = None) -> socket.socket:
+            return socket.create_connection((self.pinned_ip, address[1]), timeout, source)
+
+        self._create_connection = create
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """Opens requests that carry ``pinned_ip`` with _PinnedHTTPSConnection."""
+
+    def https_open(self, req: urllib.request.Request) -> Any:
+        pinned = getattr(req, "pinned_ip", None)
+        if not pinned or req.has_proxy():
+            return super().https_open(req)
+
+        def connection(host: str, **kwargs: Any) -> _PinnedHTTPSConnection:
+            return _PinnedHTTPSConnection(host, pinned_ip=pinned, **kwargs)
+
+        return self.do_open(connection, req, context=self._context)
 
 
 class _SafeRedirect(urllib.request.HTTPRedirectHandler):
@@ -547,15 +591,15 @@ class _SafeRedirect(urllib.request.HTTPRedirectHandler):
                 detail=newurl,
             )
         public_only = getattr(req, "public_only", False)
-        if public_only:
-            _check_public_url(newurl)
+        pinned = _check_public_url(newurl) if public_only else None
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is not None and public_only:
             new.public_only = True
+            new.pinned_ip = pinned  # every hop connects to the address it vetted
         return new
 
 
-_OPENER = urllib.request.build_opener(_SafeRedirect)
+_OPENER = urllib.request.build_opener(_SafeRedirect, _PinnedHTTPSHandler)
 
 
 def _urlopen(request: urllib.request.Request, timeout: float):
@@ -683,8 +727,7 @@ def download_file(
     and hash checks. An existing ``dest`` is reused only when its hash matches,
     or when ``reuse=True`` is passed for files keyed by version."""
     url = _require_https(url)
-    if public_only:
-        _check_public_url(url)
+    pinned_ip = _check_public_url(url) if public_only else None
     label = label or os.path.basename(urlparse(url).path) or "a file"
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     if os.path.isfile(dest):
@@ -701,6 +744,8 @@ def download_file(
         try:
             request = urllib.request.Request(url, headers={"User-Agent": APP_USER_AGENT})
             request.public_only = public_only  # checked again on every redirect
+            if pinned_ip:
+                request.pinned_ip = pinned_ip  # connect to the address that was checked
             digest1 = hashlib.sha1()
             digest512 = hashlib.sha512()
             written = 0
@@ -1184,7 +1229,33 @@ def _sanitize_settings(raw: Any) -> dict[str, Any]:
     saved = raw.get("legacy_saved_online_mode")
     if saved in ("true", "false"):
         clean["legacy_saved_online_mode"] = saved
+    pending = _clean_pending(raw.get(PENDING_PROPERTIES))
+    if pending:
+        clean[PENDING_PROPERTIES] = pending
     return clean
+
+
+# Settings saved from the dashboard since the server last started. Vanilla
+# runs in DATA_DIR, so its server.properties is the live file, and Minecraft
+# writes its in-memory copy back over it on `whitelist on|off` (from the
+# dashboard or typed in game). These are re-applied after such a toggle, when
+# the server stops and before the next start, so a saved setting never
+# silently reverts.
+PENDING_PROPERTIES = "pending_properties"
+
+
+def _clean_pending(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        key: value
+        for key, value in raw.items()
+        if key in PROPERTY_DEFAULTS
+        and key not in _LIVE_PROPERTIES
+        and isinstance(value, str)
+        and len(value) <= 256
+        and not any(ch in value for ch in "\r\n")
+    }
 
 
 def _fingerprint(setup: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -1437,17 +1508,20 @@ def railpowered_settings(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     cfg = cfg if cfg is not None else load_config()
     settings = cfg.get("settings") or {}
     idle_seconds = _env_int("IDLE_TIMEOUT", 600, minimum=0)
-    default_minutes = 0 if idle_seconds == 0 else max(1, math.ceil(idle_seconds / 60))
+    # The dashboard allows 0-1440 minutes; a larger Railway value would make
+    # every Settings save fail validation, so it is capped (config.py warns).
+    default_minutes = 0 if idle_seconds == 0 else min(IDLE_MAX_MINUTES, max(1, math.ceil(idle_seconds / 60)))
     return {
         "idle_timeout_minutes": settings.get("idle_timeout_minutes", default_minutes),
         "auto_start": settings.get("auto_start", _env_bool("AUTO_START", False)),
     }
 
 
-def pending_env_setup() -> dict[str, Any] | None:
-    """If SERVER_TYPE/MINECRAFT_VERSION changed since they were last applied,
-    the setup fields they describe (apply with create_setup, then call
-    acknowledge_env_setup). Returns {"fields", "message"} or None."""
+def env_changed() -> dict[str, Any] | None:
+    """SERVER_TYPE / MINECRAFT_VERSION only choose the first setup. When they
+    changed since they were last acknowledged and describe something other
+    than the active setup, returns the setup they describe (for a log
+    message; nothing is switched). Call acknowledge_env_setup() afterwards."""
     cfg = load_config()
     env = _current_env()
     applied = cfg.get("env_applied") or {}
@@ -1458,24 +1532,12 @@ def pending_env_setup() -> dict[str, Any] | None:
         _warn(f"{warning} The Railway variable change was ignored.")
         acknowledge_env_setup()
         return None
-    fields = {k: setup[k] for k in ("type", "minecraft_version", "level_name")}
-    if any(_fingerprint({**fields, "instance": None}) == _fingerprint(s) for s in cfg["profiles"]) and \
-            _fingerprint(_active_setup(cfg)) == _fingerprint({**fields, "instance": None}):
+    if _fingerprint({**setup, "instance": None, "level_name": ""}) == _fingerprint(
+        {**_active_setup(cfg), "level_name": ""}
+    ):
         acknowledge_env_setup()
         return None
-    fields["level_name"] = _env_world_name(setup)
-    return {
-        "fields": fields,
-        "message": (
-            f"Railway variables now ask for {setup_display_name(setup)}; "
-            "switching to it with its own world."
-        ),
-    }
-
-
-def _env_world_name(setup: dict[str, Any]) -> str:
-    base = f"{setup['type']}-{setup['minecraft_version']}".replace(".", "_")[:32]
-    return base if NAME_RE.match(base) else "world"
+    return setup
 
 
 def acknowledge_env_setup() -> None:
@@ -1584,42 +1646,92 @@ def _setup_from_fields(fields: dict[str, Any]) -> dict[str, Any]:
     return setup
 
 
+# The world sidecar (.railpowered.json) keeps, for the downgrade guard:
+#   newest_version      the newest Minecraft that has opened the world. It
+#                       only ever rises; the guard compares against it.
+#   last_version        the version that last reached "online" (display).
+#   downgrade_ack       {version, from, backup, at}: an older version the
+#                       owner confirmed (after a backup) that hasn't run yet.
+#   accepted_downgrades older versions that were confirmed and then ran.
+# Confirming never lowers anything, so a failed or never-started downgrade
+# can't weaken the guard for other versions.
+
+
+def _world_newest(meta: dict[str, Any]) -> str | None:
+    best: str | None = None
+    best_key: tuple[int, ...] | None = None
+    # downgraded_from: sidecars written before newest_version existed.
+    for value in (meta.get("newest_version"), meta.get("last_version"), meta.get("downgraded_from")):
+        if not isinstance(value, str) or not value:
+            continue
+        key = version_key(value)
+        if key is not None and (best_key is None or key > best_key):
+            best, best_key = value, key
+    return best
+
+
+def _downgrade_accepted(meta: dict[str, Any], version: str) -> bool:
+    key = version_key(version)
+    ack = meta.get("downgrade_ack")
+    confirmed = [ack.get("version")] if isinstance(ack, dict) else []
+    confirmed += list(meta.get("accepted_downgrades") or [])
+    return any(isinstance(v, str) and version_key(v) == key for v in confirmed)
+
+
 def _downgrade_from(level: str, version: str) -> str | None:
-    """The newer version that last ran ``level``, if ``version`` is older."""
+    """The newest version that opened ``level``, when ``version`` is older
+    and that downgrade hasn't already been confirmed."""
     meta = world_meta(level)
-    last = meta.get("last_version") if meta else None
-    if not last:
+    newest = _world_newest(meta)
+    if not newest:
         return None
-    new_key, old_key = version_key(version), version_key(str(last))
-    if new_key is None or old_key is None:
+    new_key, old_key = version_key(version), version_key(newest)
+    if new_key is None or old_key is None or new_key >= old_key:
         return None
-    return str(last) if new_key < old_key else None
+    if _downgrade_accepted(meta, version):
+        return None
+    return newest
 
 
 def check_downgrade(level_name: str, version: str) -> None:
-    """Raise world_downgrade when ``version`` is older than the world's last run."""
-    last = _downgrade_from(level_name, version)
-    if last:
+    """Raise world_downgrade when ``version`` is older than the newest
+    version that has opened the world (and wasn't confirmed before)."""
+    newest = _downgrade_from(level_name, version)
+    if newest:
         raise InstallError(
-            f"World '{level_name}' was last played on Minecraft {last}. Opening it with "
-            f"{version} can damage or delete parts of it. Pick {last} or newer, use a new "
+            f"World '{level_name}' has been played on Minecraft {newest}. Opening it with "
+            f"{version} can damage or delete parts of it. Pick {newest} or newer, use a new "
             "world, or confirm to take a backup and open it anyway.",
             code="world_downgrade",
-            data={"world": level_name, "last_version": last, "version": version},
+            data={"world": level_name, "last_version": newest, "newest_version": newest, "version": version},
         )
 
 
-def _accept_downgrade(level: str, version: str, server_type: str, previous: str) -> None:
-    meta = world_meta(level) or {}
-    meta.update(
-        {
-            "last_version": version,
-            "last_type": server_type,
-            "downgraded_from": previous,
-            "downgraded_at": _iso(),
-        }
-    )
+def check_setup_downgrade(setup_id: str) -> None:
+    """check_downgrade for a saved setup, without touching the network."""
+    setup = _find_setup(load_config(), setup_id)
+    version = _display_version(setup)
+    if version and os.path.isdir(world_path(setup["level_name"])):
+        check_downgrade(setup["level_name"], version)
+
+
+def _ack_downgrade(level: str, info: dict[str, Any]) -> None:
+    """Remember a confirmed downgrade (its backup is already taken)."""
+    meta = world_meta(level)
+    newest = _world_newest(meta)
+    if newest:
+        meta["newest_version"] = newest
+    meta.pop("downgraded_from", None)
+    meta.pop("downgraded_at", None)
+    meta["downgrade_ack"] = {
+        "version": info["version"],
+        "from": info["from"],
+        "backup": info.get("backup"),
+        "at": _iso(),
+    }
     _write_world_meta(level, meta)
+    backup = f" (backup {info['backup']})" if info.get("backup") else ""
+    _say(f"Opening world '{level}' with Minecraft {info['version']}, older than {info['from']}{backup}.")
 
 
 def _remember_setup(setup: dict[str, Any], activate: bool, resolved: str) -> None:
@@ -1684,24 +1796,24 @@ def create_setup(
             if not exists:
                 os.makedirs(world_dir, exist_ok=True)
                 created = True
-            if previous:
-                _auto_backup(setup["level_name"], "pre-downgrade")
             if activate:
                 _sync_back_quietly(cfg)
                 candidate = copy.deepcopy(cfg)
                 candidate["profiles"] = [s for s in candidate["profiles"] if s["id"] != setup["id"]]
                 candidate["profiles"].append(dict(setup))
                 candidate["active_profile"] = setup["id"]
-                spec = prepare_runtime(candidate, persist=False, allow_downgrade=bool(previous))
+                spec = _prepare_candidate(candidate, allow_downgrade=bool(previous))
             else:
+                # Not opened yet: the downgrade is confirmed (with a backup)
+                # when the setup is activated, which stops the server first.
                 spec = _install_runtime(setup, version)
         except BaseException:
             if created:
                 _remove_if_empty(world_dir)
             raise
         _remember_setup(setup, activate, spec.version or version)
-        if previous and activate:
-            _accept_downgrade(setup["level_name"], spec.version or version, setup["type"], previous)
+        if spec.downgrade and activate:
+            _ack_downgrade(setup["level_name"], spec.downgrade)
         _say(f"Setup ready: {setup['name']} ({setup_summary(setup)})")
         return spec
 
@@ -1715,12 +1827,10 @@ def activate_setup(setup_id: str, allow_downgrade: bool = False) -> RuntimeSpec:
         previous = _downgrade_from(setup["level_name"], version)
         if previous and not allow_downgrade:
             check_downgrade(setup["level_name"], version)
-        if previous:
-            _auto_backup(setup["level_name"], "pre-downgrade")
         _sync_back_quietly(cfg)
         candidate = copy.deepcopy(cfg)
         candidate["active_profile"] = setup_id
-        spec = prepare_runtime(candidate, persist=False, allow_downgrade=bool(previous))
+        spec = _prepare_candidate(candidate, allow_downgrade=bool(previous))
         resolved = spec.version or version
 
         def apply(fresh: dict[str, Any]) -> None:
@@ -1729,8 +1839,8 @@ def activate_setup(setup_id: str, allow_downgrade: bool = False) -> RuntimeSpec:
             fresh["active_profile"] = setup_id
 
         _mutate_config(apply)
-        if previous:
-            _accept_downgrade(setup["level_name"], resolved, setup["type"], previous)
+        if spec.downgrade:
+            _ack_downgrade(setup["level_name"], spec.downgrade)
         return spec
 
 
@@ -1741,7 +1851,11 @@ def update_setup(
     allow_downgrade: bool = False,
 ) -> dict[str, Any]:
     """Rename a setup or point it at another world (created if missing).
-    The caller must make sure an active setup's server is stopped first."""
+    The caller must make sure an active setup's server is stopped first.
+
+    An older version than the world has seen is only validated here
+    (world_downgrade unless ``allow_downgrade``); the backup and the
+    confirmation happen when the setup is activated or started."""
     with _RUNTIME_LOCK:
         cfg = load_config()
         setup = _find_setup(cfg, setup_id)
@@ -1760,9 +1874,6 @@ def update_setup(
                 previous = _downgrade_from(new_level, version) if version else None
                 if previous and not allow_downgrade:
                     check_downgrade(new_level, version)
-                if previous:
-                    _auto_backup(new_level, "pre-downgrade")
-                    _accept_downgrade(new_level, version, setup["type"], previous)
                 os.makedirs(world_path(new_level), exist_ok=True)
 
         def apply(fresh: dict[str, Any]) -> dict[str, Any]:
@@ -1776,7 +1887,12 @@ def update_setup(
         return _mutate_config(apply)
 
 
-def delete_setup(setup_id: str) -> None:
+def delete_setup(setup_id: str) -> list[dict[str, Any]]:
+    """Remove a setup (its world and installed files stay). Returns the
+    downloaded files no setup uses any more (see list_storage), so the
+    dashboard can offer to delete them."""
+    before = storage_keys()
+
     def apply(cfg: dict[str, Any]) -> None:
         _find_setup(cfg, setup_id)
         if cfg.get("active_profile") == setup_id:
@@ -1787,6 +1903,141 @@ def delete_setup(setup_id: str) -> None:
         cfg["profiles"] = [s for s in cfg["profiles"] if s["id"] != setup_id]
 
     _mutate_config(apply)
+    return orphaned_storage(before)
+
+
+# ---------------------------------------------------------------------------
+# Downloaded files (instances and server jars)
+# ---------------------------------------------------------------------------
+
+STORAGE_KINDS = ("instance", "jar")
+
+
+def _storage_key(setup: dict[str, Any]) -> tuple[str, str] | None:
+    """(kind, name) of the installed files a setup runs from."""
+    try:
+        if (setup.get("type") or "vanilla") == "vanilla":
+            version = str(setup.get("resolved_version") or "")
+            if not version or version == VERSION_LATEST:
+                version = _display_version(setup) or ""
+            return ("jar", os.path.basename(vanilla_jar_path(version))) if version else None
+        return ("instance", os.path.basename(runtime_dir(setup)))
+    except InstallError:
+        return None
+
+
+def _storage_refs(cfg: dict[str, Any]) -> dict[tuple[str, str], list[dict[str, str]]]:
+    refs: dict[tuple[str, str], list[dict[str, str]]] = {}
+    for setup in cfg["profiles"]:
+        key = _storage_key(setup)
+        if key:
+            refs.setdefault(key, []).append({"id": setup["id"], "name": setup["name"]})
+    return refs
+
+
+def storage_keys() -> set[tuple[str, str]]:
+    """Everything the saved setups currently run from."""
+    return set(_storage_refs(load_config()))
+
+
+def _storage_dir(kind: str) -> str:
+    if kind not in STORAGE_KINDS:
+        raise InstallError("Pick an instance or a server jar.", code="invalid_request")
+    return paths()["instances" if kind == "instance" else "jars"]
+
+
+def _storage_item(kind: str, name: str, path: str) -> dict[str, Any] | None:
+    if name.startswith(".") or os.path.islink(path):
+        return None
+    if kind == "instance":
+        if not os.path.isdir(path):
+            return None
+        if os.path.isfile(os.path.join(path, PACK_META_FILE)):
+            flavor = "modpack"
+        elif name.startswith("fabric-"):
+            flavor = "fabric"
+        elif name.startswith("forge-"):
+            flavor = "forge"
+        else:
+            flavor = "other"
+        size = _dir_size(path)
+    else:
+        if not (os.path.isfile(path) and name.endswith(".jar")):
+            return None
+        if name.startswith("minecraft_server."):
+            flavor = "vanilla"
+        elif name.startswith("fabric-installer-"):
+            flavor = "fabric"
+        elif name.startswith("forge-"):
+            flavor = "forge"
+        else:
+            flavor = "other"
+        try:
+            size = os.path.getsize(path)
+        except OSError:
+            return None
+    return {"kind": kind, "name": name, "type": flavor, "size": size}
+
+
+def list_storage() -> dict[str, Any]:
+    """Installed server files with their size and the setups that use them:
+    instances/<name> (Fabric, Forge, modpacks) and jars/*.jar (vanilla
+    servers and loader installers; jars are re-downloaded when needed)."""
+    refs = _storage_refs(load_config())
+    items = []
+    for kind in STORAGE_KINDS:
+        directory = _storage_dir(kind)
+        try:
+            names = sorted(os.listdir(directory))
+        except OSError:
+            names = []
+        for name in names:
+            item = _storage_item(kind, name, os.path.join(directory, name))
+            if item is not None:
+                item["used_by"] = refs.get((kind, name), [])
+                items.append(item)
+    return {"items": items, "total": sum(item["size"] for item in items)}
+
+
+def orphaned_storage(before: set[tuple[str, str]]) -> list[dict[str, Any]]:
+    """Items in ``before`` (storage_keys()) that no setup uses now."""
+    now = storage_keys()
+    found = []
+    for kind, name in sorted(before - now):
+        directory = _storage_dir(kind)
+        item = _storage_item(kind, name, os.path.join(directory, name))
+        if item is not None:
+            item["used_by"] = []
+            found.append(item)
+    return found
+
+
+def delete_storage(kind: str, name: str) -> dict[str, Any]:
+    """Delete an instance or a server jar no setup uses (in_use otherwise)."""
+    directory = _storage_dir(kind)
+    with _RUNTIME_LOCK:
+        path = _safe_child(directory, name)
+        item = _storage_item(kind, name, path)
+        if item is None:
+            raise InstallError(f"'{name}' isn't on the volume.", code="storage_not_found")
+        users = _storage_refs(load_config()).get((kind, name), [])
+        if users:
+            listed = ", ".join(u["name"] for u in users[:3]) + (" and more" if len(users) > 3 else "")
+            raise InstallError(
+                f"'{name}' is used by {listed}. Delete those setups first.",
+                code="in_use",
+                data={"used_by": users},
+            )
+        # Moved aside under the lock (instant); removed after it.
+        trash = os.path.join(directory, f".trash-{name}-{secrets.token_hex(4)}")
+        os.replace(path, trash)
+        _SIZE_CACHE.pop(path, None)
+    if kind == "instance":
+        _remove_instance_tree(trash)
+    else:
+        _remove_tree(trash)
+    _say(f"Deleted {name} ({_human_bytes(item['size'])} freed).")
+    return {"kind": kind, "name": name, "freed": item["size"]}
 
 
 # ---------------------------------------------------------------------------
@@ -1849,18 +2100,38 @@ def _write_world_meta(level_name: str, meta: dict[str, Any]) -> None:
 
 
 def record_world_version(level_name: str, version: str, server_type: str = "vanilla") -> None:
-    """Called when the server reaches 'online': remember the newest version
-    that has run this world (the downgrade guard reads it)."""
+    """Called when the server reaches 'online': the world now holds data
+    written by ``version``. Raises newest_version (the downgrade guard reads
+    it); an older version that ran is remembered as accepted."""
     try:
         validate_name(level_name, "world")
         _validate_version(version, "forge")
     except InstallError:
         return
+    new_key = version_key(version)
+    if new_key is None:
+        return
     meta = world_meta(level_name)
-    last = meta.get("last_version")
-    old_key, new_key = version_key(str(last)) if last else None, version_key(version)
-    if not last or (new_key is not None and (old_key is None or new_key >= old_key)):
-        meta["last_version"] = version
+    newest = _world_newest(meta)
+    newest_key = version_key(newest) if newest else None
+    meta.pop("downgraded_from", None)
+    meta.pop("downgraded_at", None)
+    if newest_key is None or new_key > newest_key:
+        # A newer version: earlier confirmations were about older data.
+        meta["newest_version"] = version
+        meta.pop("downgrade_ack", None)
+        meta.pop("accepted_downgrades", None)
+    else:
+        meta["newest_version"] = newest
+        if new_key < newest_key:
+            accepted = [v for v in meta.get("accepted_downgrades") or [] if isinstance(v, str)]
+            if not any(version_key(v) == new_key for v in accepted):
+                accepted.append(version)
+            meta["accepted_downgrades"] = accepted[-20:]
+        ack = meta.get("downgrade_ack")
+        if isinstance(ack, dict) and version_key(str(ack.get("version"))) == new_key:
+            meta.pop("downgrade_ack", None)
+    meta["last_version"] = version
     meta["last_type"] = server_type
     meta["last_played"] = _iso()
     _write_world_meta(level_name, meta)
@@ -1893,6 +2164,7 @@ def list_worlds() -> list[dict[str, Any]]:
                 "size_bytes": size,
                 "active": name == active,
                 "last_version": meta.get("last_version"),
+                "newest_version": _world_newest(meta),
                 "last_played": meta.get("last_played"),
                 "used_by": used.get(name, []),
                 "has_level": os.path.isfile(os.path.join(full, "level.dat")),
@@ -1925,13 +2197,194 @@ def delete_world(name: str) -> list[str]:
         dest = world_path(name)
         if not os.path.isdir(dest):
             raise InstallError(f"World '{name}' doesn't exist.", code="world_not_found")
-        _rmtree_child(paths()["worlds"], name)
+        # Move it aside under the lock (instant), delete it after releasing
+        # the lock: a multi-GB rmtree must not stall every config reader.
+        trash = os.path.join(paths()["worlds"], f".trash-{name}-{secrets.token_hex(4)}")
+        os.replace(dest, trash)
         _SIZE_CACHE.pop(dest, None)
         removed = [s["name"] for s in cfg["profiles"] if s["level_name"] == name]
         if removed:
             cfg["profiles"] = [s for s in cfg["profiles"] if s["level_name"] != name]
             save_config(cfg)
-        return removed
+    _remove_tree(trash)
+    return removed
+
+
+def _remove_tree(path: str) -> None:
+    """Delete a folder (or a link to one) that was already moved aside.
+    Leftovers are swept at the next boot (recover_interrupted)."""
+    if os.path.islink(path) or os.path.isfile(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return
+    shutil.rmtree(path, ignore_errors=True)
+
+
+# Uploaded modpacks kept for a downgrade confirmation (modpacks/.held-*).
+HELD_UPLOAD_TTL = 3600
+RESTORE_TARGET_FILE = "TARGET"  # in worlds/.restore-*: the world being replaced
+_TEMP_FILE_RE = re.compile(r"^\..+\.[A-Za-z0-9_]{6,}\.(tmp|part)$")  # _atomic_write / download_file
+_OLD_INSTANCE_RE = re.compile(r"^\.old-(.+)-[0-9a-f]{8}$")
+
+
+def _recovered_world_name(base: str) -> str:
+    worlds = paths()["worlds"]
+    stem = f"{base[:14]}-recovered-{_stamp()[:8]}"[:28]
+    name, counter = stem, 2
+    while os.path.lexists(os.path.join(worlds, name)):
+        name, counter = f"{stem}-{counter}", counter + 1
+    return name
+
+
+def recover_interrupted(now: float | None = None) -> dict[str, Any]:
+    """Clean up after work a restart cut short (call at boot, before any
+    task runs). Data is put back first: an instance or world that was moved
+    aside and never replaced is moved back, worlds left inside a previous
+    pack copy are rescued, and a world a restore had set aside with no other
+    copy becomes '<name>-recovered-<date>'. Then staging folders, partial
+    downloads, uploads and temp files are deleted.
+
+    Returns {"recovered": [messages], "removed": count, "bytes": freed}."""
+    now = time.time() if now is None else now
+    ensure_layout()
+    where = paths()
+    recovered: list[str] = []
+    removed = 0
+    freed = 0
+
+    def drop(path: str) -> None:
+        nonlocal removed, freed
+        try:
+            if os.path.islink(path) or os.path.isfile(path):
+                size = os.path.getsize(path) if os.path.isfile(path) and not os.path.islink(path) else 0
+                os.unlink(path)
+            else:
+                size = _dir_size(path, fresh=True)
+                link = os.path.join(path, "worlds")  # never follow an instance's worlds link
+                if os.path.islink(link):
+                    os.unlink(link)
+                shutil.rmtree(path)
+                _SIZE_CACHE.pop(path, None)
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            _say(f"Couldn't remove leftover {os.path.relpath(path, DATA_DIR)}: {exc}")
+            return
+        removed += 1
+        freed += size
+
+    def entries(directory: str) -> list[str]:
+        try:
+            return sorted(os.listdir(directory))
+        except OSError:
+            return []
+
+    # instances/: a pack swap cut short.
+    instances = where["instances"]
+    for entry in entries(instances):
+        path = os.path.join(instances, entry)
+        match = _OLD_INSTANCE_RE.match(entry)
+        if match and NAME_RE.match(match.group(1)):
+            name = match.group(1)
+            if not os.path.lexists(os.path.join(instances, name)):
+                os.replace(path, os.path.join(instances, name))
+                recovered.append(f"Put modpack '{name}' back (its update was interrupted).")
+                continue
+            local_worlds = os.path.join(path, "worlds")
+            if os.path.isdir(local_worlds) and not os.path.islink(local_worlds):
+                _rescue_instance_worlds(local_worlds, name)
+            drop(path)
+        elif entry.startswith((".old-", ".staging-", ".unpack-", ".trash-", ".hoist-")):
+            drop(path)
+
+    # worlds/: a restore or a delete cut short.
+    worlds = where["worlds"]
+    for entry in entries(worlds):
+        path = os.path.join(worlds, entry)
+        if entry.startswith(".restore-") and os.path.isdir(path) and not os.path.islink(path):
+            old = os.path.join(path, "old")
+            target = ""
+            try:
+                with open(os.path.join(path, RESTORE_TARGET_FILE), encoding="utf-8") as handle:
+                    target = handle.read().strip()
+            except OSError:
+                pass
+            if os.path.isdir(old) and not os.path.islink(old):
+                if NAME_RE.match(target) and not os.path.lexists(os.path.join(worlds, target)):
+                    os.replace(old, os.path.join(worlds, target))
+                    recovered.append(f"Put world '{target}' back (a restore was interrupted).")
+                elif not NAME_RE.match(target) and os.listdir(old):
+                    # Unknown target: keep the world rather than guess.
+                    name = _recovered_world_name("world")
+                    os.replace(old, os.path.join(worlds, name))
+                    recovered.append(f"Kept a world from an interrupted restore as '{name}'.")
+                # Otherwise the restore finished; the replaced world was
+                # backed up (pre-restore) before it was moved aside.
+            drop(path)
+        elif entry.startswith(".trash-"):
+            drop(path)
+        elif _TEMP_FILE_RE.match(entry):
+            drop(path)
+        elif os.path.isdir(path) and not os.path.islink(path) and not entry.startswith("."):
+            for inner in entries(path):  # sidecar temp files inside a world
+                if _TEMP_FILE_RE.match(inner):
+                    drop(os.path.join(path, inner))
+
+    # backups/: an archive that was still being written or uploaded.
+    backups = where["backups"]
+    for entry in entries(backups):
+        if entry.startswith(".") and (entry.endswith(".tmp") or entry.startswith(".upload-")):
+            drop(os.path.join(backups, entry))
+
+    # modpacks/: downloads and uploads (held ones expire).
+    modpacks = where["modpacks"]
+    for entry in entries(modpacks):
+        path = os.path.join(modpacks, entry)
+        if entry.startswith(".held-"):
+            try:
+                expired = now - os.path.getmtime(path) > HELD_UPLOAD_TTL
+            except OSError:
+                expired = True
+            if expired:
+                drop(path)
+        elif (
+            entry.startswith((".download-", ".upload-"))
+            or re.fullmatch(r"\.?[A-Za-z0-9][A-Za-z0-9._-]*\.upload\.(zip|mrpack)", entry)
+            or _TEMP_FILE_RE.match(entry)
+        ):
+            drop(path)
+
+    # Partial downloads and atomic-write temp files.
+    for directory in (where["data"], where["jars"], where["cache"]):
+        for entry in entries(directory):
+            if _TEMP_FILE_RE.match(entry) or (directory == where["jars"] and entry.startswith(".trash-")):
+                drop(os.path.join(directory, entry))
+    for entry in entries(where["cache"]):
+        sub = os.path.join(where["cache"], entry)
+        if os.path.isdir(sub) and not os.path.islink(sub):
+            for inner in entries(sub):
+                if _TEMP_FILE_RE.match(inner):
+                    drop(os.path.join(sub, inner))
+
+    for message in recovered:
+        _say(message)
+    if removed:
+        _say(
+            f"Cleaned up {removed} leftover file{'s' if removed != 1 else ''} from interrupted "
+            f"work ({_human_bytes(freed)} freed)."
+        )
+    return {"recovered": recovered, "removed": removed, "bytes": freed}
+
+
+def _human_bytes(size: int) -> str:
+    value = float(size)
+    for unit in ("bytes", "KB", "MB", "GB"):
+        if value < 1024 or unit == "GB":
+            return f"{int(value)} {unit}" if unit == "bytes" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{size} bytes"
 
 
 # ---------------------------------------------------------------------------
@@ -2349,7 +2802,13 @@ def prepare_runtime(
 ) -> RuntimeSpec:
     """Install and configure the active setup of ``cfg`` (default: saved
     config) and return how to launch it. With persist=False nothing in
-    manager.json changes (create/activate use that for transactions)."""
+    manager.json changes (create/activate use that for transactions).
+
+    Opening a world with an older version than it has seen needs
+    ``allow_downgrade``. The world is then backed up once everything else
+    succeeded (a failed install leaves no extra archive), and spec.downgrade
+    describes it; with persist=True the confirmation is recorded here,
+    otherwise the caller records it after committing (_ack_downgrade)."""
     with _RUNTIME_LOCK:
         cfg = _normalize_config(copy.deepcopy(cfg)) if cfg else load_config()
         setup = _active_setup(cfg)
@@ -2357,24 +2816,141 @@ def prepare_runtime(
         version = resolve_minecraft_version(setup["minecraft_version"], True, setup["type"])
         level = setup["level_name"]
         os.makedirs(world_path(level), exist_ok=True)
-        if not allow_downgrade:
+        previous = _downgrade_from(level, version)
+        if previous and not allow_downgrade:
             check_downgrade(level, version)
         spec = _install_runtime(setup, version)
         spec.jvm_args.extend(_log4j_args(version))
         _sync_back_quietly(cfg, setup)
+        if persist:
+            apply_pending_properties()
         _write_eula(spec.cwd)
         _apply_managed_properties(version, level, spec.cwd)
         if spec.cwd != DATA_DIR:
             _relink_instance_world(spec.cwd, level)
         _render_access_lists(version, spec.cwd, network=True)
         _remember_prepared_properties()
+        if previous:
+            spec.downgrade = {
+                "world": level,
+                "version": version,
+                "from": previous,
+                "backup": _safety_backup(level, "pre-downgrade"),
+            }
+        else:
+            _backup_before_upgrade(level, version, spec)
         if persist and setup.get("resolved_version") != version:
             def apply(fresh: dict[str, Any]) -> None:
                 for item in fresh["profiles"]:
                     if item["id"] == setup["id"]:
                         item["resolved_version"] = version
             _mutate_config(apply)
+        if persist and spec.downgrade:
+            _ack_downgrade(level, spec.downgrade)
         return spec
+
+
+def _backup_before_upgrade(level: str, version: str, spec: RuntimeSpec) -> None:
+    """A newer version ("latest" after a release, or a switch) upgrades the
+    world for good; keep an automatic archive of it first. A failure only
+    warns: blocking the start on it would keep everyone out."""
+    newest = _world_newest(world_meta(level))
+    new_key, old_key = version_key(version), version_key(newest) if newest else None
+    if new_key is None or old_key is None or new_key <= old_key:
+        return
+    if not os.path.isfile(os.path.join(world_path(level), "level.dat")):
+        return
+    try:
+        name = _safety_backup(level, "pre-upgrade")
+    except InstallError as exc:
+        warning = f"Upgrading world '{level}' from {newest} to {version} without a backup: {exc}"
+        spec.warnings.append(warning)
+        _say(warning)
+        return
+    if name:
+        _say(f"Upgrading world '{level}' from Minecraft {newest} to {version}; backup {name}.")
+
+
+def _newest_change(directory: str) -> float:
+    """Latest modification time of anything in a world folder."""
+    latest = 0.0
+    for root, dirs, files in os.walk(directory):
+        for entry in [root, *(os.path.join(root, f) for f in files if f != "session.lock")]:
+            try:
+                latest = max(latest, os.stat(entry).st_mtime)
+            except OSError:
+                continue
+    return latest
+
+
+def _safety_backup(level: str, kind: str) -> str | None:
+    """An automatic backup of ``level`` before a risky start. Retrying after a
+    failed start reuses the last one when the world hasn't changed since."""
+    directory = world_path(level)
+    if not os.path.isdir(directory) or not os.listdir(directory):
+        return None
+    changed = _newest_change(directory)
+    for item in list_backups():  # newest first
+        if item["world"] == level and item["kind"] == kind and not item["damaged"]:
+            try:
+                taken = os.stat(os.path.join(paths()["backups"], item["name"])).st_mtime
+            except OSError:
+                break
+            if taken >= changed:
+                return item["name"]
+            break
+    return _auto_backup(level, kind)
+
+
+def _prepare_candidate(cfg: dict[str, Any], allow_downgrade: bool = False) -> RuntimeSpec:
+    """prepare_runtime(persist=False) for a setup that isn't active yet.
+
+    Preparing writes the shared server.properties (level-name, online-mode,
+    value formats), the legacy online-mode memory in manager.json and the
+    canonical player lists. If it fails, those are put back the way the
+    still-active setup needs them, so a failed switch changes nothing."""
+    path = paths()["properties"]
+    try:
+        with open(path, "rb") as handle:
+            saved_text: bytes | None = handle.read()
+    except OSError:
+        saved_text = None
+    saved_legacy = (load_config().get("settings") or {}).get("legacy_saved_online_mode")
+    try:
+        return prepare_runtime(cfg, persist=False, allow_downgrade=allow_downgrade)
+    except BaseException:
+        try:
+            _restore_after_failed_prepare(path, saved_text, saved_legacy)
+        except Exception as exc:  # never hide the original error
+            _say(f"Couldn't fully undo the failed preparation: {exc}")
+        raise
+
+
+def _restore_after_failed_prepare(path: str, saved_text: bytes | None, saved_legacy: str | None) -> None:
+    with _CONFIG_LOCK:
+        if saved_text is None:
+            try:
+                os.remove(path)
+            except FileNotFoundError:
+                pass
+        else:
+            _atomic_write(path, saved_text)
+        # Settings saved from the dashboard while the switch ran stay saved.
+        pending = _pending_properties()
+        if pending:
+            write_properties(pending)
+
+        def legacy(c: dict[str, Any]) -> None:
+            if saved_legacy is None:
+                c["settings"].pop("legacy_saved_online_mode", None)
+            else:
+                c["settings"]["legacy_saved_online_mode"] = saved_legacy
+
+        _mutate_config(legacy)
+        # The lists may have been converted to the candidate's online mode;
+        # render them for the active setup again (no network: cached UUIDs).
+        cfg = load_config()
+        _render_to_active(cfg, _active_version(cfg))
 
 
 # ---------------------------------------------------------------------------
@@ -2797,7 +3373,12 @@ def _pick_mrpack_url(urls: list[Any]) -> str | None:
     return None
 
 
-def _install_mrpack(unpacked: str, staging: str) -> PackInfo:
+def _install_mrpack(
+    unpacked: str, staging: str, before_downloads: Callable[[PackInfo], None] | None = None
+) -> PackInfo:
+    """Download an unpacked .mrpack's files into ``staging``. ``before_downloads``
+    sees the pack's version first and may refuse it (the downgrade guard), so
+    a pack that can't be used doesn't download hundreds of mods first."""
     index = _read_json(os.path.join(unpacked, "modrinth.index.json"))
     if not isinstance(index, dict):
         raise InstallError("This .mrpack is missing modrinth.index.json.", code="invalid_archive")
@@ -2833,15 +3414,24 @@ def _install_mrpack(unpacked: str, staging: str) -> PackInfo:
             raise InstallError(f"The .mrpack has no checksum for {parts[-1]}.", code="invalid_archive")
         size = entry.get("fileSize")
         jobs.append((url, os.path.join(staging, *parts), sha1, sha512, size if isinstance(size, int) and size > 0 else None, parts[-1]))
+    if before_downloads is not None:
+        before_downloads(info)
     if jobs:
         _say(f"Downloading {len(jobs)} modpack files...")
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        pool = ThreadPoolExecutor(max_workers=4)
+        try:
             futures = [
                 pool.submit(download_file, url, dest, sha1, sha512=sha512, max_bytes=size, label=label)
                 for url, dest, sha1, sha512, size, label in jobs
             ]
             for future in futures:
                 future.result()
+        except BaseException:
+            # One file failed: don't fetch the rest into a folder that is
+            # about to be deleted (downloads already under way finish).
+            pool.shutdown(wait=True, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
     for folder in ("overrides", "server-overrides"):
         source = os.path.join(unpacked, folder)
         if os.path.isdir(source):
@@ -2849,109 +3439,256 @@ def _install_mrpack(unpacked: str, staging: str) -> PackInfo:
     return info
 
 
-def install_modpack_archive(
+@dataclass
+class StagedModpack:
+    """A modpack installed into a hidden staging folder, not in use yet.
+
+    commit_modpack() swaps it in; discard_staged() throws it away."""
+
+    name: str
+    level_name: str
+    staging: str
+    minecraft_version: str
+    loader: str | None
+    label: str
+    fields: dict[str, Any]
+
+
+@dataclass
+class ModpackSwap:
+    """What commit_modpack() changed, so rollback_modpack() can undo it."""
+
+    name: str
+    minecraft_version: str
+    old: str | None  # the previous instance, kept as instances/.old-* until finalized
+    versions: dict[str, tuple[Any, Any]]  # setup id -> previous (minecraft_version, resolved_version)
+
+
+def _pack_world_guard(level: str, allow_downgrade: bool) -> Callable[[PackInfo], None]:
+    def guard(info: PackInfo) -> None:
+        if not allow_downgrade and info.minecraft_version and os.path.isdir(world_path(level)):
+            check_downgrade(level, str(info.minecraft_version))
+
+    return guard
+
+
+def stage_modpack_archive(
     archive_path: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
-) -> dict[str, Any]:
-    """Install a .mrpack or server zip as instances/<name>. Everything happens
-    in a staging folder; the old instance is replaced only on success.
-    Returns setup fields for create_setup (the archive file is left alone)."""
+) -> StagedModpack:
+    """Unpack and install a .mrpack or server zip into a staging folder.
+
+    Nothing in use changes: instances/<name>, manager.json and the worlds are
+    left alone, so a running server can keep running meanwhile. The world
+    downgrade guard runs as soon as the pack's version is known (before the
+    .mrpack downloads or the loader install). The archive is left alone."""
     name = _validate_pack_name(name)
     level = validate_name(level_name or name, "world")
+    ensure_layout()
+    instances = paths()["instances"]
+    staging = tempfile.mkdtemp(prefix=f".staging-{name}-", dir=instances)
+    unpacked = tempfile.mkdtemp(prefix=f".unpack-{name}-", dir=instances)
+    guard = _pack_world_guard(level, allow_downgrade)
+    try:
+        _safe_extract_zip(archive_path, unpacked)
+        if os.path.isfile(os.path.join(unpacked, "modrinth.index.json")):
+            info = _install_mrpack(unpacked, staging, before_downloads=guard)
+        else:
+            os.rmdir(staging)
+            os.replace(unpacked, staging)
+            os.makedirs(unpacked)
+            _hoist_single_folder(staging)
+            info = _detect_pack(staging)
+            if info.curseforge_client and not _has_mod_jars(staging) and not _has_mod_jars(os.path.join(staging, "overrides")):
+                raise InstallError(
+                    "This is a CurseForge client pack: it lists mods by ID instead of including "
+                    "them. Download the pack's server pack from CurseForge and upload that.",
+                    code="unsupported_pack",
+                )
+            if not info.minecraft_version:
+                raise InstallError(
+                    "Couldn't tell which Minecraft version this pack is for. Use a Modrinth "
+                    ".mrpack or a server-pack zip that includes its server or loader files.",
+                    code="unsupported_pack",
+                )
+            guard(info)
+        _install_loader(staging, info)
+        mc = str(info.minecraft_version)
+        _modpack_launch(staging, mc)  # must be startable before it can be swapped in
+        deps = {"minecraft": mc}
+        if info.loader == "fabric":
+            deps["fabric-loader"] = info.loader_version or ""
+        elif info.loader == "forge":
+            deps["forge"] = info.loader_version or ""
+        _atomic_write_json(
+            os.path.join(staging, PACK_META_FILE),
+            {
+                "name": info.name or name,
+                "minecraft_version": mc,
+                "loader": info.loader,
+                "loader_version": info.loader_version,
+                "source": info.source,
+                "installed_at": _iso(),
+                "dependencies": deps,
+            },
+        )
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    finally:
+        shutil.rmtree(unpacked, ignore_errors=True)
+    label = info.name or name
+    return StagedModpack(
+        name=name,
+        level_name=level,
+        staging=staging,
+        minecraft_version=mc,
+        loader=info.loader,
+        label=str(label),
+        fields={
+            "type": "modpack",
+            "minecraft_version": mc,
+            "level_name": level,
+            "instance": name,
+            "name": _clean_setup_name(info.name) or name,
+            "loader": info.loader,
+        },
+    )
+
+
+def discard_staged(staged: StagedModpack | None) -> None:
+    """Delete a staged pack that wasn't committed (no-op after a commit)."""
+    if staged is not None and staged.staging and os.path.isdir(staged.staging):
+        shutil.rmtree(staged.staging, ignore_errors=True)
+    if staged is not None:
+        staged.staging = ""
+
+
+def _remove_instance_tree(path: str) -> None:
+    """rmtree an instance folder; its worlds link points at the shared worlds
+    and is removed as a link first, never followed."""
+    link = os.path.join(path, "worlds")
+    if os.path.islink(link):
+        os.unlink(link)
+    _rmtree_child(os.path.dirname(path), os.path.basename(path))
+
+
+def commit_modpack(staged: StagedModpack) -> ModpackSwap:
+    """Swap a staged pack in as instances/<name> and point that instance's
+    setups at its Minecraft version. The previous instance is kept (as
+    instances/.old-*) until finalize_modpack(); rollback_modpack() undoes
+    both. The caller must make sure the instance isn't running."""
     with _RUNTIME_LOCK:
-        ensure_layout()
+        if not staged.staging or not os.path.isdir(staged.staging):
+            raise InstallError("The prepared modpack files are gone. Install it again.", code="install_failed")
+        name, mc = staged.name, staged.minecraft_version
         instances = paths()["instances"]
-        staging = tempfile.mkdtemp(prefix=f".staging-{name}-", dir=instances)
-        unpacked = tempfile.mkdtemp(prefix=f".unpack-{name}-", dir=instances)
+        final = instance_path(name)
+        old = None
+        if os.path.lexists(final):
+            old = os.path.join(instances, f".old-{name}-{secrets.token_hex(4)}")
+            os.replace(final, old)
         try:
-            _safe_extract_zip(archive_path, unpacked)
-            if os.path.isfile(os.path.join(unpacked, "modrinth.index.json")):
-                info = _install_mrpack(unpacked, staging)
-            else:
-                os.rmdir(staging)
-                os.replace(unpacked, staging)
-                os.makedirs(unpacked)
-                _hoist_single_folder(staging)
-                info = _detect_pack(staging)
-                if info.curseforge_client and not _has_mod_jars(staging) and not _has_mod_jars(os.path.join(staging, "overrides")):
-                    raise InstallError(
-                        "This is a CurseForge client pack: it lists mods by ID instead of including "
-                        "them. Download the pack's server pack from CurseForge and upload that.",
-                        code="unsupported_pack",
-                    )
-                if not info.minecraft_version:
-                    raise InstallError(
-                        "Couldn't tell which Minecraft version this pack is for. Use a Modrinth "
-                        ".mrpack or a server-pack zip that includes its server or loader files.",
-                        code="unsupported_pack",
-                    )
-            _install_loader(staging, info)
-            mc = str(info.minecraft_version)
-            _modpack_launch(staging, mc)  # must be startable before we swap it in
-            if os.path.isdir(world_path(level)):
-                previous = _downgrade_from(level, mc)
-                if previous and not allow_downgrade:
-                    check_downgrade(level, mc)
-            deps = {"minecraft": mc}
-            if info.loader == "fabric":
-                deps["fabric-loader"] = info.loader_version or ""
-            elif info.loader == "forge":
-                deps["forge"] = info.loader_version or ""
-            _atomic_write_json(
-                os.path.join(staging, PACK_META_FILE),
-                {
-                    "name": info.name or name,
-                    "minecraft_version": mc,
-                    "loader": info.loader,
-                    "loader_version": info.loader_version,
-                    "source": info.source,
-                    "installed_at": _iso(),
-                    "dependencies": deps,
-                },
-            )
-            final = instance_path(name)
-            old = None
-            if os.path.lexists(final):
-                old = os.path.join(instances, f".old-{name}-{secrets.token_hex(4)}")
-                os.replace(final, old)
-            try:
-                os.replace(staging, final)
-            except OSError:
-                if old:
-                    os.replace(old, final)
-                raise
-            staging = ""
+            os.replace(staged.staging, final)
+        except OSError:
+            if old:
+                os.replace(old, final)
+            raise
+        staged.staging = ""
+        swap = ModpackSwap(name=name, minecraft_version=mc, old=old, versions={})
+        try:
             if old:
                 local_worlds = os.path.join(old, "worlds")
                 if os.path.isdir(local_worlds) and not os.path.islink(local_worlds):
                     _rescue_instance_worlds(local_worlds, name)
-                _rmtree_child(instances, os.path.basename(old))
-        finally:
-            for leftover in (staging, unpacked):
-                if leftover and os.path.isdir(leftover):
-                    shutil.rmtree(leftover, ignore_errors=True)
 
-    def retarget(cfg: dict[str, Any]) -> None:
-        for setup in cfg["profiles"]:
-            if setup["type"] == "modpack" and setup.get("instance") == name:
-                setup["minecraft_version"] = mc
-                setup["resolved_version"] = mc
+            def retarget(cfg: dict[str, Any]) -> None:
+                for setup in cfg["profiles"]:
+                    if setup["type"] == "modpack" and setup.get("instance") == name:
+                        swap.versions[setup["id"]] = (setup.get("minecraft_version"), setup.get("resolved_version"))
+                        setup["minecraft_version"] = mc
+                        setup["resolved_version"] = mc
 
-    _mutate_config(retarget)
-    _say(f"Installed modpack {info.name or name} (Minecraft {mc}, {info.loader or 'vanilla'}).")
-    return {
-        "type": "modpack",
-        "minecraft_version": mc,
-        "level_name": level,
-        "instance": name,
-        "name": _clean_setup_name(info.name) or name,
-        "loader": info.loader,
-    }
+            _mutate_config(retarget)
+        except BaseException:
+            rollback_modpack(swap)
+            raise
+    _say(f"Installed modpack {staged.label} (Minecraft {mc}, {staged.loader or 'vanilla'}).")
+    return swap
 
 
-def install_modpack_from_url(
-    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+def rollback_modpack(swap: ModpackSwap) -> None:
+    """Undo commit_modpack(): the previous instance and setup versions come
+    back (a first install is removed again)."""
+    with _RUNTIME_LOCK:
+        name = swap.name
+        errors: list[str] = []
+
+        def restore(cfg: dict[str, Any]) -> None:
+            for setup in cfg["profiles"]:
+                if setup["id"] in swap.versions and setup.get("instance") == name:
+                    setup["minecraft_version"], setup["resolved_version"] = swap.versions[setup["id"]]
+
+        if swap.versions:
+            try:
+                _mutate_config(restore)
+            except Exception as exc:  # keep going: the files matter most
+                errors.append(f"setups: {exc}")
+        instances = paths()["instances"]
+        final = instance_path(name)
+        try:
+            failed = None
+            if os.path.lexists(final):
+                failed = os.path.join(instances, f".trash-{name}-{secrets.token_hex(4)}")
+                os.replace(final, failed)
+            if swap.old and os.path.lexists(swap.old):
+                os.replace(swap.old, final)
+            swap.old = None
+            if failed:
+                _remove_instance_tree(failed)
+        except OSError as exc:
+            errors.append(f"files: {exc}")
+        try:
+            cfg = load_config()
+            _render_to_active(cfg, _active_version(cfg))
+        except Exception as exc:  # noqa: BLE001 - best effort
+            errors.append(f"player lists: {exc}")
+    if errors:
+        _say(f"Couldn't fully undo the modpack install of {name}: {'; '.join(errors)}")
+    else:
+        _say(f"Put modpack {name} back the way it was.")
+
+
+def finalize_modpack(swap: ModpackSwap) -> None:
+    """The new pack is in use: delete the previous instance."""
+    if not swap.old:
+        return
+    old, swap.old = swap.old, None
+    try:
+        _remove_instance_tree(old)
+    except OSError as exc:  # the boot sweep removes it later
+        _say(f"Couldn't remove the previous copy of {swap.name}: {exc}")
+
+
+def install_modpack_archive(
+    archive_path: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
 ) -> dict[str, Any]:
-    """Download a .mrpack/.zip (fresh every time) and install it."""
+    """Install a .mrpack or server zip as instances/<name> right away (stage,
+    commit, finalize). Returns setup fields for create_setup (the archive file
+    is left alone). The dashboard stages and commits separately so a failed
+    activation can be rolled back."""
+    staged = stage_modpack_archive(archive_path, name, level_name, allow_downgrade)
+    try:
+        swap = commit_modpack(staged)
+    finally:
+        discard_staged(staged)
+    finalize_modpack(swap)
+    return dict(staged.fields)
+
+
+def stage_modpack_from_url(
+    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> StagedModpack:
+    """Download a .mrpack/.zip (fresh every time) and stage it."""
     name = _validate_pack_name(name)
     if level_name is not None:
         validate_name(level_name, "world")
@@ -2970,12 +3707,132 @@ def install_modpack_from_url(
                 "link of a version's .mrpack file.",
                 code="invalid_archive",
             )
-        return install_modpack_archive(tmp, name, level_name, allow_downgrade)
+        return stage_modpack_archive(tmp, name, level_name, allow_downgrade)
     finally:
         try:
             os.unlink(tmp)
         except OSError:
             pass
+
+
+def install_modpack_from_url(
+    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> dict[str, Any]:
+    """Download a .mrpack/.zip (fresh every time) and install it right away."""
+    staged = stage_modpack_from_url(url, name, level_name, allow_downgrade)
+    try:
+        swap = commit_modpack(staged)
+    finally:
+        discard_staged(staged)
+    finalize_modpack(swap)
+    return dict(staged.fields)
+
+
+_PEEK_JSON_LIMIT = 4 * MIB
+
+
+def peek_pack_version(archive_path: str) -> str | None:
+    """The Minecraft version a pack archive declares, read without unpacking
+    it (the same clues _detect_pack uses, minus jar contents). None when it
+    can't tell; the install then finds out after unpacking."""
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            return _peek_version(archive)
+    except (zipfile.BadZipFile, OSError, ValueError, RuntimeError, EOFError, zlib.error):
+        return None
+
+
+def _peek_version(archive: zipfile.ZipFile) -> str | None:
+    names = [i.filename.replace("\\", "/") for i in archive.infolist() if not i.is_dir()]
+    if len(names) > MAX_ZIP_ENTRIES:
+        return None
+
+    def read_json(name: str) -> Any:
+        try:
+            info = archive.getinfo(name)
+        except KeyError:
+            return None
+        if info.file_size > _PEEK_JSON_LIMIT:
+            return None
+        try:
+            return json.loads(archive.read(info).decode("utf-8"))
+        except (ValueError, UnicodeDecodeError, zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
+            return None
+
+    def valid(value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text if text and VERSION_RE.match(text) else None
+
+    if "modrinth.index.json" in names:
+        index = read_json("modrinth.index.json")
+        deps = index.get("dependencies") if isinstance(index, dict) else None
+        return valid(deps.get("minecraft")) if isinstance(deps, dict) else None
+    # Server packs often sit in one top-level folder (see _hoist_single_folder).
+    kept = [n for n in names if n.split("/", 1)[0] not in _JUNK]
+    tops = {n.split("/", 1)[0] for n in kept}
+    prefix = ""
+    if len(tops) == 1:
+        only = next(iter(tops))
+        if all("/" in n for n in kept) and only.lower() not in _CONTENT_DIRS:
+            prefix = only + "/"
+    local = [n[len(prefix):] for n in kept if n.startswith(prefix)]
+
+    meta = read_json(prefix + PACK_META_FILE)
+    if isinstance(meta, dict):
+        deps = meta.get("dependencies") if isinstance(meta.get("dependencies"), dict) else {}
+        found = valid(meta.get("minecraft_version")) or valid(deps.get("minecraft"))
+        if found:
+            return found
+    manifest = read_json(prefix + "manifest.json")
+    if isinstance(manifest, dict) and isinstance(manifest.get("minecraft"), dict):
+        found = valid(manifest["minecraft"].get("version"))
+        if found:
+            return found
+    try:
+        info = archive.getinfo(prefix + "variables.txt")
+        if info.file_size <= _PEEK_JSON_LIMIT:
+            for line in archive.read(info).decode("utf-8", "replace").splitlines():
+                if "=" in line and not line.lstrip().startswith("#"):
+                    key, value = line.split("=", 1)
+                    if key.strip().upper() == "MINECRAFT_VERSION":
+                        found = valid(value.strip().strip('"'))
+                        if found:
+                            return found
+    except (KeyError, zipfile.BadZipFile, zlib.error, EOFError, OSError, RuntimeError):
+        pass
+    intermediary: list[str] = []
+    for rel in local:
+        parts = rel.split("/")
+        if len(parts) == 1:
+            match = re.fullmatch(r"fabric-server-mc\.(.+?)-loader\.(.+?)-launcher\..+\.jar", rel)
+            if match and valid(match.group(1)):
+                return match.group(1)
+        if parts[:4] == ["libraries", "net", "fabricmc", "intermediary"] and len(parts) > 5 and valid(parts[4]):
+            intermediary.append(parts[4])
+    if intermediary:
+        return _newest(intermediary)
+    for rel in local:
+        parts = rel.split("/")
+        if parts[:2] == [".fabric", "server"] and len(parts) == 3:
+            match = re.fullmatch(r"(.+)-server\.jar", parts[2])
+            if match and valid(match.group(1)):
+                return match.group(1)
+    for rel in sorted(local):
+        parts = rel.split("/")
+        if parts[:4] == ["libraries", "net", "minecraftforge", "forge"] and len(parts) > 5 and "-" in parts[4]:
+            found = valid(parts[4].split("-", 1)[0])
+            if found:
+                return found
+    for rel in sorted(local):
+        if "/" in rel:
+            continue
+        match = re.fullmatch(r"forge-(\d[\w.]*?)-(\d[\w.\-]*?)(-universal|-installer|-server)?\.jar", rel)
+        if match and valid(match.group(1)):
+            return match.group(1)
+        match = re.fullmatch(r"minecraft_server\.(.+)\.jar", rel)
+        if match and valid(match.group(1)):
+            return match.group(1)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -3204,6 +4061,8 @@ PROPERTY_DEFAULTS = {
     "white-list": "false",
     "enforce-whitelist": "false",
 }
+# Applied live with `whitelist on|off`; never part of a pending restart.
+_LIVE_PROPERTIES = ("white-list", "enforce-whitelist")
 # Written when missing so new servers start with modest load.
 _SEED_KEYS = ("motd", "view-distance", "simulation-distance", "spawn-protection", "online-mode", "white-list")
 
@@ -3249,12 +4108,39 @@ def _apply_managed_properties(version: str, level: str, run_dir: str) -> None:
 _prepared_digest: str | None = None
 
 
+def _pending_properties(cfg: dict[str, Any] | None = None) -> dict[str, str]:
+    cfg = cfg if cfg is not None else load_config()
+    return dict((cfg.get("settings") or {}).get(PENDING_PROPERTIES) or {})
+
+
+def _saved_properties(cfg: dict[str, Any] | None = None) -> dict[str, str]:
+    """server.properties as the owner saved it: the file plus any saved
+    settings Minecraft has since written over (see PENDING_PROPERTIES)."""
+    return {**read_properties(), **_pending_properties(cfg)}
+
+
+def apply_pending_properties(clear: bool = True) -> bool:
+    """Write saved-but-overwritten settings back into server.properties.
+    ``clear`` forgets them afterwards (only once Minecraft is down, since a
+    running server can overwrite the file again). Returns True if any."""
+    with _CONFIG_LOCK:
+        pending = _pending_properties()
+        if not pending:
+            return False
+        current = read_properties()
+        changed = {k: v for k, v in pending.items() if current.get(k) != v}
+        if changed:
+            write_properties(changed)
+        if clear:
+            _mutate_config(lambda c: c["settings"].pop(PENDING_PROPERTIES, None))
+        return True
+
+
 def _user_properties_digest() -> str:
-    values = read_properties()
+    values = _saved_properties()
     # The whitelist switch is applied live with `whitelist on|off`, so it
     # never needs a restart.
-    live = ("white-list", "enforce-whitelist")
-    relevant = {k: values.get(k) for k in PROPERTY_DEFAULTS if k not in live}
+    relevant = {k: values.get(k) for k in PROPERTY_DEFAULTS if k not in _LIVE_PROPERTIES}
     return hashlib.sha1(json.dumps(relevant, sort_keys=True).encode()).hexdigest()
 
 
@@ -3293,7 +4179,7 @@ def get_settings() -> dict[str, Any]:
     cfg = load_config()
     version = _active_version(cfg)
     schema = copy.deepcopy(settings_schema(version))
-    raw = read_properties()
+    raw = _saved_properties(cfg)
     values = {}
     for key, item in schema.items():
         values[key] = _typed(item, key, raw.get(key))
@@ -3390,8 +4276,16 @@ def update_settings(
             run = _active_run_dir(cfg)
             if run and os.path.isfile(os.path.join(run, "server.properties")):
                 write_properties(updates, os.path.join(run, "server.properties"))
-        if rp_updates:
-            _mutate_config(lambda c: c["settings"].update(rp_updates))
+
+        def apply(c: dict[str, Any]) -> None:
+            c["settings"].update(rp_updates)
+            if updates:
+                pending = dict(c["settings"].get(PENDING_PROPERTIES) or {})
+                pending.update(updates)
+                c["settings"][PENDING_PROPERTIES] = pending
+
+        if updates or rp_updates:
+            _mutate_config(apply)
     return {"ok": True, "restart_required": restart_required()}
 
 
@@ -3457,6 +4351,11 @@ def _backup_meta(path: str) -> dict[str, Any]:
                 meta.setdefault("created_at", stamp.isoformat().replace("+00:00", "Z"))
             except ValueError:
                 pass
+    if not meta.get("world"):
+        # No metadata (e.g. an imported plain world archive): the name says.
+        match = re.fullmatch(r"(.+?)-(?:pre-[a-z]+-|auto-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz", os.path.basename(path))
+        if match and NAME_RE.match(match.group(1)):
+            meta["world"] = match.group(1)
     meta.setdefault("created_at", _iso(st.st_mtime))
     _BACKUP_META_CACHE[path] = (key, meta)
     return meta
@@ -3516,12 +4415,14 @@ def create_backup(
     before_tar: Callable[[], Any] | None = None,
     after_tar: Callable[[], Any] | None = None,
     kind: str = "manual",
+    protect: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Archive one world (plus railpowered-backup.json) as
     backups/<world>-<YYYYmmdd-HHMMSS>.tar.gz. Written to a hidden .tmp and
     renamed when complete; a failure leaves nothing behind. ``before_tar``
     (e.g. save-off + save-all flush) runs first and ``after_tar`` (save-on)
-    always runs afterwards."""
+    always runs afterwards. An automatic backup prunes older automatic ones
+    (BACKUP_KEEP), never the names in ``protect``."""
     ensure_layout()
     cfg = load_config()
     world = validate_name(world or _active_setup(cfg)["level_name"], "world")
@@ -3582,7 +4483,7 @@ def create_backup(
         raise
     st = os.stat(final)
     if kind != "manual":
-        _prune_automatic_backups(world, keep_name=name)
+        _prune_automatic_backups(world, keep_names={name, *protect})
     _say(f"Backed up world '{world}' as {name}.")
     return {
         "name": name,
@@ -3610,16 +4511,23 @@ def _auto_backup(world: str, kind: str) -> str | None:
     return create_backup(world, kind=kind)["name"]
 
 
-def _prune_automatic_backups(world: str, keep_name: str | None = None) -> None:
+def _prune_automatic_backups(world: str, keep_names: set[str] | None = None) -> None:
     """Keep the newest BACKUP_KEEP automatic backups of ``world`` (0 = all).
-    Manual backups are never pruned; ``keep_name`` (just written) always stays."""
+    Manual and imported backups are never pruned (only names that say their
+    kind, <world>-<kind>-<stamp>, are automatic); ``keep_names`` (the one just
+    written, a restore's source) always stay."""
     keep = _env_int("BACKUP_KEEP", 0, minimum=0)
     if keep <= 0:
         return
+    protected = {n for n in (keep_names or set()) if n}
     automatic = [
         b for b in list_backups()
-        if b["world"] == world and b["kind"] != "manual" and b["name"] != keep_name
+        if b["world"] == world and b["kind"] != "manual"
+        and b["name"].startswith(f"{world}-{b['kind']}-")
     ]
+    # Protected automatic backups use up slots; the rest compete for what's left.
+    slots = keep - sum(1 for b in automatic if b["name"] in protected)
+    automatic = [b for b in automatic if b["name"] not in protected]
 
     def age(item: dict[str, Any]) -> tuple[str, int]:
         try:
@@ -3629,11 +4537,65 @@ def _prune_automatic_backups(world: str, keep_name: str | None = None) -> None:
         return (str(item["created_at"] or ""), mtime)
 
     automatic.sort(key=age, reverse=True)
-    for item in automatic[max(0, keep - (1 if keep_name else 0)):]:
+    for item in automatic[max(0, slots):]:
         try:
             delete_backup(item["name"])
         except (InstallError, OSError):
             pass
+
+
+def import_backup(path: str) -> dict[str, Any]:
+    """Add an uploaded .tar.gz (a Railpowered backup, or any archive of one
+    world folder) to backups/ as <world>-<stamp>.tar.gz. It is checked the
+    way restore_backup reads it: safe member paths, one world with a
+    level.dat. ``path`` is moved into place (the caller deletes it on error)."""
+    ensure_layout()
+    try:
+        archive = tarfile.open(path, "r:gz")
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        raise InstallError(
+            "That file isn't a .tar.gz backup.", code="invalid_backup", detail=str(exc)
+        ) from exc
+    meta: dict[str, Any] = {}
+    try:
+        with archive:
+            members = []
+            for member in archive:
+                members.append(member)
+                if len(members) > MAX_ZIP_ENTRIES:
+                    raise InstallError("That backup has too many files.", code="too_large")
+                if member.name == BACKUP_META_FILE and member.isfile() and member.size <= 65536:
+                    handle = archive.extractfile(member)
+                    try:
+                        loaded = json.loads(handle.read().decode("utf-8")) if handle else None
+                    except (ValueError, UnicodeDecodeError):
+                        loaded = None
+                    if isinstance(loaded, dict):
+                        meta = loaded
+    except (tarfile.TarError, OSError, EOFError, zlib.error) as exc:
+        raise InstallError("That backup file is damaged.", code="invalid_backup", detail=str(exc)) from exc
+    world, prefix = _backup_world_prefix(members, meta)
+    has_level = False
+    for member in members:
+        name = member.name.replace("\\", "/")
+        parts = [p for p in name.split("/") if p not in ("", ".")]
+        if name.startswith("/") or ".." in parts or (parts and ":" in parts[0]):
+            raise InstallError("This backup contains unsafe paths.", code="invalid_backup")
+        if member.isfile() and name == prefix + "level.dat":
+            has_level = True
+    if not has_level:
+        raise InstallError(
+            f"This archive doesn't contain a Minecraft world ({prefix}level.dat is missing).",
+            code="invalid_backup",
+        )
+    validate_name(world, "world")
+    with _BACKUP_LOCK:
+        name = _backup_name(world, "manual")
+        final = os.path.join(paths()["backups"], name)
+        os.replace(path, final)
+    _BACKUP_META_CACHE.pop(final, None)
+    _say(f"Added backup {name} of world '{world}'.")
+    return next((b for b in list_backups() if b["name"] == name), {"name": name, "world": world})
 
 
 def delete_backup(name: str) -> None:
@@ -3682,6 +4644,10 @@ def restore_backup(name: str, target: str | None = None) -> dict[str, Any]:
                 meta = _backup_meta(source)
                 world, prefix = _backup_world_prefix(members, meta)
                 dest_name = validate_name(target or world, "world")
+                # If this is cut short after the world was moved aside, the
+                # boot sweep (recover_interrupted) knows where it belongs.
+                with open(os.path.join(staging, RESTORE_TARGET_FILE), "w", encoding="utf-8") as handle:
+                    handle.write(dest_name)
                 limit = _extract_limit(worlds)
                 total = 0
                 restored = os.path.join(staging, "world")
@@ -3712,7 +4678,8 @@ def restore_backup(name: str, target: str | None = None) -> dict[str, Any]:
             dest = world_path(dest_name)
             pre = None
             if os.path.isdir(dest) and os.listdir(dest):
-                pre = create_backup(dest_name, kind="pre-restore")["name"]
+                # The archive being restored is never pruned to make room.
+                pre = create_backup(dest_name, kind="pre-restore", protect=(name,))["name"]
             old = None
             if os.path.lexists(dest):
                 old = os.path.join(staging, "old")
@@ -3732,7 +4699,31 @@ def restore_backup(name: str, target: str | None = None) -> dict[str, Any]:
             "name": name,
             "pre_restore_backup": pre,
             "last_version": world_meta(dest_name).get("last_version"),
+            "downgrade_warning": _restored_downgrade_warning(dest_name),
         }
+
+
+def _restored_downgrade_warning(world: str) -> dict[str, Any] | None:
+    """The restored world may come from a newer version than the active
+    setup runs (its sidecar is part of the backup). Say so now, rather than
+    let the next start fail with world_downgrade."""
+    try:
+        cfg = load_config()
+        setup = _active_setup(cfg)
+        if setup["level_name"] != world:
+            return None
+        version = _display_version(setup)
+        newest = _downgrade_from(world, version) if version else None
+    except InstallError:
+        return None
+    if not newest:
+        return None
+    message = (
+        f"The restored world '{world}' has been played on Minecraft {newest}, newer than this "
+        f"setup's {version}. Starting it will ask you to confirm the downgrade first."
+    )
+    _say(message)
+    return {"world": world, "newest_version": newest, "version": version, "message": message}
 
 
 # ---------------------------------------------------------------------------
@@ -3763,14 +4754,19 @@ def _uuid_cache() -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _cached_uuid(name: str) -> tuple[str, str] | None:
+def _cached_uuid(name: str, allow_expired: bool = False) -> tuple[str, str] | None:
+    """(name, online UUID) from the cache. Expired entries count only with
+    ``allow_expired`` (a last resort when Mojang can't be reached)."""
     entry = _uuid_cache().get(name.casefold())
     if not isinstance(entry, dict):
         return None
     try:
-        if _now() - float(entry.get("at") or 0) > UUID_CACHE_TTL:
+        if not allow_expired and _now() - float(entry.get("at") or 0) > UUID_CACHE_TTL:
             return None
-        return str(entry["name"]), dashed_uuid(entry["uuid"])
+        exact = str(entry["name"])
+        if not PLAYER_NAME_RE.match(exact):
+            return None
+        return exact, dashed_uuid(entry["uuid"])
     except (KeyError, TypeError, ValueError, InstallError):
         return None
 
@@ -3783,6 +4779,64 @@ def _store_uuid(name: str, uuid: str) -> None:
             _atomic_write_json(paths()["uuid_cache"], cache)
         except OSError:
             pass
+
+
+def _remember_online_uuids(entries: dict[str, str]) -> None:
+    """Keep online UUIDs that an offline-mode render is about to replace, so a
+    later switch back to online mode can restore them even without Mojang.
+    They are stored as unverified ("at": 0): a fresh lookup still wins."""
+    with _CONFIG_LOCK:
+        cache = _uuid_cache()
+        changed = False
+        for name, uuid in entries.items():
+            current = cache.get(name.casefold())
+            if isinstance(current, dict) and current.get("uuid") == uuid:
+                continue
+            cache[name.casefold()] = {"name": name, "uuid": uuid, "at": 0}
+            changed = True
+        if changed:
+            try:
+                _atomic_write_json(paths()["uuid_cache"], cache)
+            except OSError:
+                pass
+
+
+# Render-time lookups (on start) share one budget and back off after a failure,
+# so a slow Mojang can't hold a wake-up for minutes.
+LOOKUP_BUDGET = 20.0
+_MOJANG_FAILED_AT = [0.0]
+
+
+def _resolve_online_uuids(names: list[str], network: bool) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """Online (name, UUID) for players whose entry holds an offline UUID.
+    Runs without any lock held. Returns ({casefolded name: (name, uuid)}, warnings)."""
+    resolved: dict[str, tuple[str, str]] = {}
+    warnings: list[str] = []
+    deadline = time.monotonic() + LOOKUP_BUDGET
+    use_network = network and _now() - _MOJANG_FAILED_AT[0] >= NETWORK_RETRY_AFTER
+    for name in names:
+        found = _cached_uuid(name)
+        if found is None and use_network and time.monotonic() < deadline:
+            try:
+                found = lookup_player(name, network=True)
+            except InstallError as exc:
+                if exc.code == "player_not_found":
+                    warnings.append(f"{name}: {exc}")
+                    continue
+                _MOJANG_FAILED_AT[0] = _now()
+                use_network = False
+        if found is None:
+            found = _cached_uuid(name, allow_expired=True)
+            if found is not None:
+                warnings.append(f"{name}: Mojang couldn't be reached; using the last known account ID.")
+        if found is None:
+            warnings.append(
+                f"{name}: Couldn't check this player with Mojang, so they may be refused until "
+                "the next start. Re-add them on the Players page if it keeps happening."
+            )
+            continue
+        resolved[name.casefold()] = found
+    return resolved, warnings
 
 
 def lookup_player(name: str, network: bool = True) -> tuple[str, str]:
@@ -3807,6 +4861,8 @@ def lookup_player(name: str, network: bool = True) -> tuple[str, str]:
             try:
                 data = json.loads(body.decode("utf-8"))
                 exact = str(data.get("name") or name)
+                if not PLAYER_NAME_RE.match(exact):
+                    exact = name  # never let a reply put an odd name in a console command
                 uuid = dashed_uuid(str(data.get("id") or ""))
             except (ValueError, AttributeError, InstallError, UnicodeDecodeError) as exc:
                 last = InstallError("bad reply", code="network", detail=str(exc))
@@ -3890,7 +4946,9 @@ def _canonical_path(kind: str) -> str:
 
 def _load_list(kind: str) -> list[dict[str, Any]]:
     entries = _read_entries(kind, _canonical_path(kind))
-    if entries:
+    if entries is not None:
+        # An empty list is a real answer ("nobody"): falling back to a .txt
+        # here would bring back the last player someone just removed.
         return entries
     names = _read_txt_names(os.path.join(DATA_DIR, _LIST_FILES[kind][1])) or []
     return _dedupe([e for e in (_normalize_entry(kind, n) for n in names) if e])
@@ -3916,26 +4974,40 @@ def _effective_online_mode(version: str) -> bool:
 def _render_access_lists(version: str, run_dir: str, network: bool = False) -> list[str]:
     """Write the canonical lists in the format ``version`` reads, into
     ``run_dir``, fixing UUIDs for the current online mode. Returns warnings."""
-    warnings = []
+    warnings: list[str] = []
     online = _effective_online_mode(version)
     json_lists = uses_json_lists(version)
     same_dir = os.path.realpath(run_dir) == os.path.realpath(DATA_DIR)
+    resolved: dict[str, tuple[str, str]] = {}
+    if online:
+        # Mojang lookups happen without _CONFIG_LOCK: holding it across the
+        # network would stall status, settings and the sleep proxy's pings.
+        with _CONFIG_LOCK:
+            pending = {
+                entry["name"]
+                for kind in _LIST_FILES
+                for entry in _load_list(kind)
+                if entry["uuid"] == offline_uuid(entry["name"])
+            }
+        if pending:
+            resolved, warnings = _resolve_online_uuids(sorted(pending, key=str.casefold), network)
     with _CONFIG_LOCK:
+        remember: dict[str, str] = {}
         for kind in _LIST_FILES:
             entries = _load_list(kind)
             converted = []
             for entry in entries:
                 entry = dict(entry)
                 if online and entry["uuid"] == offline_uuid(entry["name"]):
-                    try:
-                        exact, uuid = lookup_player(entry["name"], network=network)
-                        entry["uuid"] = uuid
-                        entry["name"] = exact
-                    except InstallError as exc:
-                        warnings.append(f"{entry['name']}: {exc}")
+                    found = resolved.get(entry["name"].casefold())
+                    if found:
+                        entry["name"], entry["uuid"] = found
                 elif not online:
+                    if entry["uuid"] != offline_uuid(entry["name"]):
+                        remember[entry["name"]] = entry["uuid"]
                     entry["uuid"] = offline_uuid(entry["name"])
                 converted.append(entry)
+            converted = _dedupe(converted)
             if _list_key(converted) != _list_key(_read_entries(kind, _canonical_path(kind)) or []):
                 _save_list(kind, converted)
             json_name, txt_name = _LIST_FILES[kind]
@@ -3944,6 +5016,8 @@ def _render_access_lists(version: str, run_dir: str, network: bool = False) -> l
                     _atomic_write_json(os.path.join(run_dir, json_name), converted)
             else:
                 _atomic_write(os.path.join(run_dir, txt_name), "".join(e["name"] + "\n" for e in converted))
+        if remember:
+            _remember_online_uuids(remember)
     for warning in warnings:
         _say(f"Player list: {warning}")
     return warnings
@@ -4071,6 +5145,11 @@ def add_player(kind: str, name: str) -> dict[str, Any]:
         entries = _load_list(kind)
         if not any(e["name"].casefold() == exact.casefold() for e in entries):
             entry = _normalize_entry(kind, {"uuid": uuid, "name": exact})
+            if entry is None:
+                raise InstallError(
+                    "Player names are 1 to 16 letters, numbers or underscores.",
+                    code="invalid_player_name",
+                )
             entries.append(entry)
             _save_list(kind, entries)
         _render_to_active(cfg, version)
@@ -4102,14 +5181,22 @@ def _render_to_active(cfg: dict[str, Any], version: str) -> None:
         _render_access_lists(version, run_dir, network=False)
 
 
-def set_whitelist_enabled(enabled: bool) -> bool:
-    """Turn whitelist enforcement on/off (white-list + enforce-whitelist)."""
+def set_whitelist_enabled(enabled: bool, keep: dict[str, str] | None = None) -> bool:
+    """Turn whitelist enforcement on/off (white-list + enforce-whitelist).
+
+    ``keep`` is server.properties as read just before Minecraft handled
+    `whitelist on|off`; Minecraft wrote its in-memory copy over the file, so
+    every other key that changed is put back, as are saved settings."""
     if not isinstance(enabled, bool):
         raise InstallError("Whitelist must be on or off.", code="invalid_setting")
     value = "true" if enabled else "false"
     updates = {"white-list": value, "enforce-whitelist": value}
     with _CONFIG_LOCK:
         cfg = load_config()
+        current = read_properties()
+        restore = {k: v for k, v in (keep or {}).items() if k not in _LIVE_PROPERTIES}
+        restore.update(_pending_properties(cfg))
+        updates = {**{k: v for k, v in restore.items() if current.get(k) != v}, **updates}
         write_properties(updates)
         run = _active_run_dir(cfg)
         if run and os.path.isfile(os.path.join(run, "server.properties")):
@@ -4127,6 +5214,7 @@ def _reset_caches() -> None:
     with _NET_LOCK:
         _JSON_CACHE.clear()
         _FAILED_AT.clear()
+        _MOJANG_FAILED_AT[0] = 0.0
     with _CONFIG_LOCK:
         _config_cache = None
         _config_warnings.clear()

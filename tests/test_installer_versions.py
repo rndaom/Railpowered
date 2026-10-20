@@ -65,6 +65,16 @@ class JavaSelectionTests(InstallerTestCase):
         self.assertEqual((major, home), (21, self.java_homes[21]))
         self.assertTrue(exe.startswith(self.java_homes[21]))
 
+    def test_java_17_is_used_when_the_image_has_it(self):
+        home = os.path.join(self.tmp, "java", "17")
+        os.makedirs(os.path.join(home, "bin"))
+        with open(os.path.join(home, "bin", "java"), "w", encoding="utf-8") as handle:
+            handle.write("")
+        installer.JAVA_HOMES[17] = home
+        self.assertEqual(installer.select_java(17)[:1], (17,))
+        self.assertEqual(installer.java_major_for_version("1.20.1", "forge"), 17)
+        self.assertEqual(installer.select_java(21)[0], 21)
+
     def test_missing_java(self):
         del installer.JAVA_HOMES[8]
         with self.assertRaises(installer.InstallError) as ctx:

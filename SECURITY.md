@@ -43,8 +43,9 @@ share and to scan for, so a few habits matter:
 
 - **Use a long `ADMIN_KEY`.** Four or more random words, or 20+ random
   characters. Anyone with the key controls your server, including uploading
-  modpacks that run code. Failed sign-ins are rate limited, but a short or
-  reused key is still the weakest point.
+  modpacks that run code. Failed sign-ins are limited per address, and a
+  flood of them from many addresses slows every sign-in down (it never locks
+  you out), but a short or reused key is still the weakest point.
 - **Know where a generated key appears.** If `ADMIN_KEY` is not set,
   Railpowered generates one, saves it on the volume and prints it in the
   Railway deploy logs, which everyone in your Railway project can read. Set
@@ -56,13 +57,19 @@ share and to scan for, so a few habits matter:
   Add your friends and enable the whitelist from the dashboard's Players page.
 - **Keep online mode on.** With `online-mode=false`, players are not checked
   against Mojang accounts and anyone can join under any name, including an
-  operator's. Only turn it off for old versions that need it, and only with
-  the whitelist on.
-- **Only install mods and modpacks you trust.** They run inside the server
-  with access to everything on the volume, including worlds and backups.
-  Railpowered runs Minecraft as an unprivileged user and keeps the dashboard
-  key out of the server's environment, but a malicious mod can still damage
-  your worlds.
+  operator's. Setups on Minecraft 1.6.4 and older always run with online mode
+  off, because Mojang's old login servers are gone; Railpowered does that for
+  you and the dashboard hides the switch. Turn the whitelist on for those
+  setups and keep the operator list short.
+- **Only install mods and modpacks you trust.** Mods and modpacks run with the
+  same permissions as the dashboard. A malicious one can read the dashboard
+  key (from the manager process or the files on the volume), sign in to the
+  dashboard, and change or delete worlds and backups. Railpowered runs
+  Minecraft as an unprivileged user and leaves the key out of the server's
+  environment, but that does not separate the two.
+- **Sign out devices you no longer use.** Logging out ends that browser's
+  session for good, also across restarts. "Sign out everywhere" in the
+  dashboard ends every session at once; changing `ADMIN_KEY` does too.
 - **Download backups you care about.** Backups live on the same Railway volume
   as the worlds, so deleting the volume or the service deletes them too.
 - **Keep Railway variables and logs private.** Don't share screenshots of the

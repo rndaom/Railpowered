@@ -38,6 +38,12 @@ class Task:
     started_at: int = field(default_factory=lambda: int(time.time()))
     finished_at: int | None = None
     result: Any = None
+    # Why it failed, for the dashboard to act on (e.g. "world_downgrade" with
+    # the world and versions in data, so it can offer "back up and open
+    # anyway"), and a note to show when it finished (a warning, not an error).
+    code: str | None = None
+    data: dict[str, Any] = field(default_factory=dict)
+    note: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -46,6 +52,9 @@ class Task:
             "label": self.label,
             "state": self.state,
             "error": self.error,
+            "code": self.code,
+            "data": dict(self.data),
+            "note": self.note,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
         }
@@ -61,6 +70,10 @@ class TaskContext:
     def set_label(self, label: str) -> None:
         with self._runner.lock:
             self.task.label = label
+
+    def set_note(self, note: str | None) -> None:
+        with self._runner.lock:
+            self.task.note = note
 
 
 class TaskRunner:
@@ -118,10 +131,17 @@ class TaskRunner:
         label: str,
         fn: Callable[[TaskContext], Any],
         on_success: Callable[[Task], None] | None = None,
+        guard: Callable[[], Any] | None = None,
     ) -> Task:
+        """Start ``fn`` in the background. ``guard`` runs under the task lock
+        right before the task is created and may raise to refuse it (the
+        server controller uses it so tasks never interleave with a start or
+        stop that is in flight)."""
         with self.lock:
             if self.current is not None:
                 raise TaskBusy(self.current)
+            if guard is not None:
+                guard()
             task = Task(id=f"t{next(self._ids)}", kind=kind, label=label)
             self.current = task
             self._idle.clear()
@@ -149,10 +169,14 @@ class TaskRunner:
         fn: Callable[[TaskContext], Any],
         on_success: Callable[[Task], None] | None,
     ) -> None:
+        from .process import ServerError  # process imports this module
+
         try:
             task.result = fn(TaskContext(self, task))
         except installer.InstallError as exc:
-            self._finish(task, "failed", str(exc) or GENERIC_FAILURE)
+            self._finish(task, "failed", str(exc) or GENERIC_FAILURE, exc)
+        except ServerError as exc:  # e.g. "The server is already stopping."
+            self._finish(task, "failed", str(exc) or GENERIC_FAILURE, exc)
         except Exception as exc:  # unexpected: keep the traceback out of the UI
             print(traceback.format_exc(), flush=True)
             self._log(f"{task.label} failed unexpectedly: {type(exc).__name__}", "error")
@@ -165,10 +189,16 @@ class TaskRunner:
                 except Exception:
                     print(traceback.format_exc(), flush=True)
 
-    def _finish(self, task: Task, result: str, error: str | None) -> None:
+    def _finish(
+        self, task: Task, result: str, error: str | None, exc: BaseException | None = None
+    ) -> None:
         with self.lock:
             task.state = result
             task.error = error
+            if exc is not None:
+                task.code = str(getattr(exc, "code", None) or "") or None
+                data = getattr(exc, "data", None)
+                task.data = dict(data) if isinstance(data, dict) else {}
             task.finished_at = int(time.time())
             self.last = task
             self.current = None

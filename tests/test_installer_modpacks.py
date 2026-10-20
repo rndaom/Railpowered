@@ -5,6 +5,8 @@ import hashlib
 import io
 import json
 import os
+import threading
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -173,6 +175,109 @@ class ZipServerPackTests(ModpackTestCase):
         self.assertTrue(os.path.isfile(archive))
 
 
+class StagedInstallTests(ModpackTestCase):
+    """stage -> commit -> finalize / rollback (what the dashboard uses)."""
+
+    def mods(self, name="mypack"):
+        return sorted(os.listdir(self.instance(name, "mods")))
+
+    def setup_version(self, name="mypack"):
+        return next(s for s in installer.list_setups() if s["instance"] == name)["minecraft_version"]
+
+    def hidden(self):
+        return sorted(n for n in os.listdir(self.path("instances")) if n.startswith("."))
+
+    def test_staging_changes_nothing_in_use_until_commit(self):
+        installer.create_setup(installer.install_modpack_archive(self.fabric_server_zip(mods=("old.jar",)), "mypack"))
+        staged = installer.stage_modpack_archive(
+            self.fabric_server_zip(version="1.20.4", mods=("new.jar",), name="v2.zip"), "mypack")
+        self.assertEqual(self.mods(), ["old.jar"])
+        self.assertEqual(self.setup_version(), "1.20.1")
+        self.assertEqual(staged.fields["minecraft_version"], "1.20.4")
+        swap = installer.commit_modpack(staged)
+        self.assertEqual(self.mods(), ["new.jar"])
+        self.assertEqual(self.setup_version(), "1.20.4")
+        self.assertEqual(len(self.hidden()), 1)  # the previous copy, until finalized
+        installer.finalize_modpack(swap)
+        self.assertEqual(self.hidden(), [])
+
+    def test_rollback_puts_the_previous_pack_and_versions_back(self):
+        installer.create_setup(installer.install_modpack_archive(self.fabric_server_zip(mods=("old.jar",)), "mypack"))
+        staged = installer.stage_modpack_archive(
+            self.fabric_server_zip(version="1.20.4", mods=("new.jar",), name="v2.zip"), "mypack")
+        swap = installer.commit_modpack(staged)
+        installer.rollback_modpack(swap)
+        self.assertEqual(self.mods(), ["old.jar"])
+        self.assertEqual(self.setup_version(), "1.20.1")
+        self.assertEqual(self.hidden(), [])
+        installer.finalize_modpack(swap)  # nothing left to delete
+        self.assertEqual(self.mods(), ["old.jar"])
+
+    def test_rollback_of_a_first_install_removes_it(self):
+        swap = installer.commit_modpack(installer.stage_modpack_archive(self.fabric_server_zip(), "mypack"))
+        self.assertTrue(os.path.isdir(self.instance("mypack")))
+        installer.rollback_modpack(swap)
+        self.assertFalse(os.path.exists(self.instance("mypack")))
+        self.assertEqual(self.hidden(), [])
+
+    def test_discard_staged(self):
+        staged = installer.stage_modpack_archive(self.fabric_server_zip(), "mypack")
+        self.assertEqual(len(self.hidden()), 1)
+        installer.discard_staged(staged)
+        self.assertEqual(self.hidden(), [])
+        self.assertFalse(os.path.exists(self.instance("mypack")))
+        with self.assertRaises(installer.InstallError):
+            installer.commit_modpack(staged)
+
+    def test_downgrade_guard_runs_before_the_loader_install(self):
+        self.make_world("mypack", last_version="1.21.1")
+        archive = self.make_zip({
+            "libraries/net/fabricmc/intermediary/1.20.1/intermediary-1.20.1.jar": b"i",
+            "mods/a.jar": self.make_mod_jar(),
+        })
+        with self.assertRaises(installer.InstallError) as ctx:
+            installer.stage_modpack_archive(archive, "mypack")
+        self.assertEqual(ctx.exception.code, "world_downgrade")
+        self.assertEqual(ctx.exception.data["newest_version"], "1.21.1")
+        self.assertEqual(self.fabric_calls, [])
+        self.assert_no_leftovers()
+        staged = installer.stage_modpack_archive(archive, "mypack", allow_downgrade=True)
+        self.assertEqual(self.fabric_calls, [("1.20.1", None)])
+        installer.discard_staged(staged)
+
+
+class PeekVersionTests(ModpackTestCase):
+    def peek(self, entries):
+        return installer.peek_pack_version(self.make_zip(entries, "peek.zip"))
+
+    def test_declared_versions(self):
+        cases = [
+            ({"modrinth.index.json": json.dumps({"dependencies": {"minecraft": "1.20.1"}})}, "1.20.1"),
+            ({"Pack/fabric-server-mc.1.21.1-loader.0.16.5-launcher.1.0.1.jar": "x",
+              "Pack/mods/a.jar": "x", "__MACOSX/._x": ""}, "1.21.1"),
+            ({"manifest.json": json.dumps({"minecraft": {"version": "1.12.2"}})}, "1.12.2"),
+            ({"S/variables.txt": "MINECRAFT_VERSION=1.20.4\n", "S/run.sh": "x"}, "1.20.4"),
+            ({"libraries/net/minecraftforge/forge/1.16.5-36.2.39/x.jar": "x"}, "1.16.5"),
+            ({"libraries/net/fabricmc/intermediary/1.19.2/i.jar": "x",
+              "libraries/net/fabricmc/intermediary/1.20.1/i.jar": "x"}, "1.20.1"),
+            ({"forge-1.16.5-36.2.39.jar": "x"}, "1.16.5"),
+            ({"minecraft_server.1.7.10.jar": "x"}, "1.7.10"),
+            ({installer.PACK_META_FILE: json.dumps({"minecraft_version": "1.18.2"})}, "1.18.2"),
+        ]
+        for entries, expected in cases:
+            with self.subTest(expected=expected):
+                self.assertEqual(self.peek(entries), expected)
+
+    def test_unknown_or_unreadable_is_none(self):
+        self.assertIsNone(self.peek({"readme.txt": "x"}))
+        self.assertIsNone(self.peek({"modrinth.index.json": "{not json"}))
+        self.assertIsNone(self.peek({"modrinth.index.json": json.dumps({"dependencies": {"minecraft": "../x"}})}))
+        bad = os.path.join(self.tmp, "bad.zip")
+        with open(bad, "wb") as handle:
+            handle.write(b"not a zip")
+        self.assertIsNone(installer.peek_pack_version(bad))
+
+
 class DetectionTests(ModpackTestCase):
     def detect(self, entries):
         directory = os.path.join(self.tmp, "detect")
@@ -286,6 +391,41 @@ class MrpackTests(ModpackTestCase):
         self.assertEqual(ctx.exception.code, "download_failed")
         self.assertFalse(os.path.exists(self.instance("demo")))
 
+    def test_downgrade_guard_runs_before_downloads(self):
+        self.make_world("demo", last_version="1.21.1")
+        archive = self.mrpack([self.mod_file("mods/a.jar", b"A")])
+        with self.assertRaises(installer.InstallError) as ctx:
+            installer.stage_modpack_archive(archive, "demo")
+        self.assertEqual(ctx.exception.code, "world_downgrade")
+        self.assertEqual(self.net.count("a.jar"), 0)
+        self.assertEqual(self.fabric_calls, [])
+        self.assert_no_leftovers()
+
+    def test_first_failed_download_cancels_the_queue(self):
+        started = []
+        lock = threading.Lock()
+
+        def fake_download(url, dest, sha1=None, sha512=None, max_bytes=None, label=None):
+            with lock:
+                started.append(url)
+            if url.endswith("/m0.jar"):
+                raise installer.InstallError("boom", code="download_failed")
+            time.sleep(0.05)
+
+        files = [self.mod_file(f"mods/m{i}.jar", b"x") for i in range(60)]
+        with mock.patch.object(installer, "download_file", side_effect=fake_download):
+            with self.assertRaises(installer.InstallError):
+                installer._install_mrpack(self._unpacked(files), os.path.join(self.tmp, "stage"))
+        self.assertLess(len(started), 30)
+
+    def _unpacked(self, files):
+        directory = os.path.join(self.tmp, "unpacked")
+        os.makedirs(directory, exist_ok=True)
+        index = {"dependencies": {"minecraft": "1.20.1", "fabric-loader": "0.16.14"}, "files": files}
+        with open(os.path.join(directory, "modrinth.index.json"), "w", encoding="utf-8") as handle:
+            json.dump(index, handle)
+        return directory
+
     def test_quilt_and_neoforge_are_unsupported(self):
         for loader in ("quilt-loader", "neoforge"):
             with self.subTest(loader=loader), self.assertRaises(installer.InstallError) as ctx:
@@ -334,6 +474,35 @@ class UrlInstallTests(ModpackTestCase):
             handler.redirect_request(request, None, 302, "Found", {}, "https://evil.example/b")
         new = handler.redirect_request(request, None, 302, "Found", {}, "https://cdn.example/b")
         self.assertTrue(new.public_only)
+        self.assertEqual(new.pinned_ip, "93.184.216.34")
+
+    def test_downloads_connect_to_the_address_that_was_checked(self):
+        seen = []
+
+        def capture(request, timeout=None):
+            seen.append(getattr(request, "pinned_ip", None))
+            raise installer.urllib.error.URLError("stop here")
+
+        self.resolved["pack.example"] = ["93.184.216.34"]
+        with mock.patch.object(installer, "_urlopen", side_effect=capture):
+            with self.assertRaises(installer.InstallError):
+                installer.download_file("https://pack.example/p.mrpack", os.path.join(self.tmp, "p"),
+                                        public_only=True, retries=1)
+        self.assertEqual(seen, ["93.184.216.34"])
+
+    def test_pinned_connection_uses_the_vetted_address_and_the_real_host_name(self):
+        connection = installer._PinnedHTTPSConnection("pack.example", pinned_ip="93.184.216.34", timeout=5)
+        self.assertEqual(connection.host, "pack.example")  # SNI and certificate check
+        with mock.patch.object(installer.socket, "create_connection", return_value="sock") as create:
+            self.assertEqual(connection._create_connection(("pack.example", 443), 5, None), "sock")
+        create.assert_called_once_with(("93.184.216.34", 443), 5, None)
+        handler = installer._PinnedHTTPSHandler()
+        request = installer.urllib.request.Request("https://pack.example/p")
+        request.pinned_ip = "93.184.216.34"
+        with mock.patch.object(handler, "do_open", return_value="response") as do_open:
+            self.assertEqual(handler.https_open(request), "response")
+        made = do_open.call_args[0][0]("pack.example", timeout=5)
+        self.assertEqual((made.host, made.pinned_ip), ("pack.example", "93.184.216.34"))
 
     def test_upload_limit(self):
         os.environ["MAX_UPLOAD_MB"] = "1"

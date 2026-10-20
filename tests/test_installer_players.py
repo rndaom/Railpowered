@@ -3,6 +3,7 @@
 
 import json
 import os
+import threading
 import time
 import unittest
 import urllib.error
@@ -93,6 +94,12 @@ class OnlineModeTests(PlayersTestCase):
         self.mojang("Steve", {"id": "8667ba71b85a4004af54457a9734eed7", "name": "Steve"}, which=1)
         self.assertEqual(installer.add_player("ops", "Steve")["uuid"], "8667ba71-b85a-4004-af54-457a9734eed7")
 
+    def test_odd_name_in_mojang_reply_is_not_trusted(self):
+        self.mojang("Steve", {"id": "8667ba71b85a4004af54457a9734eed7", "name": "Steve\nop Mallory"})
+        added = installer.add_player("ops", "Steve")
+        self.assertEqual(added["name"], "Steve")
+        self.assertEqual([e["name"] for e in self.read_json("ops.json")], ["Steve"])
+
     def test_expired_cache_is_refreshed(self):
         self.write(".uuid-cache.json", json.dumps(
             {"notch": {"name": "Notch", "uuid": NOTCH_ONLINE, "at": int(time.time()) - 40 * 86400}}))
@@ -153,6 +160,26 @@ class ListManagementTests(PlayersTestCase):
         self.write("white-list.txt", "# old list\nAlex\nsteve\nbad name\n")
         self.assertEqual(self.names("whitelist"), ["Alex", "steve"])
 
+    def test_removing_the_last_op_on_a_legacy_server_sticks(self):
+        # 1.6.4 vanilla runs in the data folder, so ops.txt there is the live
+        # file; an empty ops.json must not fall back to it.
+        self.set_setup("vanilla", "1.6.4")
+        installer.add_player("ops", "Steve")
+        self.assertEqual(self.read("ops.txt"), "Steve\n")
+        self.assertTrue(installer.remove_player("ops", "Steve"))
+        self.assertEqual(self.names("ops"), [])
+        self.assertEqual(self.read_json("ops.json"), [])
+        self.assertEqual(self.read("ops.txt"), "")
+        installer.add_player("whitelist", "Alex")
+        self.assertTrue(installer.remove_player("whitelist", "Alex"))
+        self.assertEqual(self.names("whitelist"), [])
+        self.assertEqual(self.read("white-list.txt"), "")
+
+    def test_stale_txt_is_ignored_once_json_says_nobody(self):
+        self.write("ops.txt", "Steve\n")
+        self.write("ops.json", "[]")
+        self.assertEqual(self.names("ops"), [])
+
 
 class ListFormatTests(PlayersTestCase):
     def setUp(self):
@@ -190,6 +217,45 @@ class ListFormatTests(PlayersTestCase):
         self.assertEqual(self.read_json("ops.json")[0]["uuid"], "11111111-2222-3333-4444-555555555555")
         self.assertEqual(len(warnings), 1)  # Bob couldn't be checked; kept as-is
         self.assertEqual(json.loads(self.run_file("whitelist.json"))[0]["name"], "Bob")
+
+    def test_offline_era_keeps_online_ids_for_the_way_back(self):
+        # An offline-mode (or legacy) start rewrites the lists with offline
+        # UUIDs; switching back must restore the real ones even if Mojang is down.
+        self.write("ops.json", json.dumps([{"uuid": NOTCH_ONLINE, "name": "Notch", "level": 4}]))
+        installer._render_access_lists("1.20.1", self.run_dir)
+        self.assertEqual(self.read_json("ops.json")[0]["uuid"], NOTCH_OFFLINE)
+        self.write("server.properties", "online-mode=true\n")
+        installer._render_access_lists("1.20.1", self.run_dir, network=True)  # Mojang unreachable
+        self.assertEqual(self.read_json("ops.json")[0]["uuid"], NOTCH_ONLINE)
+        self.assertEqual(json.loads(self.run_file("ops.json"))[0]["uuid"], NOTCH_ONLINE)
+
+    def test_expired_cache_is_a_fallback_when_mojang_is_down(self):
+        self.write("server.properties", "online-mode=true\n")
+        self.write(".uuid-cache.json", json.dumps(
+            {"alex": {"name": "Alex", "uuid": "11111111-2222-3333-4444-555555555555",
+                      "at": int(time.time()) - 90 * 86400}}))
+        installer._render_access_lists("1.20.1", self.run_dir, network=True)
+        self.assertEqual(self.read_json("ops.json")[0]["uuid"], "11111111-2222-3333-4444-555555555555")
+
+    def test_lookups_run_without_the_config_lock_and_back_off(self):
+        self.write("server.properties", "online-mode=true\n")
+        lock_free = []
+
+        def slow_lookup(name, network=True):
+            probe = threading.Thread(
+                target=lambda: lock_free.append(installer._CONFIG_LOCK.acquire(timeout=2)
+                                                and (installer._CONFIG_LOCK.release() or True))
+            )
+            probe.start()
+            probe.join(5)
+            raise installer.InstallError("down", code="mojang_unreachable")
+
+        with mock.patch.object(installer, "lookup_player", side_effect=slow_lookup) as lookup:
+            installer._render_access_lists("1.20.1", self.run_dir, network=True)
+            self.assertEqual(lookup.call_count, 1)  # Bob is not tried after Alex failed
+            installer._render_access_lists("1.20.1", self.run_dir, network=True)
+            self.assertEqual(lookup.call_count, 1)  # backed off
+        self.assertEqual(lock_free, [True])
 
 
 class SyncBackTests(PlayersTestCase):

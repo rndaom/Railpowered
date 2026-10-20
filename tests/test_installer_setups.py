@@ -190,7 +190,7 @@ class DowngradeTests(SetupTestCase):
         self.assertEqual(os.listdir(self.path("backups")), [])
         self.assertEqual(len(installer.list_setups()), 1)
 
-    def test_allowed_downgrade_takes_backup_first(self):
+    def test_allowed_downgrade_takes_backup_and_never_lowers_the_guard(self):
         installer.create_setup(
             {"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "old"}, allow_downgrade=True
         )
@@ -199,8 +199,118 @@ class DowngradeTests(SetupTestCase):
         self.assertEqual(backups[0]["world"], "old")
         self.assertEqual(backups[0]["kind"], "pre-downgrade")
         meta = installer.world_meta("old")
-        self.assertEqual(meta["last_version"], "1.20.1")
-        self.assertEqual(meta["downgraded_from"], "1.21.1")
+        self.assertEqual(meta["last_version"], "1.21.1")  # 1.20.1 hasn't run yet
+        self.assertEqual(meta["newest_version"], "1.21.1")
+        self.assertEqual(meta["downgrade_ack"]["version"], "1.20.1")
+        self.assertEqual(meta["downgrade_ack"]["from"], "1.21.1")
+        self.assertEqual(meta["downgrade_ack"]["backup"], backups[0]["name"])
+        # The confirmed version may retry without asking again (e.g. after a
+        # crash), but any other older version is still checked against 1.21.1.
+        installer.check_downgrade("old", "1.20.1")
+        installer.prepare_runtime()
+        self.assertEqual(len(installer.list_backups()), 1)
+        with self.assertRaises(installer.InstallError):
+            installer.check_downgrade("old", "1.20.4")
+
+    def test_confirmed_version_that_ran_stays_accepted(self):
+        installer.create_setup(
+            {"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "old"}, allow_downgrade=True
+        )
+        installer.record_world_version("old", "1.20.1", "vanilla")  # it reached "online"
+        meta = installer.world_meta("old")
+        self.assertEqual((meta["last_version"], meta["newest_version"]), ("1.20.1", "1.21.1"))
+        self.assertNotIn("downgrade_ack", meta)
+        self.assertEqual(meta["accepted_downgrades"], ["1.20.1"])
+        installer.check_downgrade("old", "1.20.1")
+        with self.assertRaises(installer.InstallError) as ctx:
+            installer.check_downgrade("old", "1.19.2")
+        self.assertEqual(ctx.exception.data["last_version"], "1.21.1")
+        # A newer version opening it starts the history over.
+        installer.record_world_version("old", "26.3", "vanilla")
+        meta = installer.world_meta("old")
+        self.assertEqual(meta["newest_version"], "26.3")
+        self.assertNotIn("accepted_downgrades", meta)
+        with self.assertRaises(installer.InstallError):
+            installer.check_downgrade("old", "1.20.1")
+
+    def test_failed_downgrade_install_takes_no_backup_and_confirms_nothing(self):
+        with mock.patch.object(installer, "_install_runtime",
+                               side_effect=installer.InstallError("Java 8 is missing", code="java_missing")):
+            for _ in range(3):
+                with self.assertRaises(installer.InstallError):
+                    installer.create_setup({"type": "vanilla", "minecraft_version": "1.20.1",
+                                            "level_name": "old"}, allow_downgrade=True)
+        self.assertEqual(installer.list_backups(), [])
+        self.assertNotIn("downgrade_ack", installer.world_meta("old"))
+
+    def test_retry_reuses_the_backup_while_the_world_is_unchanged(self):
+        first = installer._safety_backup("old", "pre-downgrade")
+        self.assertEqual(installer._safety_backup("old", "pre-downgrade"), first)
+        later = os.path.getmtime(self.path("backups", first)) + 5
+        os.utime(self.path("worlds", "old", "level.dat"), (later, later))
+        self.assertNotEqual(installer._safety_backup("old", "pre-downgrade"), first)
+
+    def test_inactive_setup_only_validates(self):
+        installer.create_setup({"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "old"},
+                               allow_downgrade=True, activate=False)
+        cfg = installer.load_config()
+        setup = next(s for s in cfg["profiles"] if s["level_name"] == "old")
+        installer.update_setup(setup["id"], level_name="old")  # no change
+        self.make_world("other", last_version="1.21.1")
+        with self.assertRaises(installer.InstallError):
+            installer.update_setup(setup["id"], level_name="other")
+        installer.update_setup(setup["id"], level_name="other", allow_downgrade=True)
+        self.assertEqual(installer.list_backups(), [])
+        for world in ("old", "other"):
+            meta = installer.world_meta(world)
+            self.assertEqual(meta["last_version"], "1.21.1")
+            self.assertNotIn("downgrade_ack", meta)
+        with self.assertRaises(installer.InstallError):
+            installer.check_setup_downgrade(setup["id"])
+        installer.activate_setup(setup["id"], allow_downgrade=True)
+        self.assertEqual(installer.world_meta("other")["downgrade_ack"]["version"], "1.20.1")
+        self.assertEqual([b["world"] for b in installer.list_backups()], ["other"])
+
+    def test_sidecars_from_before_newest_version_still_guard(self):
+        directory = self.make_world("legacy")
+        with open(os.path.join(directory, installer.WORLD_META_FILE), "w", encoding="utf-8") as handle:
+            handle.write('{"last_version": "1.20.1", "downgraded_from": "1.21.1"}')
+        with self.assertRaises(installer.InstallError):
+            installer.check_downgrade("legacy", "1.20.4")
+
+    def test_upgrade_takes_a_backup_once(self):
+        installer.create_setup({"type": "vanilla", "minecraft_version": "1.21.1", "level_name": "old"})
+        self.assertEqual(installer.list_backups(), [])  # same version
+        installer.create_setup({"type": "vanilla", "minecraft_version": "26.3", "level_name": "old"})
+        backups = installer.list_backups()
+        self.assertEqual([(b["world"], b["kind"]) for b in backups], [("old", "pre-upgrade")])
+        installer.prepare_runtime()  # e.g. the first start crashed; the world is unchanged
+        self.assertEqual(len(installer.list_backups()), 1)
+        installer.record_world_version("old", "26.3", "vanilla")
+        installer.prepare_runtime()
+        self.assertEqual(len(installer.list_backups()), 1)
+
+    def test_failed_upgrade_backup_only_warns(self):
+        installer.create_setup({"type": "vanilla", "minecraft_version": "1.21.1", "level_name": "old"})
+        cfg = installer.load_config()
+        cfg["profiles"][-1]["minecraft_version"] = "26.3"
+        installer.save_config(cfg)
+        with mock.patch.object(installer, "create_backup",
+                               side_effect=installer.InstallError("No space", code="disk_full")):
+            spec = installer.prepare_runtime()
+        self.assertEqual(spec.version, "26.3")
+        self.assertTrue(any("without a backup" in w for w in spec.warnings))
+
+    def test_start_with_confirmation_backs_up_and_records_it(self):
+        installer.create_setup({"type": "vanilla", "minecraft_version": "1.21.1", "level_name": "old"})
+        installer.record_world_version("old", "26.3", "vanilla")  # e.g. a newer backup was restored
+        with self.assertRaises(installer.InstallError):
+            installer.prepare_runtime()
+        spec = installer.prepare_runtime(allow_downgrade=True)
+        self.assertEqual(spec.downgrade["from"], "26.3")
+        self.assertEqual(installer.world_meta("old")["downgrade_ack"]["version"], "1.21.1")
+        self.assertEqual([b["kind"] for b in installer.list_backups()], ["pre-downgrade"])
+        installer.prepare_runtime()  # confirmed: the next start doesn't ask again
 
     def test_upgrade_and_same_version_are_fine(self):
         installer.check_downgrade("old", "1.21.1")
@@ -219,14 +329,18 @@ class DowngradeTests(SetupTestCase):
     def test_record_world_version_keeps_newest(self):
         installer.record_world_version("old", "1.20.1", "vanilla")
         meta = installer.world_meta("old")
-        self.assertEqual(meta["last_version"], "1.21.1")
+        self.assertEqual(meta["newest_version"], "1.21.1")
+        self.assertEqual(meta["last_version"], "1.20.1")
         self.assertTrue(meta["last_played"])
         installer.record_world_version("old", "26.3", "fabric")
+        self.assertEqual(installer.world_meta("old")["newest_version"], "26.3")
         self.assertEqual(installer.world_meta("old")["last_version"], "26.3")
         self.assertEqual(installer.world_meta("old")["last_type"], "fabric")
         installer.record_world_version("..", "26.3")  # ignored, no exception
         installer.record_world_version("old", "not a version")
         self.assertEqual(installer.world_meta("old")["last_version"], "26.3")
+        listed = {w["name"]: w for w in installer.list_worlds()}
+        self.assertEqual(listed["old"]["newest_version"], "26.3")
 
 
 class RuntimeSpecTests(SetupTestCase):

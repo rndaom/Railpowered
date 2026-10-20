@@ -8,11 +8,13 @@ generic 500 whose traceback goes to stdout (Railway logs) only.
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import re
 import secrets
 import shutil
+import socket
 import threading
 import time
 import traceback
@@ -33,6 +35,22 @@ LOGIN_LIMIT = 4 * 1024
 CHUNK = 64 * 1024
 CONSOLE_MAX = 1000
 GENERIC_500 = "Something went wrong on the server. The log has the details."
+# A request gets this long for its request line, headers and (non-upload)
+# body; past it the connection is shut. Uploads instead must keep moving at
+# least UPLOAD_MIN_BYTES per UPLOAD_WINDOW seconds.
+REQUEST_DEADLINE = 15.0
+HEALTH_DEADLINE = 5.0  # connections on the slots kept for /health
+UPLOAD_WINDOW = 20.0
+UPLOAD_MIN_BYTES = 64 * 1024
+HSTS = "max-age=31536000"  # no includeSubDomains: custom domains may have siblings
+# An uploaded pack that hit the world-downgrade guard is kept this long as
+# modpacks/.held-<token><ext>, so confirming doesn't mean uploading it again.
+HELD_UPLOAD_TTL = installer.HELD_UPLOAD_TTL
+_HELD_TOKEN_RE = re.compile(r"[0-9a-f]{32}")
+_HELD_EXTENSIONS = (".mrpack", ".zip")
+# One upload streams at a time: same-name uploads can't trip over each other
+# and the free-space check isn't shared by several streams at once.
+_upload_lock = threading.Lock()
 
 
 class ApiError(Exception):
@@ -50,7 +68,7 @@ ROUTES: list[Route] = []
 
 def route(method: str, pattern: str, auth_required: bool = True) -> Callable[[Callable], Callable]:
     def register(fn: Callable) -> Callable:
-        ROUTES.append((method, re.compile(f"^{pattern}$"), fn.__name__, auth_required))
+        ROUTES.append((method, re.compile(f"^{pattern}\\Z"), fn.__name__, auth_required))
         return fn
 
     return register
@@ -58,36 +76,80 @@ def route(method: str, pattern: str, auth_required: bool = True) -> Callable[[Ca
 
 _SEG = r"([^/]+)"
 # <world>[-pre-restore|-pre-downgrade]-YYYYmmdd-HHMMSS[-n].tar.gz
-_BACKUP_WORLD = re.compile(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz$")
+_BACKUP_WORLD = re.compile(r"^(.+?)-(?:pre-[a-z]+-)?\d{8}-\d{6}(?:-\d+)?\.tar\.gz\Z")
 
 
 class PanelServer(ThreadingHTTPServer):
-    """ThreadingHTTPServer with a cap on concurrent connections."""
+    """ThreadingHTTPServer with a cap on concurrent connections.
+
+    The last ``health_slots`` connections only serve /health (with a short
+    deadline), so a flood of slow requests can't fail Railway's health
+    check; one client (last X-Forwarded-For hop) can have at most
+    ``per_client`` requests in progress."""
 
     daemon_threads = True
     allow_reuse_address = os.name != "nt"
     request_queue_size = 64
     max_connections = 64
+    health_slots = 8
+    per_client = 16
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
-        self._slots = threading.BoundedSemaphore(self.max_connections)
+        self._slots = threading.BoundedSemaphore(self.max_connections - self.health_slots)
+        self._health = threading.BoundedSemaphore(self.health_slots)
+        self._reserved: set[int] = set()
+        self._clients: dict[str, int] = {}
+        self._clients_lock = threading.Lock()
 
     def process_request(self, request: Any, client_address: Any) -> None:
-        if not self._slots.acquire(blocking=False):
+        if self._slots.acquire(blocking=False):
+            reserved = False
+        elif self._health.acquire(blocking=False):
+            reserved = True
+        else:
             self.shutdown_request(request)
             return
+        with self._clients_lock:
+            if reserved:
+                self._reserved.add(id(request))
         try:
             super().process_request(request, client_address)
         except Exception:
-            self._slots.release()
+            self._release(request)
             raise
 
     def process_request_thread(self, request: Any, client_address: Any) -> None:
         try:
             super().process_request_thread(request, client_address)
         finally:
-            self._slots.release()
+            self._release(request)
+
+    def _release(self, request: Any) -> None:
+        with self._clients_lock:
+            reserved = id(request) in self._reserved
+            self._reserved.discard(id(request))
+        (self._health if reserved else self._slots).release()
+
+    def health_only(self, request: Any) -> bool:
+        with self._clients_lock:
+            return id(request) in self._reserved
+
+    def client_enter(self, ip: str) -> bool:
+        with self._clients_lock:
+            count = self._clients.get(ip, 0)
+            if count >= self.per_client:
+                return False
+            self._clients[ip] = count + 1
+            return True
+
+    def client_exit(self, ip: str) -> None:
+        with self._clients_lock:
+            count = self._clients.get(ip, 0) - 1
+            if count > 0:
+                self._clients[ip] = count
+            else:
+                self._clients.pop(ip, None)
 
 
 _versions_cache: dict[str, Any] = {"at": 0.0, "data": None, "ttl": 0.0}
@@ -137,6 +199,67 @@ def _require_idle_tasks() -> None:
         raise ApiError(409, "busy", f"Wait for “{task.label}” to finish first.")
 
 
+def _remove_quietly(path: str | None) -> None:
+    if not path:
+        return
+    try:
+        os.remove(path)
+    except OSError:
+        pass
+
+
+def _hold_upload(path: str) -> str:
+    """Keep an uploaded archive for a confirmation; returns its token."""
+    token = secrets.token_hex(16)
+    extension = os.path.splitext(path)[1].lower()
+    if extension not in _HELD_EXTENSIONS:
+        extension = ".zip"
+    held = os.path.join(os.path.dirname(path), f".held-{token}{extension}")
+    os.replace(path, held)
+    try:
+        os.utime(held)
+    except OSError:
+        pass
+    return token
+
+
+def _claim_held(modpacks: str, token: str, name: str) -> str:
+    """Move a held upload back to a fresh upload name for a new install."""
+    if not _HELD_TOKEN_RE.fullmatch(token):
+        raise ApiError(400, "invalid", "That upload token isn't valid.")
+    for extension in _HELD_EXTENSIONS:
+        held = os.path.join(modpacks, f".held-{token}{extension}")
+        if os.path.isfile(held):
+            final = os.path.join(modpacks, f".{name}-{secrets.token_hex(4)}.upload{extension}")
+            os.replace(held, final)
+            return final
+    raise ApiError(
+        410, "upload_expired", "That upload is no longer kept. Upload the modpack again."
+    )
+
+
+def purge_held_uploads(now: float | None = None) -> int:
+    """Delete held uploads older than HELD_UPLOAD_TTL; returns how many."""
+    modpacks = installer.paths()["modpacks"]
+    now = time.time() if now is None else now
+    removed = 0
+    try:
+        names = os.listdir(modpacks)
+    except OSError:
+        return 0
+    for entry in names:
+        if not entry.startswith(".held-"):
+            continue
+        path = os.path.join(modpacks, entry)
+        try:
+            if now - os.path.getmtime(path) > HELD_UPLOAD_TTL:
+                os.remove(path)
+                removed += 1
+        except OSError:
+            pass
+    return removed
+
+
 def _restart_note(exc: ServerError) -> Exception:
     return ix.install_error(
         f"The change was saved, but the server could not start: {exc}", "start_failed"
@@ -144,9 +267,15 @@ def _restart_note(exc: ServerError) -> Exception:
 
 
 def _run_with_restart(change: Callable[[], Any], restart: bool, reason: str) -> Any:
-    """Stop if online, apply `change`, then start again (old setup on failure)."""
-    was_running = restart and controller.is_running()
-    if was_running:
+    """Stop if online, apply `change`, then start again (old setup on failure).
+
+    `restart` means the change replaces what the server runs (a switch).
+    A start that is still preparing, or a stop in progress, is waited out
+    first; a restart that was under way counts as running."""
+    resume = controller.settle() if restart else False
+    running = restart and controller.is_running()
+    was_running = running or (restart and resume)
+    if running:
         controller.stop(ignore_task=True, reason=reason)
     try:
         result = change()
@@ -162,6 +291,9 @@ def _run_with_restart(change: Callable[[], Any], restart: bool, reason: str) -> 
             controller.start(ignore_task=True, reason=reason)
         except ServerError as exc:
             raise _restart_note(exc) from exc
+    elif restart:
+        # A crash of the previous setup says nothing about this one.
+        controller.clear_crash("Switched setups; the previous crash no longer applies.")
     return result
 
 
@@ -170,9 +302,75 @@ class PanelHandler(BaseHTTPRequestHandler):
     sys_version = ""
     protocol_version = "HTTP/1.0"
     timeout = 30
+    _head = False
+    _headers_sent = False
+    _deadline: threading.Timer | None = None
+    _expired = False
 
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002
         pass
+
+    def version_string(self) -> str:
+        return self.server_version
+
+    # -- deadlines -------------------------------------------------------------
+    def handle_one_request(self) -> None:
+        health_only = getattr(self.server, "health_only", None)
+        self._health_only = bool(health_only and health_only(self.request))
+        self._arm(HEALTH_DEADLINE if self._health_only else REQUEST_DEADLINE)
+        try:
+            super().handle_one_request()
+        except OSError:
+            if not self._expired:
+                raise
+            self.close_connection = True  # cut off by the deadline (some systems raise)
+        finally:
+            self._disarm()
+
+    def _arm(self, seconds: float) -> None:
+        """Shut the connection if the client hasn't sent everything in time
+        (a per-recv timeout alone lets a byte every 29 s hold a slot forever)."""
+        self._disarm()
+        timer = threading.Timer(seconds, self._expire)
+        timer.daemon = True
+        self._deadline = timer
+        timer.start()
+
+    def _disarm(self) -> None:
+        timer, self._deadline = self._deadline, None
+        if timer is not None:
+            timer.cancel()
+
+    def _expire(self) -> None:
+        self._expired = True
+        self.close_connection = True
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    # -- framework errors go through _send (headers, no HTML template) --------
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        self.close_connection = True
+        self._disarm()
+        if self._headers_sent:
+            return
+        text = message or self.responses.get(code, ("Error",))[0]
+        self._head = getattr(self, "command", "") == "HEAD"
+        try:
+            if str(getattr(self, "path", "") or "").startswith("/api/"):
+                self._json({"error": text, "code": f"http_{code}"}, code)
+            else:
+                self._send(code, text.encode("utf-8", "replace"), "text/plain; charset=utf-8")
+        except OSError:
+            pass
+
+    def do_OPTIONS(self) -> None:
+        self._disarm()
+        self._head = False
+        self._headers_sent = False
+        path = urlsplit(self.path).path or "/"
+        self._fail(path.startswith("/api/"), 405, "method_not_allowed", "That method isn't supported here.")
 
     # -- dispatch ------------------------------------------------------------
     def do_GET(self) -> None:
@@ -194,6 +392,9 @@ class PanelHandler(BaseHTTPRequestHandler):
         self._dispatch("DELETE")
 
     def _dispatch(self, method: str) -> None:
+        # Headers are in; bodies are read under their own deadline (_body) or
+        # throughput floor (_receive_file).
+        self._disarm()
         self._head = method == "HEAD"
         self._headers_sent = False
         effective = "GET" if self._head else method
@@ -201,6 +402,23 @@ class PanelHandler(BaseHTTPRequestHandler):
         path = url.path or "/"
         self.query = parse_qs(url.query, keep_blank_values=True)
         is_api = path.startswith("/api/")
+        if getattr(self, "_health_only", False) and path != "/health":
+            self.close_connection = True
+            self._fail(is_api, 503, "busy", "The dashboard is busy. Try again in a moment.")
+            return
+        ip = self._client_ip()
+        enter = getattr(self.server, "client_enter", None)
+        if enter is not None and not enter(ip):
+            self.close_connection = True
+            self._fail(is_api, 503, "busy", "Too many requests from this address at once. Try again in a moment.")
+            return
+        try:
+            self._route(method, effective, path, is_api)
+        finally:
+            if enter is not None:
+                self.server.client_exit(ip)
+
+    def _route(self, method: str, effective: str, path: str, is_api: bool) -> None:
         try:
             if is_api and path != "/api/login" and path != "/api/logout":
                 self._api(effective, path)
@@ -211,7 +429,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         except TaskBusy as exc:
             self._fail(is_api, 409, "busy", str(exc))
         except ServerError as exc:
-            self._fail(is_api, exc.status, exc.code, str(exc))
+            self._fail(is_api, exc.status, exc.code, str(exc), getattr(exc, "data", None))
         except installer.InstallError as exc:
             if getattr(exc, "detail", None):
                 print(f"{ix.error_code(exc)}: {exc.detail}", flush=True)
@@ -221,6 +439,10 @@ class PanelHandler(BaseHTTPRequestHandler):
             )
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self.close_connection = True
+        except OSError:
+            if not self._expired:
+                raise
+            self.close_connection = True  # the deadline shut the connection
         except Exception as exc:
             print(traceback.format_exc(), flush=True)
             state.add_log(
@@ -262,13 +484,22 @@ class PanelHandler(BaseHTTPRequestHandler):
 
     # -- auth helpers ----------------------------------------------------------
     def _token(self) -> str | None:
-        return auth.cookie_value(self.headers.get("Cookie"))
+        return auth.session_token(self.headers.get("Cookie"))
 
     def _authed(self) -> bool:
         return auth.sessions.validate(self._token())
 
     def _secure(self) -> bool:
-        return self.headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https"
+        """The request reached Railway's edge over https."""
+        headers = getattr(self, "headers", None)
+        if headers is None:
+            return False
+        return headers.get("X-Forwarded-Proto", "").split(",")[0].strip().lower() == "https"
+
+    def _cookie_secure(self) -> bool:
+        """Secure (and __Host-) cookies unless this is plain http on a local
+        or private address, where the browser couldn't keep them."""
+        return self._secure() or not auth.is_local_host(self.headers.get("Host"))
 
     def _client_ip(self) -> str:
         return auth.client_ip(self.client_address[0], self.headers.get("X-Forwarded-For"))
@@ -316,7 +547,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         length = self._content_length(limit)
         if length == 0:
             return b""
-        data = self.rfile.read(length)
+        self._arm(REQUEST_DEADLINE)
+        try:
+            data = self.rfile.read(length)
+        except OSError:
+            data = b""
+        finally:
+            self._disarm()
         if len(data) != length:
             self.close_connection = True
             raise ApiError(400, "incomplete_body", "The request body was cut off.")
@@ -342,6 +579,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         content_type: str,
         cache: str = "no-store",
         headers: dict[str, str] | None = None,
+        cookies: list[str] | None = None,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -349,8 +587,12 @@ class PanelHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", cache)
         for key, value in web.SECURITY_HEADERS.items():
             self.send_header(key, value)
+        if self._secure():
+            self.send_header("Strict-Transport-Security", HSTS)
         for key, value in (headers or {}).items():
             self.send_header(key, value)
+        for cookie in cookies or ():
+            self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self._headers_sent = True
         if not self._head and body:
@@ -363,11 +605,8 @@ class PanelHandler(BaseHTTPRequestHandler):
     def _html(self, text: str, status: int = 200) -> None:
         self._send(status, text.encode("utf-8"), "text/html; charset=utf-8")
 
-    def _redirect(self, location: str, status: int = 302, cookie: str | None = None) -> None:
-        headers = {"Location": location}
-        if cookie:
-            headers["Set-Cookie"] = cookie
-        self._send(status, b"", "text/plain; charset=utf-8", headers=headers)
+    def _redirect(self, location: str, status: int = 302, cookies: list[str] | None = None) -> None:
+        self._send(status, b"", "text/plain; charset=utf-8", headers={"Location": location}, cookies=cookies)
 
     # -- pages -----------------------------------------------------------------
     def _pages(self, method: str, path: str) -> None:
@@ -432,13 +671,33 @@ class PanelHandler(BaseHTTPRequestHandler):
             return
         form = parse_qs(raw.decode("utf-8", errors="replace"), keep_blank_values=True)
         key = (form.get("key") or [""])[0]
-        if key and auth.sessions.check_key(key):
-            auth.limiter.reset(ip)
+        # Reserve the attempt (after the body: a slow body holds no reservation).
+        verdict, ticket = auth.limiter.begin(ip)
+        if verdict == "limited":
+            self._redirect("/login?error=rate", 303)
+            return
+
+        def check() -> bool:
+            return bool(key) and auth.sessions.check_key(key)
+
+        if verdict == "slow":
+            ok = auth.limiter.slow_lane(check)
+            if ok is None:
+                auth.limiter.cancel(ip, ticket)
+                self._redirect("/login?error=rate", 303)
+                return
+        else:
+            ok = check()
+        if ok:
+            auth.limiter.succeed(ip, ticket)
             token = auth.sessions.issue()
             state.add_log(f"Dashboard login from {ip}")
-            self._redirect("/", 303, auth.sessions.cookie_header(token, self._secure()))
+            secure = self._cookie_secure()
+            cookies = [auth.sessions.cookie_header(token, secure)]
+            if secure:  # the pre-__Host- cookie, if any, goes
+                cookies.append(f"{auth.COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0; Secure")
+            self._redirect("/", 303, cookies)
             return
-        auth.limiter.record_failure(ip)
         state.add_log(f"Failed dashboard login from {ip}", "warn")
         target = "/login?error=rate" if auth.limiter.limited(ip) else "/login?error=1"
         self._redirect(target, 303)
@@ -456,7 +715,19 @@ class PanelHandler(BaseHTTPRequestHandler):
         if origin is False or (origin is None and self.headers.get("X-Railpowered") != "1"):
             raise ApiError(403, "csrf", "Log out from the dashboard.")
         auth.sessions.revoke(self._token())
-        self._redirect("/login", 303, auth.sessions.clear_cookie_header(self._secure()))
+        self._redirect("/login", 303, auth.sessions.clear_cookie_headers(self._cookie_secure()))
+
+    @route("POST", "/api/sessions/revoke-all")
+    def api_revoke_all_sessions(self) -> None:
+        """Sign out every browser, this one included (kept across restarts)."""
+        self._json_body()
+        auth.sessions.revoke_all()
+        state.add_log(f"All dashboard sessions were signed out from {self._client_ip()}.", "warn")
+        body = json.dumps({"ok": True}).encode("utf-8")
+        self._send(
+            200, body, "application/json; charset=utf-8",
+            cookies=auth.sessions.clear_cookie_headers(self._cookie_secure()),
+        )
 
     # -- status, logs, tasks ---------------------------------------------------
     @route("GET", "/api/status")
@@ -480,8 +751,11 @@ class PanelHandler(BaseHTTPRequestHandler):
     # -- server control ----------------------------------------------------------
     @route("POST", "/api/server/start")
     def api_start(self) -> None:
-        self._json_body()
-        controller.start(reason="dashboard")
+        data = self._json_body()
+        # A 409 world_downgrade answer can be confirmed by sending
+        # {"allow_downgrade": true}: the world is backed up, then opened.
+        allow_downgrade = _bool(data, "allow_downgrade", False)
+        controller.start(reason="dashboard", allow_downgrade=allow_downgrade)
         self._json({"ok": True})
 
     @route("POST", "/api/server/stop")
@@ -600,7 +874,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 reason="switching to the new setup",
             )
 
-        task = tasks.submit("apply", label, run)
+        task = tasks.submit("apply", label, run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     def _find_setup(self, setup_id: str) -> dict[str, Any]:
@@ -623,7 +897,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         level = data.get("level_name")
         if level is not None:
             level = _check_name(_str(data, "level_name"))
-            if setup["active"] and controller.is_running() and level != setup["level_name"]:
+            if setup["active"] and controller.lifecycle_active() and level != setup["level_name"]:
                 raise ApiError(
                     409, "server_running", "Stop the server before changing the world it runs."
                 )
@@ -637,14 +911,13 @@ class PanelHandler(BaseHTTPRequestHandler):
         data = self._json_body()
         allow_downgrade = _bool(data, "allow_downgrade", False)
         setup = self._find_setup(setup_id)
-        if setup["active"]:
+        if setup["active"] and not allow_downgrade:
             self._json({"ok": True, "task": None, "already_active": True})
             return
+        # With allow_downgrade the active setup is prepared again too: that is
+        # how a world restored from a newer backup gets confirmed.
         if not allow_downgrade:
-            version = setup["minecraft_version"]
-            if version == "latest":
-                version = setup.get("resolved_version") or "latest"
-            _precheck_downgrade(setup["level_name"], version)
+            ix.check_setup_downgrade(setup_id)
         _require_idle_tasks()
 
         def run(_ctx: Any) -> None:
@@ -654,7 +927,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 reason=f"switching to {setup['name']}",
             )
 
-        task = tasks.submit("switch", f"Switching to {setup['name']}", run)
+        task = tasks.submit("switch", f"Switching to {setup['name']}", run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     @route("DELETE", f"/api/setups/{_SEG}")
@@ -663,32 +936,45 @@ class PanelHandler(BaseHTTPRequestHandler):
         if setup["active"]:
             raise ApiError(409, "active_setup", "Switch to another setup before deleting this one.")
         _require_idle_tasks()
-        ix.delete_setup(setup_id)
-        self._json({"ok": True})
+        orphaned = ix.delete_setup(setup_id)
+        # orphaned: installed files no setup uses now (offer to delete them).
+        self._json({"ok": True, "orphaned": orphaned})
 
     # -- modpacks -----------------------------------------------------------------
     def _modpack_task(
         self,
         label: str,
-        install: Callable[[], dict[str, Any]],
+        stage: Callable[[], Any],
         name: str,
         allow_downgrade: bool,
     ) -> None:
-        def activate(fields: dict[str, Any]) -> Any:
-            fields = dict(fields)
-            fields.setdefault("name", name)
-            return ix.create_setup(fields, allow_downgrade=allow_downgrade, activate=True)
+        """Install a pack as a task: stage it while the server keeps running
+        (downloads, loader, the downgrade guard), then stop, swap it in and
+        activate its setup. If activation fails the previous pack and setup
+        versions are put back before the previous setup starts again."""
 
         def run(_ctx: Any) -> None:
-            if controller.running_instance() == name:
-                # Reinstalling the pack that is running: its files are about
-                # to be swapped, so stop it before the install, not after.
-                _run_with_restart(lambda: activate(install()), restart=True, reason=f"updating {name}")
-                return
-            fields = install()
-            _run_with_restart(lambda: activate(fields), restart=True, reason=f"switching to {name}")
+            staged = stage()
+            try:
+                def change() -> Any:
+                    swap = ix.commit_modpack(staged)
+                    try:
+                        fields = dict(staged.fields)
+                        fields.setdefault("name", name)
+                        spec = ix.create_setup(fields, allow_downgrade=allow_downgrade, activate=True)
+                    except BaseException:
+                        ix.rollback_modpack(swap)
+                        raise
+                    ix.finalize_modpack(swap)
+                    return spec
 
-        task = tasks.submit("modpack", label, run)
+                updating = controller.running_instance() == name
+                reason = f"updating {name}" if updating else f"switching to {name}"
+                _run_with_restart(change, restart=True, reason=reason)
+            finally:
+                ix.discard_staged(staged)
+
+        task = tasks.submit("modpack", label, run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     @route("POST", "/api/modpacks")
@@ -704,9 +990,12 @@ class PanelHandler(BaseHTTPRequestHandler):
         _check_name(level)
         allow_downgrade = _bool(data, "allow_downgrade", False)
         _require_idle_tasks()
+        # The version is known only after the download; the guard runs then,
+        # before the pack's own files are fetched. A world_downgrade failure
+        # carries code and data on the task; resubmit with allow_downgrade.
         self._modpack_task(
             f"Installing modpack {name}",
-            lambda: ix.install_modpack_from_url(
+            lambda: ix.stage_modpack_from_url(
                 url, name, level_name=level, allow_downgrade=allow_downgrade
             ),
             name,
@@ -722,17 +1011,48 @@ class PanelHandler(BaseHTTPRequestHandler):
         extension = ".mrpack" if filename.lower().endswith(".mrpack") else ".zip"
         flag = ((self.query.get("allow_downgrade") or [""])[0]).strip().lower()
         allow_downgrade = flag in ("1", "true", "yes")
+        # token: confirm a held upload (409 world_downgrade) without resending it.
+        token = ((self.query.get("token") or [""])[0]).strip().lower()
         _require_idle_tasks()
+        if not _upload_lock.acquire(blocking=False):
+            self.close_connection = True
+            raise ApiError(409, "busy", "Another modpack upload is in progress. Wait for it to finish.")
+        try:
+            modpacks = installer.paths()["modpacks"]
+            os.makedirs(modpacks, exist_ok=True)
+            purge_held_uploads()
+            if token:
+                if self._content_length(JSON_LIMIT) != 0:
+                    self.close_connection = True
+                    raise ApiError(400, "invalid", "Send no file when confirming a kept upload.")
+                final = _claim_held(modpacks, token, name)
+            else:
+                final = self._receive_upload(modpacks, name, extension)
+            try:
+                if not allow_downgrade:
+                    self._precheck_pack(final, level)
+                self._modpack_task(
+                    f"Installing modpack {name}",
+                    self._stage_upload(final, name, level, allow_downgrade),
+                    name,
+                    allow_downgrade,
+                )
+            except BaseException:
+                _remove_quietly(final)
+                raise
+        finally:
+            _upload_lock.release()
+
+    def _receive_upload(self, modpacks: str, name: str, extension: str) -> str:
+        """Stream the body to a unique hidden file; returns its path."""
         limit = installer.max_upload_bytes()
         length = self._content_length(limit, required=True)
-        modpacks = installer.paths()["modpacks"]
-        os.makedirs(modpacks, exist_ok=True)
         free = shutil.disk_usage(modpacks).free
         if free < length * 3 + 64 * 1024 * 1024:
             self.close_connection = True
             raise ApiError(507, "disk_full", "There isn't enough free space on the volume for this pack.")
         partial = os.path.join(modpacks, f".upload-{secrets.token_hex(6)}.part")
-        final = os.path.join(modpacks, f"{name}.upload{extension}")
+        final = os.path.join(modpacks, f".{name}-{secrets.token_hex(4)}.upload{extension}")
         try:
             self._receive_file(partial, length)
             with open(partial, "rb") as handle:
@@ -741,43 +1061,84 @@ class PanelHandler(BaseHTTPRequestHandler):
                 raise ApiError(400, "invalid_archive", "That file isn't a .mrpack or .zip modpack.")
             os.replace(partial, final)
         except BaseException:
-            try:
-                os.remove(partial)
-            except OSError:
-                pass
+            _remove_quietly(partial)
             raise
+        return final
 
-        def install() -> dict[str, Any]:
-            # The installer leaves the archive alone; the upload is ours to delete.
-            try:
-                return ix.install_modpack_archive(
-                    final, name, level_name=level, allow_downgrade=allow_downgrade
-                )
-            finally:
-                try:
-                    os.remove(final)
-                except OSError:
-                    pass
-
+    @staticmethod
+    def _precheck_pack(path: str, level: str) -> None:
+        """409 world_downgrade before any task when the archive says which
+        version it is. The archive is kept and the error carries
+        upload_token, so the confirmation doesn't upload it again."""
+        version = ix.peek_pack_version(path)
+        if not version or not ix.world_exists(level):
+            return
         try:
-            self._modpack_task(f"Installing modpack {name}", install, name, allow_downgrade)
-        except TaskBusy:
-            try:
-                os.remove(final)
-            except OSError:
-                pass
+            ix.check_downgrade(level, version)
+        except installer.InstallError as exc:
+            if ix.error_code(exc) == "world_downgrade":
+                exc.data["upload_token"] = _hold_upload(path)
             raise
+
+    @staticmethod
+    def _stage_upload(path: str, name: str, level: str, allow_downgrade: bool) -> Callable[[], Any]:
+        def stage() -> Any:
+            # The installer leaves the archive alone; the upload is ours to
+            # delete, or to keep when the owner has to confirm a downgrade.
+            try:
+                return ix.stage_modpack_archive(
+                    path, name, level_name=level, allow_downgrade=allow_downgrade
+                )
+            except installer.InstallError as exc:
+                if ix.error_code(exc) == "world_downgrade" and os.path.isfile(path):
+                    exc.data["upload_token"] = _hold_upload(path)
+                raise
+            finally:
+                _remove_quietly(path)
+
+        return stage
 
     def _receive_file(self, path: str, length: int) -> None:
+        """Stream the body to ``path``. No fixed deadline (big files take
+        a while), but at least UPLOAD_MIN_BYTES must arrive in every
+        UPLOAD_WINDOW seconds."""
         remaining = length
-        with open(path, "wb") as handle:
-            while remaining > 0:
-                chunk = self.rfile.read(min(CHUNK, remaining))
-                if not chunk:
-                    self.close_connection = True
-                    raise ApiError(400, "incomplete_body", "The upload was cut off. Try again.")
-                handle.write(chunk)
-                remaining -= len(chunk)
+        window_start, window_bytes = time.monotonic(), 0
+        try:
+            self.connection.settimeout(UPLOAD_WINDOW)
+        except OSError:
+            pass
+        try:
+            with open(path, "wb") as handle:
+                while remaining > 0:
+                    try:
+                        # read1: one recv at most, so the floor is checked
+                        # even when bytes trickle in.
+                        chunk = self.rfile.read1(min(CHUNK, remaining))
+                    except TimeoutError:
+                        chunk = None
+                    if chunk is None:
+                        self.close_connection = True
+                        raise ApiError(408, "too_slow", "The upload stalled and was stopped. Try again.")
+                    if not chunk:
+                        self.close_connection = True
+                        raise ApiError(400, "incomplete_body", "The upload was cut off. Try again.")
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+                    window_bytes += len(chunk)
+                    now = time.monotonic()
+                    if now - window_start >= UPLOAD_WINDOW:
+                        if window_bytes < UPLOAD_MIN_BYTES and remaining > 0:
+                            self.close_connection = True
+                            raise ApiError(408, "too_slow", "The upload was too slow and was stopped. Try again.")
+                        window_start, window_bytes = now, 0
+        except OSError as exc:
+            if exc.errno == errno.ENOSPC:
+                self.close_connection = True
+                raise ApiError(
+                    507, "disk_full", "The volume ran out of space during the upload."
+                ) from exc
+            raise
 
     # -- worlds ---------------------------------------------------------------------
     @route("GET", "/api/worlds")
@@ -802,8 +1163,24 @@ class PanelHandler(BaseHTTPRequestHandler):
                 409, "active_world", "This is the active setup's world. Switch setups before deleting it."
             )
         _require_idle_tasks()
+        before = ix.storage_keys()
         removed = ix.delete_world(name)
-        self._json({"ok": True, "removed_setups": removed})
+        self._json({"ok": True, "removed_setups": removed, "orphaned": ix.orphaned_storage(before)})
+
+    # -- downloaded files (instances and server jars) -----------------------------
+    @route("GET", "/api/storage")
+    def api_storage(self) -> None:
+        self._json(ix.list_storage())
+
+    @route("DELETE", f"/api/storage/{_SEG}/{_SEG}")
+    def api_delete_storage(self, kind: str, name: str) -> None:
+        if kind not in ("instance", "jar"):
+            raise ApiError(404, "not_found", "Not found.")
+        _require_idle_tasks()
+        if kind == "instance" and controller.running_instance() == name:
+            raise ApiError(409, "in_use", "The server is running from these files. Stop it first.")
+        result = ix.delete_storage(kind, name)
+        self._json({"ok": True, "freed": result["freed"], **ix.list_storage()})
 
     # -- backups --------------------------------------------------------------------
     @route("GET", "/api/backups")
@@ -818,8 +1195,40 @@ class PanelHandler(BaseHTTPRequestHandler):
         if not ix.world_exists(world):
             raise ApiError(404, "world_not_found", f"There is no world named {world}.")
         _require_idle_tasks()
-        task = tasks.submit("backup", f"Backing up {world}", lambda _ctx: controller.backup_world(world))
+        task = tasks.submit(
+            "backup", f"Backing up {world}", lambda _ctx: controller.backup_world(world),
+            guard=controller.ensure_quiet,
+        )
         self._json({"task": task.to_dict()}, 202)
+
+    @route("POST", "/api/backups/upload")
+    def api_upload_backup(self) -> None:
+        """Bring a downloaded backup (.tar.gz) back, e.g. onto a new volume.
+        The body is the file; it's checked and listed like any backup."""
+        if not _upload_lock.acquire(blocking=False):
+            self.close_connection = True
+            raise ApiError(409, "busy", "Another upload is in progress. Wait for it to finish.")
+        try:
+            limit = installer.max_upload_bytes()
+            length = self._content_length(limit, required=True)
+            backups = installer.paths()["backups"]
+            os.makedirs(backups, exist_ok=True)
+            if shutil.disk_usage(backups).free < length + 64 * 1024 * 1024:
+                self.close_connection = True
+                raise ApiError(507, "disk_full", "There isn't enough free space on the volume for this backup.")
+            partial = os.path.join(backups, f".upload-{secrets.token_hex(6)}.part")
+            try:
+                self._receive_file(partial, length)
+                with open(partial, "rb") as handle:
+                    magic = handle.read(2)
+                if magic != b"\x1f\x8b":
+                    raise ApiError(400, "invalid_backup", "That file isn't a .tar.gz backup.")
+                backup = ix.import_backup(partial)
+            finally:
+                _remove_quietly(partial)  # gone already when it was imported
+        finally:
+            _upload_lock.release()
+        self._json({"ok": True, "backup": backup, "backups": ix.list_backups()}, 201)
 
     def _backup_path(self, name: str) -> str:
         if not ix.valid_backup_name(name):
@@ -845,7 +1254,17 @@ class PanelHandler(BaseHTTPRequestHandler):
             raise ApiError(409, "server_running", f"Stop the server before restoring {effective}.")
         _require_idle_tasks()
         label = f"Restoring {effective or 'world'} from backup"
-        task = tasks.submit("restore", label, lambda _ctx: ix.restore_backup(name, target=target))
+
+        def run(ctx: Any) -> dict[str, Any]:
+            result = ix.restore_backup(name, target=target)
+            warning = (result or {}).get("downgrade_warning")
+            if isinstance(warning, dict) and warning.get("message"):
+                ctx.set_note(str(warning["message"]))
+            if (result or {}).get("world") == ix.active_setup().get("level_name"):
+                controller.clear_crash("The active world was restored; the previous crash no longer applies.")
+            return result
+
+        task = tasks.submit("restore", label, run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     @route("DELETE", f"/api/backups/{_SEG}")
@@ -969,6 +1388,12 @@ def build_status() -> dict[str, Any]:
         print(traceback.format_exc(), flush=True)
         setup = {"id": "", "name": "", "type": "vanilla", "minecraft_version": "latest",
                  "resolved_version": None, "level_name": "world", "instance": None}
+    last_exit = dict(snap["last_exit"]) if snap["last_exit"] else None
+    if last_exit is not None:
+        # An exit of another setup (before a switch) isn't this one's story.
+        exited = last_exit.pop("setup_id", None)
+        if exited and setup.get("id") and exited != setup.get("id"):
+            last_exit = None
     runtime = snap["runtime"]
     if runtime is not None and getattr(runtime, "version", None):
         setup["resolved_version"] = runtime.version
@@ -1006,7 +1431,7 @@ def build_status() -> dict[str, Any]:
         "online_mode": not legacy and props.get("online-mode", "true").strip().lower() != "false",
         "whitelist_enabled": props.get("white-list", "false").strip().lower() == "true",
         "legacy": legacy,
-        "last_exit": snap["last_exit"],
+        "last_exit": last_exit,
         "product": installer.APP_NAME,
         "app_version": config.APP_VERSION,
     }

@@ -129,16 +129,39 @@ def update_setup(
     )
 
 
-def delete_setup(setup_id: str) -> None:
-    installer.delete_setup(setup_id)
+def delete_setup(setup_id: str) -> list[dict[str, Any]]:
+    """Returns the downloaded files no setup uses any more (list_storage items)."""
+    return list(installer.delete_setup(setup_id) or [])
 
 
-def prepare_runtime() -> Any:
+def storage_keys() -> set[tuple[str, str]]:
+    return installer.storage_keys()
+
+
+def orphaned_storage(before: set[tuple[str, str]]) -> list[dict[str, Any]]:
+    return installer.orphaned_storage(before)
+
+
+def list_storage() -> dict[str, Any]:
+    return installer.list_storage()
+
+
+def delete_storage(kind: str, name: str) -> dict[str, Any]:
+    return installer.delete_storage(kind, name)
+
+
+def prepare_runtime(allow_downgrade: bool = False) -> Any:
+    if allow_downgrade:
+        return installer.prepare_runtime(allow_downgrade=True)
     return installer.prepare_runtime()
 
 
 def check_downgrade(level_name: str, version: str) -> None:
     installer.check_downgrade(level_name, version)
+
+
+def check_setup_downgrade(setup_id: str) -> None:
+    installer.check_setup_downgrade(setup_id)
 
 
 def install_modpack_from_url(
@@ -156,6 +179,52 @@ def install_modpack_archive(
     return installer.install_modpack_archive(
         path, name, level_name=level_name, allow_downgrade=allow_downgrade
     )
+
+
+# A modpack install in steps, so the dashboard can keep the server running
+# while the pack downloads and roll it back if the new setup won't activate:
+# stage_* -> (stop) -> commit_modpack -> create_setup -> finalize_modpack,
+# or rollback_modpack when create_setup fails; discard_staged always.
+StagedModpack = installer.StagedModpack
+ModpackSwap = installer.ModpackSwap
+
+
+def stage_modpack_from_url(
+    url: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> Any:
+    return installer.stage_modpack_from_url(
+        url, name, level_name=level_name, allow_downgrade=allow_downgrade
+    )
+
+
+def stage_modpack_archive(
+    path: str, name: str, level_name: str | None = None, allow_downgrade: bool = False
+) -> Any:
+    """Stage an uploaded pack. The caller still owns (and deletes) ``path``."""
+    return installer.stage_modpack_archive(
+        path, name, level_name=level_name, allow_downgrade=allow_downgrade
+    )
+
+
+def commit_modpack(staged: Any) -> Any:
+    return installer.commit_modpack(staged)
+
+
+def rollback_modpack(swap: Any) -> None:
+    installer.rollback_modpack(swap)
+
+
+def finalize_modpack(swap: Any) -> None:
+    installer.finalize_modpack(swap)
+
+
+def discard_staged(staged: Any) -> None:
+    installer.discard_staged(staged)
+
+
+def peek_pack_version(path: str) -> str | None:
+    """Minecraft version an archive declares, without unpacking (or None)."""
+    return installer.peek_pack_version(path)
 
 
 def create_world(name: str) -> str:
@@ -185,6 +254,11 @@ def delete_backup(name: str) -> None:
     installer.delete_backup(name)
 
 
+def import_backup(path: str) -> dict[str, Any]:
+    """Validate an uploaded .tar.gz and move it into backups/ (a listing item)."""
+    return _backup_shape(installer.import_backup(path))
+
+
 def backup_file(name: str) -> str:
     return installer.backup_file(name)
 
@@ -212,8 +286,12 @@ def remove_player(kind: str, name: str) -> bool:
     return installer.remove_player(kind, name)
 
 
-def set_whitelist_enabled(enabled: bool) -> bool:
-    return installer.set_whitelist_enabled(enabled)
+def set_whitelist_enabled(enabled: bool, keep: dict[str, str] | None = None) -> bool:
+    return installer.set_whitelist_enabled(enabled, keep=keep)
+
+
+def apply_pending_properties() -> bool:
+    return installer.apply_pending_properties()
 
 
 def sync_access_lists_from_runtime() -> Any:
@@ -237,21 +315,26 @@ def child_env(extra: dict[str, str] | None = None) -> dict[str, str]:
 
 
 # -- shapes for the HTTP API -----------------------------------------------------
-_WORLD_KEYS = ("name", "size_bytes", "active", "last_version", "last_played", "used_by")
-_BACKUP_KEYS = ("name", "world", "size_bytes", "created_at", "minecraft_version", "kind")
+_WORLD_KEYS = ("name", "size_bytes", "active", "last_version", "newest_version", "last_played", "used_by")
+_BACKUP_KEYS = ("name", "world", "size_bytes", "created_at", "minecraft_version", "kind", "damaged")
 
 
 def list_worlds() -> list[dict[str, Any]]:
     return [{key: item.get(key) for key in _WORLD_KEYS} for item in installer.list_worlds()]
 
 
+def _backup_shape(item: dict[str, Any]) -> dict[str, Any]:
+    shaped = {key: item.get(key) for key in _BACKUP_KEYS}
+    shaped["damaged"] = bool(item.get("damaged"))
+    return shaped
+
+
 def list_backups() -> list[dict[str, Any]]:
-    return [{key: item.get(key) for key in _BACKUP_KEYS} for item in installer.list_backups()]
+    return [_backup_shape(item) for item in installer.list_backups()]
 
 
 def create_backup(world: str, before_tar: Any = None, after_tar: Any = None) -> dict[str, Any]:
-    result = installer.create_backup(world, before_tar=before_tar, after_tar=after_tar)
-    return {key: result.get(key) for key in _BACKUP_KEYS}
+    return _backup_shape(installer.create_backup(world, before_tar=before_tar, after_tar=after_tar))
 
 
 def players() -> dict[str, Any]:

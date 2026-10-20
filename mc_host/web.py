@@ -9,17 +9,19 @@ import re
 
 from . import config
 
+# Everything is served from the dashboard itself: no inline styles (the
+# pages set styles through CSSOM only) and self-hosted fonts (web/assets).
 CSP = (
-    "default-src 'self'; img-src 'self' data:; "
-    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-    "font-src 'self' https://fonts.gstatic.com; script-src 'self'; "
-    "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    "default-src 'self'; img-src 'self' data:; style-src 'self'; font-src 'self'; "
+    "script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+    "form-action 'self'"
 )
 SECURITY_HEADERS = {
     "Content-Security-Policy": CSP,
     "X-Content-Type-Options": "nosniff",
     "Referrer-Policy": "same-origin",
     "X-Frame-Options": "DENY",
+    "Cross-Origin-Opener-Policy": "same-origin",
 }
 # Bare /static/ URLs are revalidated on every load so a redeploy never mixes an
 # old app.js with a new API; the pages link ?v=<content hash> URLs instead,
@@ -48,7 +50,7 @@ CONTENT_TYPES = {
     ".mp4": "video/mp4",
     ".webm": "video/webm",
 }
-STATIC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+STATIC_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
 
 LOGIN_ERRORS = {
     "1": "That key didn't match. Check it and try again.",

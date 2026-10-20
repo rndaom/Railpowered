@@ -1,7 +1,7 @@
 # Railpowered: one Minecraft server, a sleep proxy and a web dashboard.
 #
 # Two stages:
-#   jre      downloads the pinned Eclipse Temurin JREs (8, 21, 25) and checks
+#   jre      downloads the pinned Eclipse Temurin JREs (8, 17, 21, 25) and checks
 #            each tarball against Adoptium's published SHA-256.
 #   runtime  Ubuntu 24.04 with Python 3.12 (stdlib only), tini and the app.
 #
@@ -27,6 +27,11 @@ RUN apt-get update \
 ARG JRE8_RELEASE=jdk8u504-b01
 ARG JRE8_SHA256_AMD64=52dcd578baca1d3e449ea86768a9129c0ee04d7b22565695498353cc66940c61
 ARG JRE8_SHA256_ARM64=9ae9c4dd80fc8f3c4081b480c7d42346e9e4cbee5ae58198fca11e0fc1a19163
+# Java 17: what Mojang declares for 1.17-1.20.4; older Forge/ModLauncher
+# builds for those versions refuse to start on Java 21.
+ARG JRE17_RELEASE=jdk-17.0.20.1+1
+ARG JRE17_SHA256_AMD64=0b2b640e3046b64c8ec504de0ab9d91bb5610182bda21fad454681ce54d45a62
+ARG JRE17_SHA256_ARM64=b8efcd5acc9109fe8d35bed132499643048a257b4f6042906ece37d03c839d77
 ARG JRE21_RELEASE=jdk-21.0.12.1+1
 ARG JRE21_SHA256_AMD64=2413149700df0f7d440500a84a8f764c535f21e5a5e87d38328b64eec2c5b500
 ARG JRE21_SHA256_ARM64=14be1f35ebdbd1f6e8d57eb911a3ffb74d6d9aa255abc5daf2b1302002cf2cf2
@@ -40,8 +45,8 @@ ARG TARGETARCH
 # hadolint ignore=SC3060
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
-      amd64) arch=x64;     sha8="$JRE8_SHA256_AMD64"; sha21="$JRE21_SHA256_AMD64"; sha25="$JRE25_SHA256_AMD64" ;; \
-      arm64) arch=aarch64; sha8="$JRE8_SHA256_ARM64"; sha21="$JRE21_SHA256_ARM64"; sha25="$JRE25_SHA256_ARM64" ;; \
+      amd64) arch=x64;     sha8="$JRE8_SHA256_AMD64"; sha17="$JRE17_SHA256_AMD64"; sha21="$JRE21_SHA256_AMD64"; sha25="$JRE25_SHA256_AMD64" ;; \
+      arm64) arch=aarch64; sha8="$JRE8_SHA256_ARM64"; sha17="$JRE17_SHA256_ARM64"; sha21="$JRE21_SHA256_ARM64"; sha25="$JRE25_SHA256_ARM64" ;; \
       *) echo "Unsupported architecture: ${TARGETARCH:-}" >&2; exit 1 ;; \
     esac; \
     fetch() { \
@@ -56,6 +61,7 @@ RUN set -eu; \
       "/opt/java/${major}/bin/java" -version; \
     }; \
     fetch 8 "$JRE8_RELEASE" "$sha8"; \
+    fetch 17 "$JRE17_RELEASE" "$sha17"; \
     fetch 21 "$JRE21_RELEASE" "$sha21"; \
     fetch 25 "$JRE25_RELEASE" "$sha25"
 
@@ -82,6 +88,7 @@ COPY --from=jre /opt/java /opt/java
 
 # Declared after the apt layers so a JRE bump does not invalidate them.
 ARG JRE8_RELEASE=jdk8u504-b01
+ARG JRE17_RELEASE=jdk-17.0.20.1+1
 ARG JRE21_RELEASE=jdk-21.0.12.1+1
 ARG JRE25_RELEASE=jdk-25.0.4.1+1
 
@@ -93,10 +100,12 @@ LABEL org.opencontainers.image.title="Railpowered" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.base.name="docker.io/library/ubuntu:24.04" \
       railpowered.jre8="${JRE8_RELEASE}" \
+      railpowered.jre17="${JRE17_RELEASE}" \
       railpowered.jre21="${JRE21_RELEASE}" \
       railpowered.jre25="${JRE25_RELEASE}"
 
 ENV JAVA_8_HOME=/opt/java/8 \
+    JAVA_17_HOME=/opt/java/17 \
     JAVA_21_HOME=/opt/java/21 \
     JAVA_25_HOME=/opt/java/25 \
     JAVA_HOME=/opt/java/25 \

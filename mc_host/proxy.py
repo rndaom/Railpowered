@@ -26,17 +26,20 @@ from typing import Any, Callable
 MODE_SLEEPING = "sleeping"
 MODE_STARTING = "starting"
 MODE_UPDATING = "updating"
+MODE_CRASHED = "crashed"  # the last start failed: joins don't wake it
 
 MESSAGES = {
     MODE_SLEEPING: "The server is waking up! Try joining again in a minute.",
     MODE_STARTING: "The server is starting up. Try joining again in a minute.",
     MODE_UPDATING: "Server is updating, try again in a minute.",
+    MODE_CRASHED: "The server couldn't start. Ask the owner to check the dashboard.",
     "not_whitelisted": "You are not whitelisted on this server.",
 }
 MOTD_SUFFIX = {
     MODE_SLEEPING: "Sleeping - join to wake it up",
     MODE_STARTING: "Starting up - try again in a minute",
     MODE_UPDATING: "Updating - try again in a minute",
+    MODE_CRASHED: "Couldn't start - ask the owner",
 }
 
 # Release -> protocol number, used so a sleeping server shows its real version
@@ -61,7 +64,7 @@ LEGACY_PROTOCOLS = {
     "1.6.1": 73, "1.6.2": 74, "1.6.4": 78,
 }
 
-_PLAYER_NAME = re.compile(r"^[A-Za-z0-9_]{1,16}$")
+_PLAYER_NAME = re.compile(r"^[A-Za-z0-9_]{1,16}\Z")
 _VERSION_PARTS = re.compile(r"^(\d+)\.(\d+)")
 
 
@@ -108,6 +111,7 @@ class _Conn:
         self.deadline = deadline
         self.buf = bytearray()
         self.eof = False
+        self.received = 0
 
     def _recv_some(self, until: float) -> bool:
         remaining = min(until, self.deadline) - time.monotonic()
@@ -125,6 +129,7 @@ class _Conn:
             self.eof = True
             return False
         self.buf.extend(chunk)
+        self.received += len(chunk)
         return True
 
     def peek(self, count: int, wait: float) -> bytes:
@@ -172,8 +177,12 @@ class _Conn:
 
 
 class SleepProxy:
-    MAX_HANDLERS = 32
+    # Handlers are tiny threads; idle sockets give up their slot after
+    # FIRST_BYTE_TIMEOUT. There is no per-IP cap: on Railway every player
+    # arrives from the TCP proxy's address.
+    MAX_HANDLERS = 128
     CONNECTION_DEADLINE = 6.0
+    FIRST_BYTE_TIMEOUT = 2.0
     MAX_HANDSHAKE = 4096
     MAX_LOGIN_START = 1024
 
@@ -306,7 +315,9 @@ class SleepProxy:
         wake = False
         conn = _Conn(client, time.monotonic() + self.CONNECTION_DEADLINE)
         try:
-            first = conn.peek(1, self.CONNECTION_DEADLINE)
+            # Real clients send their handshake at once; a silent socket only
+            # holds a slot, so it gets a short first-byte window.
+            first = conn.peek(1, self.FIRST_BYTE_TIMEOUT)
             if not first:
                 return
             if first[0] == 0xFE:
@@ -322,7 +333,8 @@ class SleepProxy:
         except Exception:
             wake = False
         finally:
-            self._graceful_close(client)
+            # Nothing to drain from a client that sent nothing or already left.
+            self._graceful_close(client, drain=conn.received > 0 and not conn.eof)
         if wake:
             try:
                 self.on_wake(wake_name)
@@ -330,13 +342,13 @@ class SleepProxy:
                 self._log(f"Could not wake the server: {exc}", "error")
 
     @staticmethod
-    def _graceful_close(client: socket.socket) -> None:
+    def _graceful_close(client: socket.socket, drain: bool = True) -> None:
         """Half-close, then drain so unread client bytes never trigger a RST."""
         try:
             client.shutdown(socket.SHUT_WR)
         except OSError:
             pass
-        until = time.monotonic() + 1.0
+        until = time.monotonic() + (1.0 if drain else 0.0)
         try:
             while time.monotonic() < until:
                 client.settimeout(max(0.01, until - time.monotonic()))
