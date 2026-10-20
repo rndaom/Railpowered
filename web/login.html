@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#090c10" media="(prefers-color-scheme: dark)">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="same-origin">
+  <title>Sign in · Railpowered</title>
+  <link rel="icon" href="/static/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <!-- Loaded in <head> on purpose: it applies the saved theme before first paint. -->
+  <script src="/static/login.js"></script>
+</head>
+<body>
+  <svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true" class="sprite">
+    <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M10.6 5.6A10 10 0 0 1 12 5.5c6 0 9.5 6.5 9.5 6.5a17 17 0 0 1-2.6 3.4"/><path d="M6.4 6.9A16.6 16.6 0 0 0 2.5 12S6 18.5 12 18.5a9.4 9.4 0 0 0 5.1-1.5"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="m3 3 18 18"/></symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24"><path d="M4.5 12h15"/><path d="m13.5 6 6 6-6 6"/></symbol>
+    <symbol id="i-alert-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.2"/><path d="M12 16.4h.01"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 2"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5.5"/><path d="M12 7.6h.01"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="12.5" rx="2"/><path d="M8.5 20.5h7M12 16.5v4"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4 6 18M18 6l1.4-1.4"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.6A8.2 8.2 0 0 1 9.4 4 8.2 8.2 0 1 0 20 14.6z"/></symbol>
+  </svg>
+
+  <main class="login-page">
+    <div class="login-shell">
+      <div class="login-card">
+        <div class="rail" data-phase="online" aria-hidden="true"><span class="rail-power"></span></div>
+        <div class="login-inner">
+          <div class="login-brand">
+            <img src="/static/assets/logo.svg" alt="" width="56" height="56">
+            <h1>Railpowered</h1>
+            <p>Sign in to manage your Minecraft server.</p>
+          </div>
+
+          <!-- The server fills in {{error}} (empty when there is none), so the message shows without JavaScript too. -->
+          <div class="callout tone-bad login-error" id="login-error" role="alert" data-message="{{error}}">
+            <svg class="icon" aria-hidden="true"><use href="#i-alert-circle"/></svg>
+            <p id="login-error-text">{{error}}</p>
+          </div>
+
+          <form class="stack" id="login-form" method="post" action="/login" novalidate>
+            <div class="field">
+              <label class="field-label" for="key">Dashboard key</label>
+              <div class="key-field">
+                <input class="input" id="key" name="key" type="password" autocomplete="current-password"
+                       autocapitalize="off" autocorrect="off" spellcheck="false" required autofocus
+                       aria-describedby="key-help key-error">
+                <button class="icon-btn" type="button" id="key-toggle" aria-label="Show key" aria-pressed="false" aria-controls="key">
+                  <svg class="icon" aria-hidden="true"><use href="#i-eye"/></svg>
+                </button>
+              </div>
+              <p class="field-error" id="key-error" hidden></p>
+              <p class="field-help" id="key-help">
+                This is the <code>ADMIN_KEY</code> you set in Railway, under your service's <strong>Variables</strong> tab.
+                If you didn't set one, Railpowered generated one and printed it once, in the logs of the service's first deploy.
+                Can't find it? Set <code>ADMIN_KEY</code> under Variables; Railway redeploys, and you sign in with that.
+              </p>
+            </div>
+            <button class="btn btn-primary btn-lg btn-block" type="submit" id="login-submit">
+              <span>Sign in</span>
+              <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"/></svg>
+            </button>
+          </form>
+
+          <p class="login-hint">You stay signed in on this browser for 30 days, or until the key changes.</p>
+        </div>
+      </div>
+
+      <footer class="login-foot">
+        <div class="theme-switch login-theme" role="group" aria-label="Colour theme">
+          <button type="button" data-theme-choice="system" aria-pressed="true" title="Match your device"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-monitor"/></svg><span>Auto</span></button>
+          <button type="button" data-theme-choice="light" aria-pressed="false" title="Light theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-sun"/></svg><span>Light</span></button>
+          <button type="button" data-theme-choice="dark" aria-pressed="false" title="Dark theme"><svg class="icon icon-sm" aria-hidden="true"><use href="#i-moon"/></svg><span>Dark</span></button>
+        </div>
+        <p>Railpowered accepts the <a href="https://www.minecraft.net/eula" target="_blank" rel="noopener noreferrer">Minecraft EULA</a> on your behalf when it starts Minecraft. By running this server you agree to it.</p>
+        <p>Not affiliated with Mojang or Microsoft.</p>
+      </footer>
+    </div>
+  </main>
+</body>
+</html>

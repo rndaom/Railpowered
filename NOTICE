@@ -1,0 +1,32 @@
+Railpowered
+Copyright (c) 2026 rndaom and Railpowered contributors
+Licensed under the MIT License (see LICENSE).
+
+Minecraft
+---------
+Minecraft is a trademark of Mojang AB. Railpowered is not an official
+Minecraft product and is not approved by or associated with Mojang or
+Microsoft.
+
+Railpowered does not include or redistribute Minecraft. Server software is
+downloaded at runtime from its official sources: Mojang (vanilla server jars),
+FabricMC (Fabric), MinecraftForge (Forge) and, when you install a modpack,
+Modrinth or the URL you provide. Each is covered by its own license.
+
+Running a Minecraft server requires accepting the Minecraft End User License
+Agreement: https://www.minecraft.net/eula
+Railpowered writes eula=true on your behalf so the server can start. By
+deploying or running Railpowered, you agree to the Minecraft EULA.
+
+Eclipse Temurin
+---------------
+The Docker image includes Eclipse Temurin Java runtimes (versions 8, 17, 21
+and 25) from the Eclipse Adoptium project, licensed under the GNU General Public
+License, version 2, with the Classpath Exception.
+https://adoptium.net/
+
+IBM Plex
+--------
+The dashboard ships IBM Plex Sans, IBM Plex Sans Condensed and IBM Plex Mono
+(web/assets/fonts), Copyright 2017 IBM Corp. with Reserved Font Name "Plex",
+licensed under the SIL Open Font License, Version 1.1 (web/assets/fonts/OFL.txt).

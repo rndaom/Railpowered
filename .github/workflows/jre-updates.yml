@@ -1,0 +1,48 @@
+name: JRE updates
+
+# Weekly check for newer Eclipse Temurin releases than the ones pinned in the
+# Dockerfile. Opens (or refreshes) one issue when an update is available.
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Compare pinned and latest JREs
+        id: check
+        run: |
+          set +e
+          python .github/scripts/jre_versions.py > report.md
+          code=$?
+          set -e
+          cat report.md
+          if [ "$code" -eq 1 ]; then
+            echo "outdated=true" >> "$GITHUB_OUTPUT"
+          elif [ "$code" -ne 0 ]; then
+            exit "$code"
+          fi
+      - name: Open or refresh the update issue
+        if: steps.check.outputs.outdated == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Newer Eclipse Temurin JREs are available"
+          number="$(gh issue list --state open --search "\"$title\" in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "$number" ]; then
+            gh issue edit "$number" --body-file report.md
+          else
+            gh issue create --title "$title" --body-file report.md
+          fi

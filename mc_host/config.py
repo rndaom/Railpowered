@@ -1,15 +1,81 @@
-"""Runtime paths, ports, and admin-panel credentials."""
+"""Runtime settings read from the environment, plus the dashboard admin key.
+
+Importing this module has no side effects: nothing is written to disk and
+nothing is bound. Bad environment values never crash the process; they fall
+back to a safe default and are recorded in CONFIG_WARNINGS, which main() logs
+at boot.
+"""
 
 from __future__ import annotations
 
 import base64
-import hashlib
 import os
+import re
+import threading
 from collections.abc import Mapping
 
 import installer
 
+APP_VERSION = "2.0.0"
 ADMIN_KEY_FILE = ".admin-key"
+SESSION_SECRET_FILE = ".session-secret"
+MIN_RECOMMENDED_KEY_LENGTH = 12
+
+CONFIG_WARNINGS: list[str] = []
+
+_TRUE = {"1", "true", "yes", "on", "y"}
+_FALSE = {"0", "false", "no", "off", "n", ""}
+_MEMORY_RE = re.compile(r"^(\d+)([KkMmGg]?)$")
+
+
+def _warn(message: str) -> None:
+    if message not in CONFIG_WARNINGS:
+        CONFIG_WARNINGS.append(message)
+
+
+def _unevaluated_template(value: str) -> bool:
+    return value.startswith("${{") and "}}" in value
+
+
+def env_int(
+    name: str,
+    default: int,
+    *,
+    minimum: int | None = None,
+    maximum: int | None = None,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    """Read an integer variable; fall back to `default` with a warning when invalid."""
+    environ = os.environ if env is None else env
+    raw = str(environ.get(name, "")).strip()
+    if not raw or _unevaluated_template(raw):
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        _warn(f'{name}="{raw}" is not a whole number; using {default}.')
+        return default
+    if minimum is not None and value < minimum:
+        _warn(f"{name}={value} is below the minimum {minimum}; using {minimum}.")
+        value = minimum
+    if maximum is not None and value > maximum:
+        _warn(f"{name}={value} is above the maximum {maximum}; using {maximum}.")
+        value = maximum
+    return value
+
+
+def env_bool(name: str, default: bool, env: Mapping[str, str] | None = None) -> bool:
+    """Read a yes/no variable (true/1/yes/on or false/0/no/off)."""
+    environ = os.environ if env is None else env
+    raw = str(environ.get(name, "")).strip().lower()
+    if not raw or _unevaluated_template(raw):
+        return default
+    if raw in _TRUE:
+        return True
+    if raw in _FALSE:
+        return False
+    _warn(f'{name}="{raw}" is not true or false; using {str(default).lower()}.')
+    return default
 
 
 def resolve_public_address(env: Mapping[str, str] | None = None) -> str:
@@ -20,40 +86,105 @@ def resolve_public_address(env: Mapping[str, str] | None = None) -> str:
         return override
     domain = str(environ.get("RAILWAY_TCP_PROXY_DOMAIN", "")).strip()
     port = str(environ.get("RAILWAY_TCP_PROXY_PORT", "")).strip()
-    if domain and port:
+    if domain and port and not _unevaluated_template(domain):
         return f"{domain}:{port}"
     return ""
+
+
+def _write_secret_file(path: str, value: str) -> bool:
+    """Create `path` with mode 0600. Returns False if it already exists or fails."""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except OSError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(value)
+    return True
+
+
+def _read_secret_file(path: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read().strip()
+    except OSError:
+        return ""
+
+
+def load_or_create_admin_key(
+    data_dir: str, env: Mapping[str, str] | None = None
+) -> tuple[str, str]:
+    """Return (key, source); source is "env", "volume" or "generated".
+
+    "generated" is returned only by the call that actually created the file,
+    so the caller can show the key exactly once.
+    """
+    environ = os.environ if env is None else env
+    env_key = str(environ.get("ADMIN_KEY", "")).strip()
+    if env_key and not _unevaluated_template(env_key):
+        return env_key, "env"
+    path = os.path.join(data_dir, ADMIN_KEY_FILE)
+    stored = _read_secret_file(path)
+    if stored:
+        return stored, "volume"
+    key = base64.urlsafe_b64encode(os.urandom(18)).decode()
+    if _write_secret_file(path, key):
+        return key, "generated"
+    # Another process won the race, or the volume is read-only.
+    stored = _read_secret_file(path)
+    if stored:
+        return stored, "volume"
+    return key, "generated"
 
 
 def resolve_admin_key(
     data_dir: str, env: Mapping[str, str] | None = None
 ) -> tuple[str, bool]:
-    """Use ADMIN_KEY when set; otherwise reuse or create a key on the volume."""
-    environ = os.environ if env is None else env
-    env_key = str(environ.get("ADMIN_KEY", "")).strip()
-    if env_key and not _unevaluated_template(env_key):
-        return env_key, True
-    path = os.path.join(data_dir, ADMIN_KEY_FILE)
-    try:
-        with open(path, encoding="utf-8") as handle:
-            stored = handle.read().strip()
+    """Backward-compatible wrapper: (key, came_from_env)."""
+    key, source = load_or_create_admin_key(data_dir, env)
+    return key, source == "env"
+
+
+_admin_lock = threading.Lock()
+_admin_cache: dict[str, tuple[str, str]] = {}
+
+
+def admin_key_info() -> tuple[str, str]:
+    """(key, source) for the current data dir, resolved lazily and cached."""
+    data_dir = installer.DATA_DIR
+    with _admin_lock:
+        env_key = str(os.environ.get("ADMIN_KEY", "")).strip()
+        cache_key = f"{data_dir}\0{env_key}"
+        cached = _admin_cache.get(cache_key)
+        if cached is None:
+            cached = load_or_create_admin_key(data_dir)
+            _admin_cache[cache_key] = cached
+            # Later lookups must not report "generated" again.
+            if cached[1] == "generated":
+                _admin_cache[cache_key] = (cached[0], "volume")
+        return cached
+
+
+def get_admin_key() -> str:
+    return admin_key_info()[0]
+
+
+def admin_key_path() -> str:
+    return os.path.join(installer.DATA_DIR, ADMIN_KEY_FILE)
+
+
+def load_or_create_session_secret(data_dir: str | None = None) -> str:
+    """Random per-volume secret mixed into session signatures."""
+    path = os.path.join(data_dir or installer.DATA_DIR, SESSION_SECRET_FILE)
+    secret = _read_secret_file(path)
+    if secret:
+        return secret
+    secret = os.urandom(32).hex()
+    if not _write_secret_file(path, secret):
+        stored = _read_secret_file(path)
         if stored:
-            return stored, False
-    except OSError:
-        pass
-    key = base64.urlsafe_b64encode(os.urandom(18)).decode()
-    try:
-        os.makedirs(data_dir, exist_ok=True)
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(key)
-    except OSError:
-        pass
-    return key, False
-
-
-def _unevaluated_template(value: str) -> bool:
-    return value.startswith("${{") and "}}" in value
+            return stored
+    return secret
 
 
 def resolve_web_port(
@@ -71,9 +202,6 @@ def resolve_web_port(
     return 8080
 
 
-MC_DIR = installer.DATA_DIR
-MC_PORT = 25565
-WEB_PORT = resolve_web_port()
 _MIB = 1024 * 1024
 _MEMORY_LIMIT_FILES = (
     "/sys/fs/cgroup/memory.max",  # cgroup v2
@@ -95,16 +223,18 @@ def container_memory_limit() -> int | None:
     return None
 
 
-def resolve_max_memory(
-    env: Mapping[str, str] | None = None, limit_bytes: int | None = None
-) -> str:
-    """Leave native-memory headroom while avoiding an oversized idle heap."""
-    environ = os.environ if env is None else env
-    configured = str(environ.get("MC_MAX_MEMORY", "auto")).strip()
-    if configured and configured.lower() != "auto":
-        return configured
-    if limit_bytes is None:
-        limit_bytes = container_memory_limit()
+def memory_bytes(value: str) -> int | None:
+    """Parse a JVM size such as 512M, 2G or 1048576 into bytes."""
+    match = _MEMORY_RE.match(str(value).strip())
+    if not match:
+        return None
+    number = int(match.group(1))
+    unit = match.group(2).upper()
+    factor = {"": 1, "K": 1024, "M": _MIB, "G": 1024 * _MIB}[unit]
+    return number * factor
+
+
+def _auto_heap(limit_bytes: int | None) -> str:
     if limit_bytes is None:
         return "2G"
     # A 1 GiB trial container gets about 700 MiB, matching Railway's guidance.
@@ -114,67 +244,81 @@ def resolve_max_memory(
     return f"{heap_mib}M"
 
 
+def resolve_max_memory(
+    env: Mapping[str, str] | None = None, limit_bytes: int | None = None
+) -> str:
+    """Leave native-memory headroom while avoiding an oversized idle heap."""
+    environ = os.environ if env is None else env
+    configured = str(environ.get("MC_MAX_MEMORY", "auto")).strip()
+    if configured and configured.lower() != "auto":
+        size = memory_bytes(configured)
+        if size is not None and size >= 128 * _MIB:
+            return configured.upper()
+        _warn(
+            f'MC_MAX_MEMORY="{configured}" is not a size like 1536M or 2G '
+            "(at least 128M); using the automatic size."
+        )
+    if limit_bytes is None:
+        limit_bytes = container_memory_limit()
+    return _auto_heap(limit_bytes)
+
+
+def resolve_min_memory(max_memory: str, env: Mapping[str, str] | None = None) -> str:
+    """-Xms value; never larger than -Xmx (the JVM refuses to start otherwise)."""
+    environ = os.environ if env is None else env
+    configured = str(environ.get("MC_MIN_MEMORY", "256M")).strip() or "256M"
+    size = memory_bytes(configured)
+    if size is None:
+        _warn(f'MC_MIN_MEMORY="{configured}" is not a size like 256M; using 256M.')
+        configured, size = "256M", 256 * _MIB
+    max_size = memory_bytes(max_memory) or size
+    if size > max_size:
+        _warn(
+            f"MC_MIN_MEMORY={configured} is larger than the maximum heap "
+            f"{max_memory}; using {max_memory}."
+        )
+        return max_memory
+    return configured.upper()
+
+
+MC_PORT = 25565
+WEB_PORT = resolve_web_port()
 MAX_MEMORY = resolve_max_memory()
-MIN_MEMORY = os.environ.get("MC_MIN_MEMORY", "256M")
-IDLE_TIMEOUT = int(os.environ.get("IDLE_TIMEOUT", "600"))
-AUTO_START = os.environ.get("AUTO_START", "false").lower() == "true"
-TEMPLATE_DIR = os.environ.get("TEMPLATE_DIR", "/server/templates")
-if not os.path.isdir(TEMPLATE_DIR):
-    _local_templates = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates"
-    )
-    if os.path.isdir(_local_templates):
-        TEMPLATE_DIR = _local_templates
-ADMIN_KEY, ADMIN_KEY_FROM_ENV = resolve_admin_key(installer.DATA_DIR)
-ADMIN_TOKEN = hashlib.sha256(ADMIN_KEY.encode()).hexdigest()[:32]
+MIN_MEMORY = resolve_min_memory(MAX_MEMORY)
+# Seconds without players before an online server is stopped. 0 = never sleep.
+# At most one day, the same limit as the dashboard's sleep timer (1440 minutes).
+IDLE_TIMEOUT = env_int("IDLE_TIMEOUT", 600, minimum=0, maximum=installer.IDLE_MAX_MINUTES * 60)
+if 0 < IDLE_TIMEOUT < 60:
+    _warn(f"IDLE_TIMEOUT={IDLE_TIMEOUT} is very short; using 60 seconds.")
+    IDLE_TIMEOUT = 60
+AUTO_START = env_bool("AUTO_START", False)
+# IDLE_TIMEOUT and AUTO_START are parsed here only to warn about bad values at
+# boot; the effective values come from installer.railpowered_settings(), where
+# the dashboard's saved settings override them.
+# Seconds a start may take before "Done (" appears; past it the server is
+# stopped and reported as crashed (a hung mod or a stuck world load would
+# otherwise keep the container running forever). 0 disables the watchdog.
+START_TIMEOUT = env_int("START_TIMEOUT", 900, minimum=0, maximum=6 * 3600)
+if 0 < START_TIMEOUT < 120:
+    _warn(f"START_TIMEOUT={START_TIMEOUT} is too short for a first start; using 120 seconds.")
+    START_TIMEOUT = 120
+# Grace period for Minecraft to save and exit. With the kill and join waits in
+# process.py the whole shutdown stays under Railway's drainingSeconds (60).
+STOP_TIMEOUT = env_int("STOP_TIMEOUT", 30, minimum=5, maximum=45)
 MC_PUBLIC_ADDRESS = resolve_public_address()
 
-LOGIN_HTML = """\
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Railpowered</title>
-  <style>
-    *{margin:0;padding:0;box-sizing:border-box}
-    body{font-family:ui-sans-serif,system-ui,sans-serif;background:#16110c;color:#f4ead6;
-         display:flex;align-items:center;justify-content:center;min-height:100vh;
-         background-image:radial-gradient(900px 420px at 50% -10%, #4a3214 0%, transparent 58%)}
-    .card{background:#221910;border:1px solid #453526;border-radius:16px;padding:36px;width:360px}
-    .mark{width:56px;height:56px;margin:0 auto 16px;display:block}
-    h2{color:#e4b23a;margin-bottom:6px;text-align:center;letter-spacing:.04em}
-    p{color:#b09a7c;text-align:center;font-size:.92rem;margin-bottom:18px}
-    .hint{font-size:.8rem;margin-top:14px;margin-bottom:0}
-    input{width:100%;padding:12px;border-radius:10px;border:1px solid #453526;
-          background:#16110c;color:#f4ead6;font-size:1rem;margin-bottom:14px}
-    input:focus{outline:none;border-color:#e4b23a}
-    button{width:100%;padding:12px;border-radius:10px;border:none;
-           background:#e4b23a;color:#2a1c08;font-weight:700;font-size:1rem;cursor:pointer}
-    button:hover{opacity:.92}
-    .error{color:#e24a3c;font-size:.9rem;margin-bottom:12px;text-align:center}
-  </style>
-</head>
-<body>
-  <div class="card">
-    <svg class="mark" viewBox="0 0 64 64" aria-hidden="true">
-      <rect x="8" y="14" width="48" height="7" rx="1.5" fill="#6b4423"/>
-      <rect x="8" y="28.5" width="48" height="7" rx="1.5" fill="#5a381c"/>
-      <rect x="8" y="43" width="48" height="7" rx="1.5" fill="#6b4423"/>
-      <rect x="18" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
-      <rect x="40" y="10" width="6" height="44" rx="1.5" fill="#e4b23a"/>
-      <rect x="29" y="26" width="6" height="16" rx="1" fill="#3d2a1a"/>
-      <circle cx="32" cy="24" r="6" fill="#e24a3c"/>
-      <circle cx="32" cy="24" r="3" fill="#ffd27a"/>
-    </svg>
-    <h2>Railpowered</h2>
-    <p>Dashboard login</p>
-    {error}
-    <form method="POST" action="/api/login">
-      <input type="password" name="key" placeholder="Admin key" autofocus>
-      <button type="submit">Open dashboard</button>
-    </form>
-    <p class="hint">On Railway this is the ADMIN_KEY you set when you deployed.</p>
-  </div>
-</body>
-</html>"""
+
+def resolve_web_dir(env: Mapping[str, str] | None = None) -> str | None:
+    """Directory holding index.html/login.html/app.js. None when none exists."""
+    environ = os.environ if env is None else env
+    candidates = [
+        str(environ.get("WEB_DIR", "")).strip() or "/server/web",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "web"),
+    ]
+    for candidate in candidates:
+        if candidate and os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+WEB_DIR = resolve_web_dir()

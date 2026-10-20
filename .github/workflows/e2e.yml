@@ -1,0 +1,56 @@
+name: End-to-end
+
+# Builds the image and plays it through on Linux, as Railway would run it:
+# vanilla start, sleep proxy, wake on join, a live backup, a Fabric setup on
+# a new world, switching back, the idle timer, a SIGTERM with Minecraft
+# online, and a redeploy on the same volume. See tests/e2e/driver.py.
+# Fabric, Forge and modpacks can't run on a Windows checkout (no symlinks),
+# so this job is where those paths are exercised for real.
+
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+      - ".github/ISSUE_TEMPLATE/**"
+      - ".github/dependabot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Docker end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      E2E_OUT: ${{ github.workspace }}/e2e-output
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - uses: docker/setup-buildx-action@v4
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: railpowered:e2e
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Run the end-to-end check
+        run: tests/e2e/run_docker.sh railpowered:e2e
+      - name: Upload container logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: e2e-output/
+          if-no-files-found: warn
+          retention-days: 14

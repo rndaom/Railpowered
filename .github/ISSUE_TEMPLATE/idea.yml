@@ -1,17 +1,44 @@
-name: Idea
-description: A change that would make Railpowered better
+name: Feature idea
+description: Suggest something that would make Railpowered easier or more useful
 title: "[Idea] "
 labels: ["enhancement"]
 body:
+  - type: markdown
+    attributes:
+      value: |
+        Railpowered aims to stay a one-click server for a group of friends: one Railway deploy, a dashboard for everything else, no extra services. Ideas that keep that path simple are the easiest to take on.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The situation or problem, in your own words.
+      placeholder: "When a friend asks to join, I have to find their exact username first..."
+    validations:
+      required: true
+
   - type: textarea
     id: idea
     attributes:
-      label: The idea
-      placeholder: What should be easier, clearer, or possible that is not today?
+      label: What would help?
+      description: How you picture it working. Sketches and screenshots are welcome.
     validations:
       required: true
-  - type: textarea
-    id: why
+
+  - type: dropdown
+    id: who
     attributes:
-      label: Why it helps
-      placeholder: First-time deploy, everyday hosting, or both?
+      label: Who benefits most?
+      options:
+        - Someone deploying for the first time
+        - The server owner, day to day
+        - Players joining the server
+        - Contributors working on Railpowered
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you've tried instead?
+      description: Workarounds, other tools, or settings you looked at.
