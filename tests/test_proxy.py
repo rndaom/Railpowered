@@ -253,6 +253,14 @@ class ModernLoginTests(ProxyTestCase):
         self.assertTrue(self.woke.wait(3))
         self.assertEqual(self.wakes, ["Alex"])
 
+    def test_login_after_a_failed_start_asks_for_the_owner(self):
+        self.info["mode"] = "crashed"
+        client = self.client()
+        client.send(handshake(2) + login_start("Steve"))
+        _id, text = client.read_string_packet()
+        self.assertEqual(json.loads(text)["text"], MESSAGES["crashed"])
+        self.assert_no_wake()
+
     def test_transfer_intent_counts_as_login(self):
         client = self.client()
         client.send(handshake(3) + login_start("Steve"))
@@ -380,6 +388,18 @@ class RobustnessTests(ProxyTestCase):
         except ConnectionResetError:
             pass
         self.assertLess(time.monotonic() - started, 2.0)
+
+    def test_silent_connections_give_their_slot_back_quickly(self):
+        self.assertGreaterEqual(SleepProxy.MAX_HANDLERS, 128)
+        idle = self.client()  # connects and never sends a byte
+        started = time.monotonic()
+        try:
+            self.assertEqual(idle.read_until_eof(), b"")
+        except ConnectionResetError:
+            pass
+        # The first-byte window (2 s), and no 1 s drain for a silent socket.
+        self.assertLess(time.monotonic() - started, SleepProxy.FIRST_BYTE_TIMEOUT + 0.8)
+        self.assert_no_wake()
 
     def test_stop_releases_port_and_start_is_idempotent(self):
         self.assertTrue(self.proxy.start())  # already running: no second bind

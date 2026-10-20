@@ -144,9 +144,15 @@ def _restart_note(exc: ServerError) -> Exception:
 
 
 def _run_with_restart(change: Callable[[], Any], restart: bool, reason: str) -> Any:
-    """Stop if online, apply `change`, then start again (old setup on failure)."""
-    was_running = restart and controller.is_running()
-    if was_running:
+    """Stop if online, apply `change`, then start again (old setup on failure).
+
+    `restart` means the change replaces what the server runs (a switch).
+    A start that is still preparing, or a stop in progress, is waited out
+    first; a restart that was under way counts as running."""
+    resume = controller.settle() if restart else False
+    running = restart and controller.is_running()
+    was_running = running or (restart and resume)
+    if running:
         controller.stop(ignore_task=True, reason=reason)
     try:
         result = change()
@@ -162,6 +168,9 @@ def _run_with_restart(change: Callable[[], Any], restart: bool, reason: str) -> 
             controller.start(ignore_task=True, reason=reason)
         except ServerError as exc:
             raise _restart_note(exc) from exc
+    elif restart:
+        # A crash of the previous setup says nothing about this one.
+        controller.clear_crash("Switched setups; the previous crash no longer applies.")
     return result
 
 
@@ -603,7 +612,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 reason="switching to the new setup",
             )
 
-        task = tasks.submit("apply", label, run)
+        task = tasks.submit("apply", label, run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     def _find_setup(self, setup_id: str) -> dict[str, Any]:
@@ -626,7 +635,7 @@ class PanelHandler(BaseHTTPRequestHandler):
         level = data.get("level_name")
         if level is not None:
             level = _check_name(_str(data, "level_name"))
-            if setup["active"] and controller.is_running() and level != setup["level_name"]:
+            if setup["active"] and controller.lifecycle_active() and level != setup["level_name"]:
                 raise ApiError(
                     409, "server_running", "Stop the server before changing the world it runs."
                 )
@@ -656,7 +665,7 @@ class PanelHandler(BaseHTTPRequestHandler):
                 reason=f"switching to {setup['name']}",
             )
 
-        task = tasks.submit("switch", f"Switching to {setup['name']}", run)
+        task = tasks.submit("switch", f"Switching to {setup['name']}", run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     @route("DELETE", f"/api/setups/{_SEG}")
@@ -690,7 +699,7 @@ class PanelHandler(BaseHTTPRequestHandler):
             fields = install()
             _run_with_restart(lambda: activate(fields), restart=True, reason=f"switching to {name}")
 
-        task = tasks.submit("modpack", label, run)
+        task = tasks.submit("modpack", label, run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     @route("POST", "/api/modpacks")
@@ -820,7 +829,10 @@ class PanelHandler(BaseHTTPRequestHandler):
         if not ix.world_exists(world):
             raise ApiError(404, "world_not_found", f"There is no world named {world}.")
         _require_idle_tasks()
-        task = tasks.submit("backup", f"Backing up {world}", lambda _ctx: controller.backup_world(world))
+        task = tasks.submit(
+            "backup", f"Backing up {world}", lambda _ctx: controller.backup_world(world),
+            guard=controller.ensure_quiet,
+        )
         self._json({"task": task.to_dict()}, 202)
 
     def _backup_path(self, name: str) -> str:
@@ -853,9 +865,11 @@ class PanelHandler(BaseHTTPRequestHandler):
             warning = (result or {}).get("downgrade_warning")
             if isinstance(warning, dict) and warning.get("message"):
                 ctx.set_note(str(warning["message"]))
+            if (result or {}).get("world") == ix.active_setup().get("level_name"):
+                controller.clear_crash("The active world was restored; the previous crash no longer applies.")
             return result
 
-        task = tasks.submit("restore", label, run)
+        task = tasks.submit("restore", label, run, guard=controller.ensure_quiet)
         self._json({"task": task.to_dict()}, 202)
 
     @route("DELETE", f"/api/backups/{_SEG}")
@@ -979,6 +993,12 @@ def build_status() -> dict[str, Any]:
         print(traceback.format_exc(), flush=True)
         setup = {"id": "", "name": "", "type": "vanilla", "minecraft_version": "latest",
                  "resolved_version": None, "level_name": "world", "instance": None}
+    last_exit = dict(snap["last_exit"]) if snap["last_exit"] else None
+    if last_exit is not None:
+        # An exit of another setup (before a switch) isn't this one's story.
+        exited = last_exit.pop("setup_id", None)
+        if exited and setup.get("id") and exited != setup.get("id"):
+            last_exit = None
     runtime = snap["runtime"]
     if runtime is not None and getattr(runtime, "version", None):
         setup["resolved_version"] = runtime.version
@@ -1016,7 +1036,7 @@ def build_status() -> dict[str, Any]:
         "online_mode": not legacy and props.get("online-mode", "true").strip().lower() != "false",
         "whitelist_enabled": props.get("white-list", "false").strip().lower() == "true",
         "legacy": legacy,
-        "last_exit": snap["last_exit"],
+        "last_exit": last_exit,
         "product": installer.APP_NAME,
         "app_version": config.APP_VERSION,
     }

@@ -25,7 +25,7 @@ import installer
 
 from . import config
 from . import installer_api as ix
-from .proxy import MODE_SLEEPING, MODE_STARTING, MODE_UPDATING, SleepProxy
+from .proxy import MODE_CRASHED, MODE_SLEEPING, MODE_STARTING, MODE_UPDATING, SleepProxy
 from .state import CRASHED, ONLINE, PREPARING, SLEEPING, STARTING, STOPPING, ServerState
 from .state import state as default_state
 from .tasks import TaskRunner
@@ -67,6 +67,9 @@ _GC_FLAG = re.compile(r"^-XX:\+Use\w*GC$")
 # mid-save.
 KILL_WAIT = 5
 MONITOR_JOIN = 2
+# After a start fails (or crashes before it is ready), joins don't wake the
+# server again for this long; persistent failures wait for the owner.
+WAKE_BACKOFF = 300
 _STACK_FRAME = re.compile(r"^\s+(at |\.\.\. \d+ more)")
 _THROWABLE = re.compile(r"(?:^|[\s:])(?:[\w$]+\.)+[\w$]*(?:Exception|Error)(?::|$)")
 
@@ -208,6 +211,11 @@ class ServerController:
         self._stopping_proc: Any = None
         self._wake_lock = threading.Lock()
         self._shutting_down = False
+        self._restarting = False
+        # (when, code) of the last start that failed before Minecraft was ready.
+        self._failed_start: tuple[float, str] | None = None
+        self._timed_out: Any = None  # the process stopped by the start watchdog
+        self._whitelist_error_logged = False
         self._recent: collections.deque[str] = collections.deque(maxlen=60)
         self._idle_cache: tuple[float, int] = (0.0, 0)
         self._info_cache: tuple[float, dict[str, Any]] = (0.0, {})
@@ -228,18 +236,97 @@ class ServerController:
         with self.state.lock:
             return self.state.process is not None
 
-    def current_world(self) -> str | None:
+    def _preparing(self) -> bool:
+        """start() is installing files: phase STARTING, Java not spawned yet."""
         with self.state.lock:
-            if self.state.process is None or self.state.runtime is None:
-                return None
-            return getattr(self.state.runtime, "level_name", None)
+            return self.state.phase == STARTING and self.state.process is None
+
+    def lifecycle_active(self) -> bool:
+        """Running, or on its way up or down (prepare window included)."""
+        with self.state.lock:
+            return self.state.process is not None or self.state.phase in (STARTING, STOPPING)
+
+    def ensure_quiet(self) -> None:
+        """Refuse (409 busy) while the server is starting or stopping.
+
+        Passed to TaskRunner.submit as its guard, so the check and the task
+        creation happen under the task lock that start() and stop() take too:
+        a switch, restore or backup can never interleave with them."""
+        with self.state.lock:
+            phase, proc = self.state.phase, self.state.process
+        if phase == STOPPING:
+            raise ServerBusy("The server is stopping. Try again in a moment.")
+        if phase == STARTING and proc is None:
+            raise ServerBusy("The server is starting. Try again once it's online.")
+
+    def _active_setup_field(self, key: str) -> str | None:
+        try:
+            value = ix.active_setup().get(key)
+        except Exception:
+            return None
+        return str(value) if value else None
+
+    def current_world(self) -> str | None:
+        """The world Minecraft has open, or is about to open while starting."""
+        with self.state.lock:
+            proc, runtime, phase = self.state.process, self.state.runtime, self.state.phase
+        if proc is None:
+            return self._active_setup_field("level_name") if phase == STARTING else None
+        return getattr(runtime, "level_name", None) if runtime is not None else None
 
     def running_instance(self) -> str | None:
-        """The modpack instance the running server uses, if any."""
+        """The modpack instance the running (or starting) server uses, if any."""
         with self.state.lock:
-            if self.state.process is None or self.state.runtime is None:
-                return None
-            return getattr(self.state.runtime, "instance", None)
+            proc, runtime, phase = self.state.process, self.state.runtime, self.state.phase
+        if proc is None:
+            return self._active_setup_field("instance") if phase == STARTING else None
+        return getattr(runtime, "instance", None) if runtime is not None else None
+
+    def settle(self, timeout: float | None = None) -> bool:
+        """Wait until no start-prepare or stop is in flight. Returns True when
+        the stop that was in flight belonged to a restart (so whoever waited
+        should bring the server back up)."""
+        limit = timeout if timeout is not None else installer.INSTALL_TIMEOUT
+        deadline = time.monotonic() + limit
+        resume = False
+        while time.monotonic() < deadline:
+            with self.state.lock:
+                phase, proc = self.state.phase, self.state.process
+            resume = resume or self._restarting
+            if phase != STOPPING and not (phase == STARTING and proc is None):
+                return resume
+            time.sleep(0.05)
+        return resume
+
+    def clear_crash(self, note: str | None = None) -> bool:
+        """Forget a crash that no longer applies (another setup or world is
+        in place now). Sleeping stays sleeping: nothing is started."""
+        with self.state.lock:
+            if self.state.process is not None or self.state.phase != CRASHED:
+                self._failed_start = None
+                return False
+            self.state.phase = SLEEPING
+            self.state.last_exit = None
+        self._failed_start = None
+        self._info_cache = (0.0, {})
+        if note:
+            self.log(note)
+        return True
+
+    def wake_blocked(self, now: float | None = None) -> bool:
+        """True when a join should not try to start the server again."""
+        with self.state.lock:
+            if self.state.phase != CRASHED:
+                return False
+        failed = self._failed_start
+        if failed is None:
+            return False
+        at, code = failed
+        now = time.time() if now is None else now
+        return code in PERSISTENT_START_FAILURES or now - at < WAKE_BACKOFF
+
+    def _active_setup_id(self) -> str | None:
+        return self._active_setup_field("id")
 
     # -- the proxy invariant ----------------------------------------------
     def ensure_listener(self) -> bool:
@@ -273,21 +360,24 @@ class ServerController:
         """
         if self._shutting_down:
             raise ServerBusy("Railpowered is shutting down.")
-        if not ignore_task:
-            busy = self.tasks.running()
-            if busy is not None:
-                raise ServerBusy(f"Wait for “{busy.label}” to finish first.")
-        with self.state.lock:
-            if self.state.phase in (STARTING, ONLINE, STOPPING):
-                raise AlreadyRunning(
-                    "The server is already stopping." if self.state.phase == STOPPING
-                    else "The server is already running."
-                )
-            self.state.phase = STARTING
-            self.state.port_handed_off = False
-            self.state.players.clear()
-            self.state.idle_since = None
-            self.state.online_since = None
+        # Under the task lock: a task can't be submitted between the check
+        # and phase=STARTING (TaskRunner.submit runs ensure_quiet under it).
+        with self.tasks.lock:
+            if not ignore_task:
+                busy = self.tasks.running()
+                if busy is not None:
+                    raise ServerBusy(f"Wait for “{busy.label}” to finish first.")
+            with self.state.lock:
+                if self.state.phase in (STARTING, ONLINE, STOPPING):
+                    raise AlreadyRunning(
+                        "The server is already stopping." if self.state.phase == STOPPING
+                        else "The server is already running."
+                    )
+                self.state.phase = STARTING
+                self.state.port_handed_off = False
+                self.state.players.clear()
+                self.state.idle_since = None
+                self.state.online_since = None
         self._info_cache = (0.0, {})
         self.log(f"Starting Minecraft{f' ({reason})' if reason else ''}…")
         try:
@@ -299,6 +389,14 @@ class ServerController:
             raise self._start_failed(exc) from exc
 
         with self._port_lock:
+            if self._shutting_down:
+                # SIGTERM arrived while preparing: don't spawn a JVM that the
+                # container is about to kill mid-load.
+                with self.state.lock:
+                    self.state.phase = SLEEPING
+                    self.state.port_handed_off = False
+                self.log("Start cancelled: Railpowered is shutting down.")
+                raise ServerBusy("Railpowered is shutting down.")
             with self.state.lock:
                 self.state.port_handed_off = True
             self.proxy.stop()
@@ -340,11 +438,18 @@ class ServerController:
         cause = ix.error_code(exc) if isinstance(exc, installer.InstallError) else None
         if not isinstance(exc, installer.InstallError):
             print(traceback.format_exc(), flush=True)
+        if isinstance(exc, FileNotFoundError):
+            cause = "java_missing"
+        setup_id = self._active_setup_id()
         with self.state.lock:
             self.state.phase = CRASHED
             self.state.process = None
             self.state.port_handed_off = False
-            self.state.last_exit = {"code": None, "at": int(time.time()), "reason": message}
+            self.state.last_exit = {
+                "code": None, "at": int(time.time()), "reason": message, "setup_id": setup_id,
+            }
+        self._failed_start = (time.time(), cause or "start_failed")
+        self._info_cache = (0.0, {})
         self.log(f"Could not start Minecraft: {message}", "error")
         self.ensure_listener()
         if cause == "world_downgrade":
@@ -355,22 +460,23 @@ class ServerController:
     # -- stop --------------------------------------------------------------
     def stop(self, *, ignore_task: bool = False, reason: str | None = None) -> bool:
         """Save and stop Minecraft, then re-arm the proxy. Blocks until it exits."""
-        if not ignore_task:
-            busy = self.tasks.running()
-            if busy is not None:
-                raise ServerBusy(f"Wait for “{busy.label}” to finish first.")
-        with self.state.lock:
-            proc = self.state.process
-            phase = self.state.phase
-            if phase == STOPPING:
-                raise AlreadyRunning("The server is already stopping.", "already_stopping")
-            if proc is None:
-                if phase == STARTING:
-                    raise ServerBusy("The server is still preparing its files. Try again in a moment.")
-                raise NotRunning("The server isn't running.")
-            self.state.phase = STOPPING
-            self._stopping_proc = proc
-            spec = self.state.runtime
+        with self.tasks.lock:
+            if not ignore_task:
+                busy = self.tasks.running()
+                if busy is not None:
+                    raise ServerBusy(f"Wait for “{busy.label}” to finish first.")
+            with self.state.lock:
+                proc = self.state.process
+                phase = self.state.phase
+                if phase == STOPPING:
+                    raise AlreadyRunning("The server is already stopping.", "already_stopping")
+                if proc is None:
+                    if phase == STARTING:
+                        raise ServerBusy("The server is still preparing its files. Try again in a moment.")
+                    raise NotRunning("The server isn't running.")
+                self.state.phase = STOPPING
+                self._stopping_proc = proc
+                spec = self.state.runtime
         self.log(f"Stopping Minecraft{f' ({reason})' if reason else ''}; saving the world…")
         legacy = ix.is_legacy(getattr(spec, "version", None))
         self._write(proc, "save-all" if legacy else "save-all flush")
@@ -394,29 +500,65 @@ class ServerController:
         return True
 
     def restart(self) -> Any:
-        if self.is_running():
-            self.stop(reason="restart")
-        return self.start(reason="restart")
-
-    def shutdown(self) -> None:
-        """Graceful exit for SIGTERM: save and stop, then release the port for good."""
-        self._shutting_down = True
+        self._restarting = True
         try:
             if self.is_running():
-                self.stop(ignore_task=True, reason="shutting down")
-        except ServerError:
+                self.stop(reason="restart")
+            return self.start(reason="restart")
+        finally:
+            self._restarting = False
+
+    def shutdown(self) -> None:
+        """Graceful exit for SIGTERM: save and stop, then release the port for good.
+
+        Returns only once Java has exited (or was killed after the grace
+        period), including when a stop was already under way (idle sleep,
+        restart, switch): the container ends right after this returns."""
+        self._shutting_down = True
+        # An in-flight start either finished spawning Java (stopped below) or
+        # will see _shutting_down under this lock and not spawn it.
+        with self._port_lock:
             pass
+        try:
+            with self.state.lock:
+                proc, phase = self.state.process, self.state.phase
+            if proc is not None and phase != STOPPING:
+                try:
+                    self.stop(ignore_task=True, reason="shutting down")
+                except ServerError:
+                    pass
+            self._wait_for_exit()
         except Exception:
             print(traceback.format_exc(), flush=True)
         with self._port_lock:
             self.proxy.stop()
 
+    def _wait_for_exit(self) -> None:
+        with self.state.lock:
+            proc = self._stopping_proc or self.state.process
+        if proc is None:
+            return
+        try:
+            proc.wait(timeout=self.stop_timeout + KILL_WAIT)
+        except subprocess.TimeoutExpired:
+            self.log("Minecraft is still running at shutdown; forcing it to exit.", "warn")
+            try:
+                proc.kill()
+                proc.wait(timeout=KILL_WAIT)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        monitor = self._monitor_thread
+        if monitor is not None and monitor is not threading.current_thread():
+            monitor.join(timeout=MONITOR_JOIN)
+
     def _finish_exit(self, proc: Any, expected: bool) -> None:
         code = proc.poll()
+        timed_out = self._timed_out is proc
         with self.state.lock:
             if self.state.process is not proc:
                 return  # already finalised by the other thread
             reached_online = self.state.phase in (ONLINE, STOPPING) and self.state.online_since
+            setup_id = getattr(self.state.runtime, "setup_id", None) or None
             self.state.process = None
             self.state.port_handed_off = False
             self.state.players.clear()
@@ -425,15 +567,30 @@ class ServerController:
             self.state.idle_since = None
             if self._stopping_proc is proc:
                 self._stopping_proc = None
-            if expected:
+            if timed_out:
+                self._timed_out = None
+                self.state.phase = CRASHED
+                minutes = max(1, config.START_TIMEOUT // 60)
+                self.state.last_exit = {
+                    "code": code, "at": int(time.time()), "setup_id": setup_id,
+                    "reason": f"Minecraft didn't finish starting within {minutes} minutes, so it "
+                              f"was stopped. Last line: {self._exit_reason()}",
+                }
+            elif expected:
                 self.state.phase = SLEEPING
             else:
                 self.state.phase = CRASHED
                 reason = self._exit_reason()
                 if not reached_online:
                     reason = f"Crashed while starting: {reason}"
-                self.state.last_exit = {"code": code, "at": int(time.time()), "reason": reason}
-        if expected:
+                self.state.last_exit = {
+                    "code": code, "at": int(time.time()), "reason": reason, "setup_id": setup_id,
+                }
+        if timed_out or (not expected and not reached_online):
+            self._failed_start = (time.time(), "start_timeout" if timed_out else "crashed_starting")
+        if timed_out:
+            self.log("Minecraft was stopped because it never finished starting.", "error")
+        elif expected:
             self.log("Minecraft stopped. Sleeping until someone joins.")
         else:
             self.log(f"Minecraft exited unexpectedly (exit code {code}).", "error")
@@ -589,6 +746,7 @@ class ServerController:
             self.state.idle_since = None if self.state.players else now
             self.state.last_exit = None
             spec = self.state.runtime
+        self._failed_start = None
         self.log("Minecraft is ready. Players can join now.")
         try:
             ix.record_world_version(
@@ -670,7 +828,10 @@ class ServerController:
     def idle_tick(self, now: float | None = None) -> bool:
         """One idle check. Returns True when it stopped the server."""
         now = time.time() if now is None else now
+        if self._start_watchdog(now):
+            return True
         timeout = self.idle_timeout_seconds()
+        busy = self.tasks.is_busy()  # never take the task lock inside state.lock
         with self.state.lock:
             should = idle_should_stop(
                 self.state.phase,
@@ -678,7 +839,7 @@ class ServerController:
                 self.state.idle_since,
                 timeout,
                 now,
-                busy=self.tasks.is_busy(),
+                busy=busy,
             )
         if not should:
             return False
@@ -699,6 +860,28 @@ class ServerController:
         except ServerError:
             return False
 
+    def _start_watchdog(self, now: float) -> bool:
+        """Stop a server that never printed "Done (" within START_TIMEOUT."""
+        limit = config.START_TIMEOUT
+        with self.state.lock:
+            proc, phase, started = self.state.process, self.state.phase, self.state.start_time
+        if limit <= 0 or proc is None or phase != STARTING or started is None or now - started < limit:
+            return False
+        recent = [line for line in self._recent if line.strip()][-5:]
+        self.log(
+            f"Minecraft hasn't finished starting after {int(limit // 60)} minutes; stopping it. "
+            "Its last lines are above.",
+            "error",
+        )
+        for line in recent:
+            self.log(f"  {line[:300]}", "warn")
+        self._timed_out = proc
+        try:
+            return self.stop(ignore_task=True, reason="start timed out")
+        except ServerError:
+            self._timed_out = None
+            return False
+
     def idle_loop(self, interval: float = 5.0) -> None:
         while True:
             time.sleep(interval)
@@ -712,7 +895,7 @@ class ServerController:
         with self.state.lock:
             if self.state.phase in (STARTING, ONLINE, STOPPING):
                 return False
-        if self.tasks.is_busy():
+        if self.tasks.is_busy() or self.wake_blocked():
             return False
         if not self._wake_lock.acquire(blocking=False):
             return False
@@ -739,11 +922,14 @@ class ServerController:
             mode = MODE_UPDATING
         elif phase == STARTING:
             mode = MODE_STARTING
+        elif self.wake_blocked():
+            mode = MODE_CRASHED
         else:
             mode = MODE_SLEEPING
         cached_at, info = self._info_cache
         if not info or time.time() - cached_at > 5:
             info = {}
+            whitelist_on = False
             try:
                 props = ix.read_properties()  # already unescaped
                 info["motd"] = props.get("motd", "") or "A Minecraft Server"
@@ -751,22 +937,31 @@ class ServerController:
                     info["max_players"] = int(props.get("max-players", "20"))
                 except ValueError:
                     info["max_players"] = 20
+                # Minecraft reads the flag case-insensitively; so must we.
+                whitelist_on = props.get("white-list", "false").strip().lower() == "true"
+                # With the whitelist on, nobody wakes the server until the
+                # list has actually been read (fail closed).
+                info["allowed"] = set() if whitelist_on else None
                 setup = ix.active_setup()
                 info["version_name"] = setup.get("resolved_version") or ""
-                info["allowed"] = None
-                if props.get("white-list", "false").strip() == "true":
+                if whitelist_on:
                     lists = ix.players()
                     info["allowed"] = {
                         entry["name"].lower() for entry in lists["ops"] + lists["whitelist"]
                     }
-            except Exception:
-                pass
+                self._whitelist_error_logged = False
+            except Exception as exc:
+                if whitelist_on and not self._whitelist_error_logged:
+                    self._whitelist_error_logged = True
+                    self.log(f"Couldn't read the whitelist for the sleep proxy ({exc}); "
+                             "joins won't wake the server until it can.", "warn")
             self._info_cache = (time.time(), info)
         return {**info, "mode": mode}
 
     # -- backups -----------------------------------------------------------------
     def backup_world(self, world: str) -> dict[str, Any]:
         """Back up a world; a running world is flushed with save-off/save-on."""
+        self.settle()
         with self.state.lock:
             proc = self.state.process
             phase = self.state.phase

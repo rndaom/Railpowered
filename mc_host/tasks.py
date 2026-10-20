@@ -131,10 +131,17 @@ class TaskRunner:
         label: str,
         fn: Callable[[TaskContext], Any],
         on_success: Callable[[Task], None] | None = None,
+        guard: Callable[[], Any] | None = None,
     ) -> Task:
+        """Start ``fn`` in the background. ``guard`` runs under the task lock
+        right before the task is created and may raise to refuse it (the
+        server controller uses it so tasks never interleave with a start or
+        stop that is in flight)."""
         with self.lock:
             if self.current is not None:
                 raise TaskBusy(self.current)
+            if guard is not None:
+                guard()
             task = Task(id=f"t{next(self._ids)}", kind=kind, label=label)
             self.current = task
             self._idle.clear()

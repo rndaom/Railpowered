@@ -486,6 +486,49 @@ class ServerControlTests(PanelTestCase):
         self.assertEqual(task["error"], "The server is already stopping.")
         self.assertEqual(task["code"], "already_running")
 
+    def _set_phase(self, phase, last_exit=None):
+        saved = (state.phase, state.last_exit)
+
+        def restore():
+            state.phase, state.last_exit = saved
+
+        self.addCleanup(restore)
+        state.phase, state.last_exit = phase, last_exit
+
+    def test_world_changes_wait_while_a_start_prepares(self):
+        self._set_phase("starting")  # prepare_runtime running, no Java yet
+        other = installer.load_config()
+        other["profiles"].append({**other["profiles"][0], "id": "other", "name": "Other",
+                                  "level_name": "other"})
+        installer.save_config(other)
+        status, payload = self.api("POST", "/api/setups/other/activate", {})
+        self.assertEqual((status, payload["code"]), (409, "busy"))
+        status, payload = self.api("POST", "/api/backups", {"world": "world"})
+        self.assertEqual((status, payload["code"]), (409, "busy"))
+        status, payload = self.api("PATCH", "/api/setups/default", {"level_name": "elsewhere"})
+        self.assertEqual((status, payload["code"]), (409, "server_running"))
+        status, payload = self.api("DELETE", "/api/worlds/world")
+        self.assertEqual(status, 409)
+        self.assertIsNone(tasks.running())
+
+    def test_switch_while_crashed_clears_the_old_crash(self):
+        self._set_phase("crashed", {"code": 1, "at": 1, "reason": "Old setup broke", "setup_id": "default"})
+        other = installer.load_config()
+        other["profiles"].append({**other["profiles"][0], "id": "other", "name": "Other",
+                                  "level_name": "other"})
+        installer.save_config(other)
+        status = self.api("GET", "/api/status")[1]
+        self.assertEqual(status["last_exit"], {"code": 1, "at": 1, "reason": "Old setup broke"})
+        with mock.patch.object(ix, "activate_setup"):
+            self.assertEqual(self.api("POST", "/api/setups/other/activate", {})[0], 202)
+            tasks.wait_idle(5)
+        status = self.api("GET", "/api/status")[1]
+        self.assertEqual((status["phase"], status["last_exit"]), ("sleeping", None))
+
+    def test_exit_of_another_setup_is_not_shown(self):
+        self._set_phase("sleeping", {"code": 1, "at": 1, "reason": "x", "setup_id": "gone"})
+        self.assertIsNone(self.api("GET", "/api/status")[1]["last_exit"])
+
     def test_start_downgrade_can_be_confirmed(self):
         refusal = StartFailed("World 'world' has been played on 1.21.1.", code="world_downgrade",
                               status=409, data={"world": "world", "last_version": "1.21.1",

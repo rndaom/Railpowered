@@ -295,6 +295,13 @@ AUTO_START = env_bool("AUTO_START", False)
 # IDLE_TIMEOUT and AUTO_START are parsed here only to warn about bad values at
 # boot; the effective values come from installer.railpowered_settings(), where
 # the dashboard's saved settings override them.
+# Seconds a start may take before "Done (" appears; past it the server is
+# stopped and reported as crashed (a hung mod or a stuck world load would
+# otherwise keep the container running forever). 0 disables the watchdog.
+START_TIMEOUT = env_int("START_TIMEOUT", 900, minimum=0, maximum=6 * 3600)
+if 0 < START_TIMEOUT < 120:
+    _warn(f"START_TIMEOUT={START_TIMEOUT} is too short for a first start; using 120 seconds.")
+    START_TIMEOUT = 120
 # Grace period for Minecraft to save and exit. With the kill and join waits in
 # process.py the whole shutdown stays under Railway's drainingSeconds (60).
 STOP_TIMEOUT = env_int("STOP_TIMEOUT", 30, minimum=5, maximum=45)
