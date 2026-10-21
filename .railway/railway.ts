@@ -1,6 +1,6 @@
 // Reference definition of the Railpowered template's single service, written
 // for Railway's TypeScript IaC (`railway/iac`). The published template at
-// https://railway.com/new/template/AGX0Mu is edited in Railway's template
+// https://railway.com/new/template/railpowered is edited in Railway's template
 // editor; keep the two in step (see .railway/README.md). Build and deploy
 // settings also live in /railway.toml, which wins at deploy time.
 //

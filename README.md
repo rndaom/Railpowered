@@ -7,12 +7,12 @@
 **A Minecraft Java server for your friends that sleeps when nobody's online and wakes up when someone joins.**<br>
 One-click on Railway, with a dashboard for versions, modpacks, worlds, backups and players.
 
-<a href="https://railway.com/new/template/AGX0Mu?utm_medium=integration&utm_source=button&utm_campaign=railpowered"><img src="https://railway.com/button.svg" alt="Deploy on Railway" height="40"></a>
+<a href="https://railway.com/new/template/railpowered?utm_medium=integration&utm_source=button&utm_campaign=railpowered"><img src="https://railway.com/button.svg" alt="Deploy on Railway" height="40"></a>
 
 [![CI](https://github.com/rndaom/Railpowered/actions/workflows/ci.yml/badge.svg)](https://github.com/rndaom/Railpowered/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-B5F23D)](LICENSE)
 [![Python 3.12, standard library only](https://img.shields.io/badge/python-3.12%20%C2%B7%20stdlib%20only-3776AB?logo=python&logoColor=white)](CONTRIBUTING.md)
-[![Railway template](https://img.shields.io/badge/Railway-one--click%20template-0B0D0E?logo=railway&logoColor=white)](https://railway.com/new/template/AGX0Mu?utm_medium=integration&utm_source=button&utm_campaign=railpowered)
+[![Railway template](https://img.shields.io/badge/Railway-one--click%20template-0B0D0E?logo=railway&logoColor=white)](https://railway.com/new/template/railpowered?utm_medium=integration&utm_source=button&utm_campaign=railpowered)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/overview-dark.png">
@@ -112,7 +112,7 @@ The whole manager (sleep proxy, dashboard, installer) is written in Python with 
 
 ## Quick start
 
-1. **Click [Deploy on Railway](https://railway.com/new/template/AGX0Mu?utm_medium=integration&utm_source=button&utm_campaign=railpowered).**
+1. **Click [Deploy on Railway](https://railway.com/new/template/railpowered?utm_medium=integration&utm_source=button&utm_campaign=railpowered).**
 2. **Keep or replace `ADMIN_KEY`** on the Deploy form. This is your dashboard password. The template fills in a random 32-character key (you can read it later in the service's Variables); if you type your own, make it a long passphrase (four or more random words, or 20+ characters). Anyone who has it controls the server.
 3. **Deploy.** The template creates one service with a volume at `/server/data`, a TCP proxy for Minecraft and a public HTTPS domain for the dashboard. The dashboard comes up within seconds, and the first Minecraft download runs in the background.
 4. **Open the service's public URL** and sign in with your `ADMIN_KEY`.
