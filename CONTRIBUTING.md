@@ -195,7 +195,7 @@ with Minecraft online and a redeploy). You can run that locally with Docker:
 ## Maintainer notes
 
 - **Deploy button.** The README's Deploy button must point at the published
-  template (`https://railway.com/new/template/AGX0Mu`), not at a GitHub URL.
+  template (`https://railway.com/new/template/railpowered`), not at a GitHub URL.
   A GitHub URL opens Railway's generic project chooser without the volume, the
   TCP proxy or the variables. See [`.railway/README.md`](.railway/README.md).
 - **New runtime files.** If the image needs a new file, add it to the

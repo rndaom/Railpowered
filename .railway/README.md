@@ -8,7 +8,7 @@ your own server, use the Deploy button in the main [README](../README.md).
 The Deploy button points at the published template:
 
 ```
-https://railway.com/new/template/AGX0Mu
+https://railway.com/new/template/railpowered
 ```
 
 Keep it that way. A GitHub URL such as
