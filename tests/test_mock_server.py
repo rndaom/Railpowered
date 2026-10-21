@@ -589,7 +589,8 @@ class MockShapeParityTests(PanelTestCase):
             real = self.real("GET", "/api/versions")
         fake = call(self.mock, "GET", "/api/versions")[1]
         self.assertSameKeys(real, fake, "versions")
-        self.assertSameKeys(real["vanilla"][0], fake["vanilla"][0], "versions.vanilla")
+        # Only snapshots carry "snapshot", and the offline list has none.
+        self.assertSameKeys(real["vanilla"][0], fake["vanilla"][0], "versions.vanilla", ahead={"snapshot"})
 
     def test_errors_and_setup_routes(self):
         status, real = self.api("GET", "/api/nothing-here")

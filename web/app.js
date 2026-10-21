@@ -429,6 +429,10 @@
   function humanize(s) { return capitalize(String(s || '').replace(/[-_]+/g, ' ')); }
 
   function compareVersions(a, b) {
+    // Weekly snapshot ids (24w14a) carry no version number; the server's list
+    // is in release order, so use its positions when both ids are in it.
+    var rank = state.versionRank || {};
+    if (a !== b && rank[a] !== undefined && rank[b] !== undefined) return rank[a] < rank[b] ? 1 : -1;
     var pa = String(a || '').split(/[^0-9]+/).filter(Boolean).map(Number);
     var pb = String(b || '').split(/[^0-9]+/).filter(Boolean).map(Number);
     for (var i = 0; i < Math.max(pa.length, pb.length); i++) {
@@ -2263,6 +2267,10 @@
     sel.setAttribute('aria-busy', 'true');
     state.versionsPromise = api('GET', '/api/versions').then(function (data) {
       state.versions = data || {};
+      state.versionRank = {};
+      (Array.isArray(state.versions.vanilla) ? state.versions.vanilla : []).forEach(function (v, i) {
+        if (v && v.id && v.group) state.versionRank[String(v.id)] = i;  // newest first
+      });
       sel.removeAttribute('aria-busy');
       populateVersionSelect(false);
       renderUploadLimit();
@@ -2290,7 +2298,7 @@
     var list = Array.isArray(data[type]) ? data[type] : [];
     return list.map(function (v) {
       if (typeof v === 'string') return { id: v, label: v };
-      return { id: String(v.id), label: String(v.label || v.id) };
+      return { id: String(v.id), label: String(v.label || v.id), group: v.group ? String(v.group) : '', snapshot: !!v.snapshot };
     });
   }
 
@@ -2301,7 +2309,11 @@
     if (type === 'modpack') return;
     var previous = keepChoice ? sel.value : '';
     var data = state.versions || {};
-    var list = versionsFor(type);
+    var all = versionsFor(type);
+    var hasSnapshots = all.some(function (v) { return v.snapshot; });
+    var showSnapshots = hasSnapshots && $('#setup-snapshots').checked;
+    $('#setup-snapshots-row').hidden = !hasSnapshots;
+    var list = all.filter(function (v) { return showSnapshots || !v.snapshot; });
     var latest = data.latest || '';
     var hasLatestEntry = type !== 'forge' && list.some(function (v) { return v.id === 'latest'; });
     var nodes = [];
@@ -2313,11 +2325,14 @@
       var entry = list.filter(function (v) { return v.id === 'latest'; })[0];
       nodes.push(el('option', { value: 'latest' }, entry.label));
     }
-    concrete.sort(function (a, b) { return compareVersions(b.id, a.id); });
+    // The server sends its lists newest first and grouped; only bare lists need sorting here.
+    if (!concrete.every(function (v) { return v.group; })) {
+      concrete.sort(function (a, b) { return compareVersions(b.id, a.id); });
+    }
     var groups = {};
     var order = [];
     concrete.forEach(function (v) {
-      var g = versionGroupLabel(v.id);
+      var g = v.group || versionGroupLabel(v.id);
       if (!groups[g]) { groups[g] = []; order.push(g); }
       groups[g].push(v);
     });
@@ -2337,9 +2352,13 @@
     else sel.value = 'latest';
 
     var help = 'Friends need this exact version selected in their Minecraft launcher.';
-    if (type === 'forge' && concrete.length) {
+    if (type === 'forge' && concrete.length > 8) {
+      help = 'Every Minecraft version Forge has a server installer for (' + concrete[concrete.length - 1].id +
+        ' to ' + concrete[0].id + '). ' + help;
+    } else if (type === 'forge' && concrete.length) {
       help = 'Railpowered supports Forge on ' + concrete.map(function (v) { return v.id; }).join(', ') + '. ' + help;
     }
+    if (showSnapshots && type !== 'forge') help += ' Snapshots need the same snapshot in the launcher (enable snapshots under Installations).';
     if (data.offline) help += ' Mojang couldn\'t be reached, so this list may be slightly out of date.';
     if (form) form.versionHelp = help;
     setText($('#version-help'), help);
@@ -2841,6 +2860,11 @@
     });
 
     $('#setup-version').addEventListener('change', onSetupFormChange);
+    $('#setup-snapshots').checked = false;
+    $('#setup-snapshots').addEventListener('change', function () {
+      populateVersionSelect(true);
+      onSetupFormChange();
+    });
 
     $$('[data-pack-source]', root).forEach(function (b) {
       b.addEventListener('click', function () {

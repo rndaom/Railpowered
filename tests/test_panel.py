@@ -972,7 +972,7 @@ class SetupRouteTests(PanelTestCase):
             ({"type": "modpack", "minecraft_version": "1.20.1"}, 400),
             ({"type": "vanilla", "minecraft_version": "../../x"}, 400),
             ({"type": "forge", "minecraft_version": "latest"}, 400),
-            ({"type": "forge", "minecraft_version": "1.19.2"}, 400),
+            ({"type": "forge", "minecraft_version": "1.4.7"}, 400),  # Forge has no installer before 1.5.2
             ({"type": "vanilla", "minecraft_version": "1.20.1", "level_name": ".."}, 400),
             ({"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "world"}, 409),
             ({"type": "vanilla", "minecraft_version": "1.20.1", "level_name": "nowhere",
@@ -1065,7 +1065,7 @@ class SetupRouteTests(PanelTestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["offline"])
         self.assertTrue(payload["vanilla"])
-        self.assertEqual(set(payload["vanilla"][0]), {"id", "label"})
+        self.assertEqual(set(payload["vanilla"][0]), {"id", "label", "group"})
 
 
 class ModpackRouteTests(PanelTestCase):

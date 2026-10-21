@@ -54,7 +54,7 @@ export default defineRailway(() => {
       SERVER_TYPE: {
         value: "vanilla",
         description:
-          "First deploy only: vanilla, fabric or forge (Forge needs MINECRAFT_VERSION set to 1.16.5, 1.12.2 or 1.7.10). Add modpacks or other versions later from the dashboard.",
+          "First deploy only: vanilla, fabric or forge (Forge needs a specific MINECRAFT_VERSION, 1.6.1 or newer). Add modpacks or other versions later from the dashboard.",
       },
       AUTO_START: {
         value: "false",

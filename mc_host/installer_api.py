@@ -348,12 +348,22 @@ def players() -> dict[str, Any]:
     }
 
 
-def _version_items(values: Any) -> list[dict[str, str]]:
+def _version_items(values: Any) -> list[dict[str, Any]]:
     items = []
     for value in values or []:
         if isinstance(value, dict) and value.get("id"):
-            items.append({"id": str(value["id"]), "label": str(value.get("label") or value["id"])})
+            item: dict[str, Any] = {"id": str(value["id"]), "label": str(value.get("label") or value["id"])}
+            if value.get("group"):
+                item["group"] = str(value["group"])
+            if value.get("snapshot"):
+                item["snapshot"] = True
+            items.append(item)
     return items
+
+
+def forge_supported(version: str) -> bool:
+    """Quick check from the cached Forge list (the setup task checks again)."""
+    return installer.forge_supported(version, network=False)
 
 
 def list_available_versions() -> dict[str, Any]:
@@ -372,8 +382,9 @@ def offline_versions() -> dict[str, Any]:
     """Curated list for when even the installer's offline path failed."""
     latest = cached_latest() or installer.FALLBACK_RELEASE
 
-    def items(ids: list[str]) -> list[dict[str, str]]:
-        return [{"id": v, "label": f"{v} (latest)" if v == latest else v} for v in ids]
+    def items(ids: list[str]) -> list[dict[str, Any]]:
+        return [{"id": v, "label": f"{v} (latest)" if v == latest else v, "group": installer.version_group(v)}
+                for v in ids]
 
     vanilla = list(dict.fromkeys([latest, *installer.CURATED_VANILLA]))
     fabric = list(dict.fromkeys([latest, *installer.CURATED_FABRIC]))
@@ -381,7 +392,7 @@ def offline_versions() -> dict[str, Any]:
         "vanilla": items(vanilla),
         "fabric": items(fabric),
         "forge": [
-            {"id": mc, "label": f"{mc} (Forge {build.split('-')[0]})"}
+            {"id": mc, "label": f"{mc} (Forge {build.split('-')[0]})", "group": installer.version_group(mc)}
             for mc, build in installer.FORGE_BUILDS.items()
         ],
         "latest": latest,
