@@ -24,20 +24,20 @@ RUN apt-get update \
 
 # Release names as the Adoptium API reports them (release_name), plus the
 # SHA-256 of each Linux JRE tarball for x64 (amd64) and aarch64 (arm64).
-ARG JRE8_RELEASE=jdk8u504-b01
-ARG JRE8_SHA256_AMD64=52dcd578baca1d3e449ea86768a9129c0ee04d7b22565695498353cc66940c61
-ARG JRE8_SHA256_ARM64=9ae9c4dd80fc8f3c4081b480c7d42346e9e4cbee5ae58198fca11e0fc1a19163
+ARG JRE8_RELEASE=jdk8u512-b09
+ARG JRE8_SHA256_AMD64=57468dc8bfd71dd0578d9717e63a8c13b9efe0a2f2c85c2a13966d1c0f9b1e5f
+ARG JRE8_SHA256_ARM64=9b45f49bc6e54cf9170aebe0ee45f48a833222325cb3b2d6d21220eee4c5207b
 # Java 17: what Mojang declares for 1.17-1.20.4; older Forge/ModLauncher
 # builds for those versions refuse to start on Java 21.
-ARG JRE17_RELEASE=jdk-17.0.20.1+1
-ARG JRE17_SHA256_AMD64=0b2b640e3046b64c8ec504de0ab9d91bb5610182bda21fad454681ce54d45a62
-ARG JRE17_SHA256_ARM64=b8efcd5acc9109fe8d35bed132499643048a257b4f6042906ece37d03c839d77
-ARG JRE21_RELEASE=jdk-21.0.12.1+1
-ARG JRE21_SHA256_AMD64=2413149700df0f7d440500a84a8f764c535f21e5a5e87d38328b64eec2c5b500
-ARG JRE21_SHA256_ARM64=14be1f35ebdbd1f6e8d57eb911a3ffb74d6d9aa255abc5daf2b1302002cf2cf2
-ARG JRE25_RELEASE=jdk-25.0.4.1+1
-ARG JRE25_SHA256_AMD64=1731a34baadec5479258ea0202e4d5d865d2efeee60cb0c7d7eb056fe96ca219
-ARG JRE25_SHA256_ARM64=34828cbb93ed31c281c84ecb31ddab655d11a802f263c1fc019d42e9e0230fed
+ARG JRE17_RELEASE=jdk-17.0.21+9
+ARG JRE17_SHA256_AMD64=9f41bf88c7900c7097444a1bdeb84146ae692bc08842490ab098063c74bf9a8a
+ARG JRE17_SHA256_ARM64=1114f09d6174f54270c3117410b5e4022b43ebc0b43b751af08b927c55ed7bb5
+ARG JRE21_RELEASE=jdk-21.0.13+9
+ARG JRE21_SHA256_AMD64=a535a1df9c6284d9618872984e026ae0352d1f7e9e0605425c0e6114f47351dd
+ARG JRE21_SHA256_ARM64=b1734db7ade49c3f6acc6ae06233b8c2dd90e3e2f00f67000ae1c972aaa64d8c
+ARG JRE25_RELEASE=jdk-25.0.5+8
+ARG JRE25_SHA256_AMD64=6fac98f0c8202efc3135a9e9e42aa61963ec42d1c5cbb40caf231e7b14a24ef6
+ARG JRE25_SHA256_ARM64=963931723891302ebb2687178532c3d793d71e2577cd058061c7efb396140a86
 # Set by BuildKit for the platform being built; Railway builds amd64.
 ARG TARGETARCH
 
@@ -87,10 +87,10 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel --remove ubuntu || true; fi \
 COPY --from=jre /opt/java /opt/java
 
 # Declared after the apt layers so a JRE bump does not invalidate them.
-ARG JRE8_RELEASE=jdk8u504-b01
-ARG JRE17_RELEASE=jdk-17.0.20.1+1
-ARG JRE21_RELEASE=jdk-21.0.12.1+1
-ARG JRE25_RELEASE=jdk-25.0.4.1+1
+ARG JRE8_RELEASE=jdk8u512-b09
+ARG JRE17_RELEASE=jdk-17.0.21+9
+ARG JRE21_RELEASE=jdk-21.0.13+9
+ARG JRE25_RELEASE=jdk-25.0.5+8
 
 LABEL org.opencontainers.image.title="Railpowered" \
       org.opencontainers.image.description="One-click Railway template for a Minecraft server that sleeps when empty, wakes when a friend joins, and comes with a web dashboard." \
